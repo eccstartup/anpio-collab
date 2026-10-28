@@ -1,18 +1,21 @@
 {
   "name": "anpio-collab",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
+  "description": "企业智能体协作平台：任务、子任务、验收、知识与审计",
   "engines": {
-    "node": ">=24"
+    "node": ">=22.18"
   },
   "scripts": {
-    "start": "node platform/server.ts",
-    "test": "node --test tests-ts/*.test.ts",
-    "demo": "node examples/demo.ts",
-    "check": "tsc --noEmit",
+    "start": "node --disable-warning=ExperimentalWarning src/platform/index.ts",
+    "dev": "node --watch --disable-warning=ExperimentalWarning src/platform/index.ts",
+    "test": "node --disable-warning=ExperimentalWarning --test tests/*.test.ts",
     "test:postgres": "bash scripts/test-postgres.sh",
-    "scheduler": "node platform/scheduler.ts"
+    "demo": "node --disable-warning=ExperimentalWarning examples/demo.ts",
+    "check": "tsc --noEmit",
+    "backup": "node src/platform/tools/backup.ts",
+    "scheduler": "node src/platform/tools/scheduler.ts"
   },
   "dependencies": {
     "pg": "^8.23.1"

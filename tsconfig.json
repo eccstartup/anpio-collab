@@ -1,8 +1,18 @@
 {
   "compilerOptions": {
-    "target": "ES2024", "module": "NodeNext", "moduleResolution": "NodeNext",
-    "strict": true, "noEmit": true, "allowImportingTsExtensions": true,
-    "erasableSyntaxOnly": true, "skipLibCheck": true, "types": ["node"]
+    "target": "ES2024",
+    "lib": ["ES2024"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noImplicitOverride": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "types": ["node"]
   },
-  "include": ["platform/**/*.ts", "protocol/**/*.ts", "sdk/**/*.ts", "agents-ts/**/*.ts", "examples/demo.ts", "tests-ts/**/*.ts"]
+  "include": ["src/**/*.ts", "tests/**/*.ts", "examples/*.ts"]
 }
