@@ -6,6 +6,8 @@
  */
 
 import { resolve } from 'node:path';
+import type { EnrollMode } from './services/identity.ts';
+import type { OversightThresholds } from './services/oversight.ts';
 
 export type Config = {
   workspace: string;
@@ -18,6 +20,10 @@ export type Config = {
   requestBodyLimit: number;
   webRoot: string;
   logRequests: boolean;
+  /** 陌生 DID 首次登录时的落位策略。 */
+  anpEnroll: EnrollMode;
+  sessionHours: number;
+  oversight: Partial<OversightThresholds>;
 };
 
 const parsePort = (raw: string | undefined, fallback: number): number => {
@@ -25,6 +31,21 @@ const parsePort = (raw: string | undefined, fallback: number): number => {
   const value = Number(raw);
   if (!Number.isSafeInteger(value) || value < 1 || value > 65535) {
     throw new Error(`PORT 不合法: ${raw}`);
+  }
+  return value;
+};
+
+const parsePositiveInt = (raw: string | undefined, fallback: number, name: string): number => {
+  if (!raw) return fallback;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`${name} 必须是正整数: ${raw}`);
+  return value;
+};
+
+const parseEnroll = (raw: string | undefined): EnrollMode => {
+  const value = raw ?? 'open';
+  if (value !== 'open' && value !== 'pending' && value !== 'off') {
+    throw new Error('COLLAB_ANP_ENROLL 只能是 open / pending / off');
   }
   return value;
 };
@@ -45,5 +66,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, cwd = process.c
     requestBodyLimit: Number(env.COLLAB_BODY_LIMIT ?? 65536),
     webRoot: env.COLLAB_WEB_ROOT ?? resolve(cwd, 'src/web'),
     logRequests: env.COLLAB_LOG_REQUESTS === '1',
+    anpEnroll: parseEnroll(env.COLLAB_ANP_ENROLL),
+    sessionHours: parsePositiveInt(env.COLLAB_SESSION_HOURS, 24 * 7, 'COLLAB_SESSION_HOURS'),
+    oversight: {
+      offlineMinutes: parsePositiveInt(env.COLLAB_OFFLINE_MINUTES, 15, 'COLLAB_OFFLINE_MINUTES'),
+      stalledSubtaskHours: parsePositiveInt(env.COLLAB_STALLED_HOURS, 24, 'COLLAB_STALLED_HOURS'),
+      deniedThreshold: parsePositiveInt(env.COLLAB_DENIED_THRESHOLD, 8, 'COLLAB_DENIED_THRESHOLD'),
+    },
   };
 }

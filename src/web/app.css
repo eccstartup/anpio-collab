@@ -313,6 +313,17 @@ label.checkbox input {
   font-size: 13px;
 }
 
+/* span 默认是 inline，相邻两个会粘成"人管理员"这种看不懂的字；每行一块。 */
+.identity span {
+  display: block;
+}
+
+.identity .mono {
+  font-size: 11px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
 .main {
   min-width: 0;
   padding: 40px clamp(24px, 5vw, 64px) 80px;
@@ -816,6 +827,209 @@ tr:last-child td {
 .tabs button[aria-current="true"] {
   color: var(--ink);
   border-bottom-color: var(--ink);
+}
+
+/* ---------------- 登录分步 ---------------- */
+
+.steps {
+  list-style: none;
+  margin: 24px 0;
+  padding: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.steps li {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.steps li > span {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  border-radius: 50%;
+  border: 1px solid var(--line-strong);
+  color: var(--muted);
+  display: grid;
+  place-items: center;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.steps li strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--muted);
+}
+
+.steps li em {
+  font-style: normal;
+  font-size: 12px;
+  color: var(--muted);
+  opacity: 0.85;
+}
+
+.steps li[data-state="run"] > span {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.steps li[data-state="run"] strong {
+  color: var(--ink);
+}
+
+.steps li[data-state="done"] > span {
+  background: var(--ok-soft);
+  border-color: var(--ok);
+  color: var(--ok);
+}
+
+.steps li[data-state="done"] strong {
+  color: var(--ink-soft);
+}
+
+.steps li[data-state="fail"] > span {
+  background: var(--danger-soft);
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.steps li[data-state="fail"] strong {
+  color: var(--danger);
+}
+
+.fallback {
+  margin-top: 22px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.fallback summary {
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--muted);
+  list-style: none;
+}
+
+.fallback summary::-webkit-details-marker {
+  display: none;
+}
+
+.fallback summary::before {
+  content: "＋ ";
+}
+
+.fallback[open] summary {
+  margin-bottom: 14px;
+  color: var(--ink-soft);
+}
+
+.fallback[open] summary::before {
+  content: "－ ";
+}
+
+/* ---------------- 补充：严重级别、说明条、评论 ---------------- */
+
+.badge[data-tone="critical"] {
+  background: var(--danger);
+  color: #fff;
+}
+
+.small {
+  font-size: 12px;
+}
+
+.list-item.static {
+  cursor: default;
+  display: block;
+}
+
+.list-item.static:hover {
+  background: var(--card);
+  border-color: var(--line);
+}
+
+.note {
+  border-radius: 12px;
+  padding: 12px 14px;
+  font-size: 13px;
+  background: #f7f5f1;
+  color: var(--ink-soft);
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.note.warn {
+  background: var(--warn-soft);
+  color: #6d4a05;
+}
+
+.note strong {
+  font-weight: 600;
+}
+
+.comments {
+  display: grid;
+  gap: 14px;
+  margin: 4px 0 16px;
+}
+
+.comment {
+  border-left: 2px solid var(--line);
+  padding-left: 14px;
+}
+
+.comment-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+
+.comment-author {
+  font-weight: 550;
+  font-size: 13px;
+}
+
+.comment-body {
+  font-size: 13.5px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.comment-form {
+  display: grid;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.comment-form .row {
+  justify-content: flex-end;
+}
+
+.invite-code {
+  font-family: var(--mono);
+  font-size: 26px;
+  letter-spacing: 0.16em;
+  text-align: center;
+  padding: 18px;
+  background: #f7f5f1;
+  border-radius: 12px;
+  user-select: all;
+}
+
+.when {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 @media (max-width: 860px) {

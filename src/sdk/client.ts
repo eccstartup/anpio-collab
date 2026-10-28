@@ -133,7 +133,80 @@ export class CollabClient {
 
   // ------------------------------------------------------------ 身份与目录
   me() {
-    return this.request<{ id: string; workspace: string; roles: string[]; did: string | null; displayName: string; capabilities: string[] }>('me');
+    return this.request<{
+      id: string;
+      workspace: string;
+      roles: string[];
+      did: string | null;
+      kind: string;
+      handle: string | null;
+      displayName: string;
+      capabilities: string[];
+    }>('me');
+  }
+
+  logout(operationId = `logout:${Date.now()}`) {
+    return this.request<{ ok: true }>('me/logout', { body: {}, operationId });
+  }
+
+  identities() {
+    return this.request<{ id: string; did: string; client: string; lastLoginAt: string | null; loginCount: number }[]>(
+      'me/identities',
+    );
+  }
+
+  inviteIdentity(input: { role?: string; note?: string; expiresInHours?: number }, operationId: string) {
+    return this.request<{ code: string; role: string; expiresAt: string }>('me/identities/invite', {
+      body: input,
+      operationId,
+    });
+  }
+
+  revokeIdentity(id: string, operationId: string) {
+    return this.request<{ id: string; revoked: true }>(`me/identities/${encodeURIComponent(id)}/revoke`, {
+      body: {},
+      operationId,
+    });
+  }
+
+  sessions() {
+    return this.request<{ id: string; did: string; client: string; expiresAt: string; active: boolean }[]>('me/sessions');
+  }
+
+  revokeSession(id: string, operationId: string) {
+    return this.request<{ id: string; revoked: true }>(`me/sessions/${encodeURIComponent(id)}/revoke`, {
+      body: {},
+      operationId,
+    });
+  }
+
+  mentions() {
+    return this.request<{ id: string; mentionId: string; taskId: string; taskTitle?: string; body: string; authorName: string }[]>('me/mentions');
+  }
+
+  readMention(id: string, operationId: string) {
+    return this.request<{ id: string; read: true }>(`me/mentions/${encodeURIComponent(id)}/read`, {
+      body: {},
+      operationId,
+    });
+  }
+
+  pendingPrincipals() {
+    return this.request<PrincipalView[]>('principals/pending');
+  }
+
+  activatePrincipal(id: string, operationId: string) {
+    return this.request<{ id: string; active: true }>(`principals/${encodeURIComponent(id)}/activate`, {
+      body: {},
+      operationId,
+    });
+  }
+
+  setRoles(id: string, roles: string[], operationId: string) {
+    return this.request<PrincipalView>(`principals/${encodeURIComponent(id)}/roles`, {
+      body: { roles },
+      operationId,
+    });
   }
 
   directory(capability?: string) {
@@ -142,7 +215,7 @@ export class CollabClient {
     );
   }
 
-  registerPrincipal(input: { id: string; roles: string[]; token: string; displayName?: string; capabilities?: string[]; did?: string }, operationId: string) {
+  registerPrincipal(input: { id: string; roles: string[]; token: string; displayName?: string; capabilities?: string[]; did?: string; kind?: string }, operationId: string) {
     return this.request<PrincipalView>('principals', { body: input, operationId });
   }
 
@@ -386,6 +459,95 @@ export class CollabClient {
     return this.request<Evidence>(
       `tasks/${encodeURIComponent(taskId)}/evidence/${encodeURIComponent(knowledgeId)}/${version}`,
     );
+  }
+
+  // ------------------------------------------------------------ 协作
+  comments(taskId: string) {
+    return this.request<{ id: string; authorId: string; authorName: string; authorKind: string; body: string; mentions: string[]; createdAt: string }[]>(
+      `tasks/${encodeURIComponent(taskId)}/comments`,
+    );
+  }
+
+  comment(taskId: string, body: string, operationId: string) {
+    return this.request<{ id: string; body: string }>(`tasks/${encodeURIComponent(taskId)}/comments`, {
+      body: { body },
+      operationId,
+    });
+  }
+
+  offers(taskId: string) {
+    return this.request<unknown[]>(`tasks/${encodeURIComponent(taskId)}/offers`);
+  }
+
+  openOffers() {
+    return this.request<unknown[]>('offers');
+  }
+
+  publishOffer(taskId: string, input: { kind: string; description?: string; capability?: string; dueAt?: string }, operationId: string) {
+    return this.request<{ id: string; status: string }>(`tasks/${encodeURIComponent(taskId)}/offers`, {
+      body: input,
+      operationId,
+    });
+  }
+
+  claimOffer(offerId: string, operationId: string) {
+    return this.request<{ offerId: string; subtaskId: string }>(`offers/${encodeURIComponent(offerId)}/claim`, {
+      body: {},
+      operationId,
+    });
+  }
+
+  withdrawOffer(offerId: string, operationId: string) {
+    return this.request<{ offerId: string; status: string }>(`offers/${encodeURIComponent(offerId)}/withdraw`, {
+      body: {},
+      operationId,
+    });
+  }
+
+  adopt(taskId: string, operationId: string) {
+    return this.request<{ id: string; ownerId: string; version: number }>(`tasks/${encodeURIComponent(taskId)}/adopt`, {
+      body: {},
+      operationId,
+    });
+  }
+
+  heartbeat(input: { state?: 'online' | 'busy' | 'offline'; note?: string; client?: string } = {}) {
+    return this.request<{ principalId: string; state: string; lastSeenAt: string }>('agent/heartbeat', {
+      body: input,
+      operationId: `heartbeat:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
+    });
+  }
+
+  presence() {
+    return this.request<{ principalId: string; displayName: string; state: string; silentSeconds: number | null }[]>(
+      'agent/presence',
+    );
+  }
+
+  // ------------------------------------------------------------ 监管
+  oversight() {
+    return this.request<Record<string, unknown>>('oversight');
+  }
+
+  scanAlerts() {
+    return this.request<{ opened: number; updated: number; resolved: number; total: number }>('oversight/scan', {
+      body: {},
+      operationId: `scan:${Date.now()}`,
+    });
+  }
+
+  acknowledgeAlert(alertId: string, operationId: string) {
+    return this.request<Record<string, unknown>>(`oversight/alerts/${encodeURIComponent(alertId)}/ack`, {
+      body: {},
+      operationId,
+    });
+  }
+
+  resolveAlert(alertId: string, operationId: string) {
+    return this.request<Record<string, unknown>>(`oversight/alerts/${encodeURIComponent(alertId)}/resolve`, {
+      body: {},
+      operationId,
+    });
   }
 
   // ------------------------------------------------------------ 运维

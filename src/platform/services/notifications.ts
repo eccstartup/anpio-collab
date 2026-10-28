@@ -9,19 +9,18 @@
  * 保持"投递状态与业务状态分离"的语义即可。
  */
 
-import { forbidden, notFound } from '../../protocol/errors.ts';
+import { notFound } from '../../protocol/errors.ts';
 import type { Notification, Principal } from '../../protocol/types.ts';
 import type { Context } from '../context.ts';
 import type { Queryable } from '../db/driver.ts';
 import { toNotification } from '../db/mappers.ts';
-import { hasAnyRole } from './access.ts';
 
 export type DeliveryInput = {
   workspace: string;
   recipientId: string;
   taskId: string;
   subtaskId: string;
-  type: 'invited' | 'returned' | 'cancelled';
+  type: 'invited' | 'returned' | 'cancelled' | 'claimed';
 };
 
 export class NotificationService {
@@ -49,7 +48,6 @@ export class NotificationService {
   }
 
   async list(principal: Principal): Promise<Notification[]> {
-    if (!hasAnyRole(principal, 'agent')) throw forbidden('只有智能体主体有通知');
     const rows = await this.ctx.db.read.all(
       `SELECT * FROM notifications
        WHERE workspace = :workspace AND recipient_id = :recipient AND acknowledged_at IS NULL
@@ -61,12 +59,9 @@ export class NotificationService {
   }
 
   async acknowledge(principal: Principal, notificationId: string): Promise<{ id: string; acknowledged: true }> {
-    if (!hasAnyRole(principal, 'agent')) throw forbidden('只有智能体主体有通知');
     const row = await this.ctx.db.read.one(
       `SELECT n.* FROM notifications n
-       JOIN subtasks s ON s.id = n.subtask_id
-       WHERE n.id = :id AND n.workspace = :workspace AND n.recipient_id = :recipient
-         AND s.agent_id = :recipient`,
+       WHERE n.id = :id AND n.workspace = :workspace AND n.recipient_id = :recipient`,
       { id: notificationId, workspace: principal.workspace, recipient: principal.id },
     );
     if (!row) throw notFound('通知不存在');

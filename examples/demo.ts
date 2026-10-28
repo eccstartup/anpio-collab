@@ -2,14 +2,15 @@
  * 企业域内完整演示（单机）。
  *
  * 演示一条纵向闭环：
- *   人创建任务 → 委派协调者 → 协调者分派 → 两个业务智能体以独立进程执行
+ *   智能体用 DID 登录 → 人创建任务 → 委派协调者 → 协调者分派
+ *   → 两个业务智能体以独立进程执行（一个走 ANP 密钥，一个走静态令牌）
  *   → 协调者汇总 → 人验收 → 沉淀候选经验 → 审核发布 → 第二个任务引用经验。
  *
  * 运行：npm run demo
- * 演示使用临时数据库，结束时删除；验收动作由脚本模拟，真实场景由人在界面上完成。
+ * 演示使用临时数据库与临时密钥，结束时删除；验收动作由脚本模拟，真实场景由人在界面上完成。
  */
 
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -19,6 +20,8 @@ import { createApp } from '../src/platform/app.ts';
 import { openDatabase } from '../src/platform/db/index.ts';
 import { createServer } from '../src/platform/http/server.ts';
 import { CollabClient } from '../src/sdk/client.ts';
+import { anpLogin } from '../src/anp/client.ts';
+import { exportPrivateJwk, generateIdentity } from '../src/anp/identity.ts';
 
 const ROOT = process.cwd();
 const directory = mkdtempSync(join(tmpdir(), 'collab-demo-'));
@@ -42,7 +45,8 @@ function spawnAgent(script: string, env: Record<string, string>): Promise<void> 
 
 async function main(): Promise<void> {
   const db = openDatabase(join(directory, 'demo.sqlite3'));
-  const app = await createApp(db);
+  // 身份服务与主体必须落在同一个 workspace，否则绑定码、DID 都跨不到一起。
+  const app = await createApp(db, { identity: { workspace: 'demo' } });
   await app.principals.bootstrap('demo', {
     id: 'owner',
     roles: ['admin', 'owner', 'reviewer'],
@@ -72,6 +76,28 @@ async function main(): Promise<void> {
   }
 
   try {
+    step('0. 智能体用 DID 登录（ANP-02）');
+    // 私钥留在"智能体自己的机器"上（这里就是临时目录），平台只验签、不保管。
+    // 文件名为 inventory.json，因此默认 handle 是 inventory；DID 由公钥 + handle 决定。
+    const inventoryIdentity = generateIdentity({ handle: 'inventory' });
+    const inventoryKey = join(directory, 'inventory.json');
+    writeFileSync(inventoryKey, `${JSON.stringify(exportPrivateJwk(inventoryIdentity))}\n`, { mode: 0o600 });
+    // 用绑定码把这条 DID 挂到已登记的 inventory 主体上：登录后拿到的是同一个账号，
+    // 已经分派给它的子任务不用重发一遍。
+    const invite = await new CollabClient(url, tokens.inventory!).inviteIdentity(
+      { role: 'agent', note: 'demo：把 DID 绑定到 inventory 主体' },
+      'invite-inventory',
+    );
+    const anpSession = await anpLogin({
+      baseUrl: url,
+      identity: inventoryIdentity,
+      client: 'agent',
+      bindCode: invite.code,
+    });
+    console.log(`DID：${inventoryIdentity.did}`);
+    console.log(`登录：principal=${anpSession.principal.id}，enrollment=${anpSession.enrollment}，令牌有效期至 ${anpSession.sessionExpiresAt}`);
+    console.log('另一个智能体仍用静态令牌接入——两种方式并存。');
+
     step('1. 人创建任务');
     const task = await owner.createTask(
       {
@@ -98,9 +124,11 @@ async function main(): Promise<void> {
 
     step('3. 业务智能体在各自进程执行');
     await Promise.all([
+      // 这个进程只带密钥文件：会话由 src/agents/session.ts 用 ANP 登录换到并缓存。
       spawnAgent('src/agents/worker.ts', {
         COLLAB_URL: url,
-        COLLAB_TOKEN: tokens.inventory,
+        COLLAB_ANP_KEY: inventoryKey,
+        COLLAB_STATE_DIR: directory,
         COLLAB_KIND: 'inventory',
         COLLAB_DATA: join(ROOT, 'examples/data/inventory.json'),
         COLLAB_WORKER_DB: join(directory, 'inventory.sqlite'),

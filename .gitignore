@@ -11,3 +11,6 @@ node_modules/
 .DS_Store
 __pycache__/
 *.py[cod]
+
+# 智能体的 ANP 会话缓存（含令牌，不要提交）
+.anpio-collab/

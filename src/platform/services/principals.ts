@@ -9,8 +9,8 @@
 import { createHash } from 'node:crypto';
 import { conflict, forbidden, notFound, unauthenticated } from '../../protocol/errors.ts';
 import { asEnum, asId, asObject, asString, asStringArray } from '../../protocol/parse.ts';
-import { ROLES } from '../../protocol/types.ts';
-import type { Principal, Role } from '../../protocol/types.ts';
+import { PRINCIPAL_KINDS, ROLES } from '../../protocol/types.ts';
+import type { Principal, PrincipalKind, Role } from '../../protocol/types.ts';
 import type { Context } from '../context.ts';
 import { toPrincipal } from '../db/mappers.ts';
 import { hasAnyRole } from './access.ts';
@@ -25,6 +25,8 @@ export type CreatePrincipalInput = {
   roles: Role[];
   token: string;
   did?: string | null;
+  kind?: PrincipalKind;
+  handle?: string | null;
   displayName?: string;
   description?: string;
   capabilities?: string[];
@@ -52,9 +54,41 @@ export class PrincipalService {
   /** 令牌 → 主体。每次请求重新读取，停用或改角色立即生效。 */
   async authenticate(token: string): Promise<Principal> {
     if (!token) throw unauthenticated('缺少访问令牌');
-    const row = await this.ctx.db.read.one('SELECT * FROM principals WHERE token_hash = :hash', {
-      hash: hashToken(token),
+    const hash = hashToken(token);
+
+    // 先查 ANP 会话：它带过期与撤销，且一个主体可以有多个并发会话。
+    const session = await this.ctx.db.read.one<{
+      principal_id: string;
+      workspace: string;
+      expires_at: string;
+      last_seen_at: string;
+      revoked_at: string | null;
+    }>('SELECT principal_id, workspace, expires_at, last_seen_at, revoked_at FROM anp_sessions WHERE token_hash = :hash', {
+      hash,
     });
+    if (session) {
+      if (session.revoked_at !== null) throw unauthenticated('会话已退出，请重新登录');
+      if (String(session.expires_at) <= this.ctx.now()) throw unauthenticated('会话已过期，请重新登录');
+      const row = await this.ctx.db.read.one(
+        'SELECT * FROM principals WHERE id = :id AND workspace = :workspace',
+        { id: session.principal_id, workspace: session.workspace },
+      );
+      if (!row) throw unauthenticated('会话对应的主体不存在');
+      const principal = toPrincipal(row);
+      if (!principal.active) throw unauthenticated('主体已停用');
+      // 心跳式更新，最多每分钟一次，避免每个读请求都写库。
+      if (Date.parse(this.ctx.now()) - Date.parse(String(session.last_seen_at)) > 60_000) {
+        this.ctx.db
+          .run('UPDATE anp_sessions SET last_seen_at = :at WHERE token_hash = :hash', {
+            at: this.ctx.now(),
+            hash,
+          })
+          .catch(() => undefined);
+      }
+      return principal;
+    }
+
+    const row = await this.ctx.db.read.one('SELECT * FROM principals WHERE token_hash = :hash', { hash });
     if (!row) throw unauthenticated('访问令牌无效');
     const principal = toPrincipal(row);
     if (!principal.active) throw unauthenticated('主体已停用');
@@ -85,6 +119,16 @@ export class PrincipalService {
       roles,
       token: asString(input.token, 'token', { max: 512 }),
       did,
+      kind:
+        input.kind === undefined
+          ? roles.includes('agent')
+            ? 'agent'
+            : 'human'
+          : asEnum(input.kind, 'kind', PRINCIPAL_KINDS),
+      handle:
+        input.handle === undefined || input.handle === null
+          ? null
+          : asString(input.handle, 'handle', { max: 200, min: 0 }),
       displayName: input.displayName === undefined ? asId(input.id, 'id') : asString(input.displayName, 'displayName', { max: 120 }),
       description:
         input.description === undefined
@@ -119,6 +163,8 @@ export class PrincipalService {
       workspace,
       roles: input.roles,
       did: input.did ?? null,
+      kind: input.kind ?? 'human',
+      handle: input.handle ?? null,
       displayName: input.displayName ?? input.id,
       description: input.description ?? '',
       capabilities: input.capabilities ?? [],
@@ -126,14 +172,16 @@ export class PrincipalService {
     };
     await this.ctx.db.transaction(async tx => {
       await tx.run(
-        `INSERT INTO principals(id, workspace, roles, token_hash, did, display_name, description, capabilities, active, created_at)
-         VALUES(:id, :workspace, :roles, :hash, :did, :displayName, :description, :capabilities, 1, :at)`,
+        `INSERT INTO principals(id, workspace, roles, token_hash, did, kind, handle, display_name, description, capabilities, active, created_at)
+         VALUES(:id, :workspace, :roles, :hash, :did, :kind, :handle, :displayName, :description, :capabilities, 1, :at)`,
         {
           id: principal.id,
           workspace: principal.workspace,
           roles: JSON.stringify(principal.roles),
           hash: hashToken(input.token),
           did: principal.did,
+          kind: principal.kind,
+          handle: principal.handle,
           displayName: principal.displayName,
           description: principal.description,
           capabilities: JSON.stringify(principal.capabilities),
@@ -207,17 +255,90 @@ export class PrincipalService {
         id: target.id,
         workspace: actor.workspace,
       });
+      // 停用即刻失效：不等会话自然过期。
+      await tx.run(
+        `UPDATE anp_sessions SET revoked_at = :at
+         WHERE workspace = :workspace AND principal_id = :principal AND revoked_at IS NULL`,
+        { at: this.ctx.now(), workspace: actor.workspace, principal: target.id },
+      );
     });
     return { id: target.id, active: false };
   }
 
-  /** 参与者目录：能力声明只用于发现，不构成授权，也不代表质量。 */
-  async directory(actor: Principal, capability?: string): Promise<Principal[]> {
-    if (capability !== undefined && capability.length > 100) throw conflict('capability 过长');
+  /** 批准一个待登记主体（ANP 首次登录但平台处于 pending 模式）。 */
+  async activate(actor: Principal, id: string): Promise<{ id: string; active: true }> {
+    if (!hasAnyRole(actor, 'admin')) throw forbidden('只有管理员可以批准主体');
+    const target = await this.get(actor, id);
+    await this.ctx.db.transaction(async tx => {
+      await tx.run('UPDATE principals SET active = 1 WHERE id = :id AND workspace = :workspace', {
+        id: target.id,
+        workspace: actor.workspace,
+      });
+    });
+    return { id: target.id, active: true };
+  }
+
+  /** 待批准主体：ANP 自动登记但未启用的那些。 */
+  async pending(actor: Principal): Promise<Principal[]> {
+    if (!hasAnyRole(actor, 'admin', 'supervisor')) throw forbidden('只有管理员或监管者可以查看待批准主体');
     const rows = await this.ctx.db.read.all(
-      'SELECT * FROM principals WHERE workspace = :workspace ORDER BY id',
+      `SELECT * FROM principals WHERE workspace = :workspace AND active = 0 ORDER BY created_at DESC LIMIT 100`,
       { workspace: actor.workspace },
     );
+    return rows.map(toPrincipal);
+  }
+
+  /** 调整角色：管理员专用；不能改自己的角色，避免把自己锁在外面。 */
+  async setRoles(actor: Principal, id: string, body: unknown): Promise<Principal> {
+    if (!hasAnyRole(actor, 'admin')) throw forbidden('只有管理员可以调整角色');
+    if (id === actor.id) throw conflict('不能修改自己的角色');
+    const roles = asStringArray(asObject(body).roles, 'roles', { max: ROLES.length }).map(role =>
+      asEnum(role, 'roles[]', ROLES),
+    );
+    if (roles.length === 0) throw conflict('roles 不能为空');
+    const target = await this.get(actor, id);
+    await this.ctx.db.transaction(async tx => {
+      await tx.run('UPDATE principals SET roles = :roles WHERE id = :id AND workspace = :workspace', {
+        roles: JSON.stringify(roles),
+        id: target.id,
+        workspace: actor.workspace,
+      });
+    });
+    return { ...target, roles };
+  }
+
+  /**
+   * 参与者目录：能力声明只用于发现，不构成授权，也不代表质量。
+   *
+   * 只有智能体角色的主体看不到全量目录：它只应认识自己、以及和自己
+   * 在同一个任务里出现过的人。这不是保密需求，而是"只看自己的事"的边界——
+   * 一个业务智能体没有任何理由需要知道别的部门有哪些智能体。
+   */
+  async directory(actor: Principal, capability?: string): Promise<Principal[]> {
+    if (capability !== undefined && capability.length > 100) throw conflict('capability 过长');
+    const limited = actor.kind === 'agent' && !hasAnyRole(actor, 'admin', 'supervisor', 'owner', 'reviewer');
+    const rows = limited
+      ? await this.ctx.db.read.all(
+          `SELECT * FROM principals p
+           WHERE p.workspace = :workspace AND (
+             p.id = :actor
+             OR p.id IN (SELECT t.owner_id FROM tasks t WHERE t.id IN (SELECT task_id FROM subtasks WHERE agent_id = :actor))
+             OR p.id IN (
+               SELECT s.agent_id FROM subtasks s
+               WHERE s.task_id IN (SELECT task_id FROM subtasks WHERE agent_id = :actor)
+             )
+             OR p.id IN (
+               SELECT tc.principal_id FROM task_coordinators tc
+               WHERE tc.task_id IN (SELECT task_id FROM subtasks WHERE agent_id = :actor)
+             )
+           )
+           ORDER BY p.id`,
+          { workspace: actor.workspace, actor: actor.id },
+        )
+      : await this.ctx.db.read.all(
+          'SELECT * FROM principals WHERE workspace = :workspace ORDER BY id',
+          { workspace: actor.workspace },
+        );
     const principals = rows.map(toPrincipal);
     return capability === undefined
       ? principals

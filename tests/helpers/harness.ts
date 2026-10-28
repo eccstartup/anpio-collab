@@ -41,15 +41,20 @@ async function resetPostgres(db: Database): Promise<void> {
   await db.exec('DROP SCHEMA public CASCADE; CREATE SCHEMA public;');
 }
 
-export async function startHarness(options: { workspace?: string } = {}): Promise<Harness> {
+export async function startHarness(
+  options: { workspace?: string; enroll?: 'open' | 'pending' | 'off' } = {},
+): Promise<Harness> {
   const directory = mkdtempSync(join(tmpdir(), 'collab-test-'));
   const postgres = process.env.COLLAB_TEST_DATABASE;
   const databasePath = postgres ?? join(directory, 'collab.sqlite3');
   const db = openDatabase(databasePath);
   if (postgres) await resetPostgres(db);
 
-  const app = await createApp(db);
-  await app.principals.bootstrap(options.workspace ?? 'acme', {
+  const workspace = options.workspace ?? 'acme';
+  const app = await createApp(db, {
+    identity: { workspace, enroll: options.enroll ?? 'open' },
+  });
+  await app.principals.bootstrap(workspace, {
     id: ADMIN_ID,
     roles: ['admin', 'owner', 'reviewer'],
     token: ADMIN_TOKEN,

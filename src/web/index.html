@@ -11,25 +11,71 @@
     <section id="login" class="login">
       <div class="login-card">
         <p class="eyebrow">Anpio Collab</p>
-        <h1>企业智能体协作平台</h1>
+        <h1>用你的身份进入</h1>
         <p class="lede">
-          任务、分工、验收与经验都在这里留下记录。用管理员分配给你的访问令牌进入当前工作空间。
+          人和智能体用各自的 DID 登录。同一个账号下的人与智能体共享任务、评论与验收记录，
+          谁做的、什么时候做的都留在事件里。
         </p>
-        <form id="login-form" class="stack">
+
+        <ol id="wallet-steps" class="steps">
+          <li data-step="identity" data-state="idle">
+            <span>1</span>
+            <div>
+              <strong>读取钱包身份</strong>
+              <em>从浏览器插件取回 DID 与公钥，私钥不出插件</em>
+            </div>
+          </li>
+          <li data-step="challenge" data-state="idle">
+            <span>2</span>
+            <div>
+              <strong>领取一次性挑战</strong>
+              <em>服务端下发 nonce，签名只对它有效且只能用一次</em>
+            </div>
+          </li>
+          <li data-step="sign" data-state="idle">
+            <span>3</span>
+            <div>
+              <strong>在钱包里签名</strong>
+              <em>页面只拿到 RFC 9421 签名头，拿不到私钥</em>
+            </div>
+          </li>
+          <li data-step="session" data-state="idle">
+            <span>4</span>
+            <div>
+              <strong>换取会话</strong>
+              <em>验签通过后返回访问令牌，可随时在设置里撤销</em>
+            </div>
+          </li>
+        </ol>
+
+        <form id="wallet-form" class="stack">
           <label class="field">
-            <span>访问令牌</span>
-            <input id="token" type="password" autocomplete="off" required placeholder="至少 24 个字符" />
+            <span>绑定码（可选）</span>
+            <input
+              id="bind-code"
+              type="text"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="填了就把这条 DID 绑到该账号，不填则按 DID 自动登记"
+            />
           </label>
-          <label class="checkbox">
-            <input id="remember" type="checkbox" checked />
-            <span>在这台设备上记住令牌（存于本标签页会话）</span>
-          </label>
-          <button class="primary" type="submit">连接工作空间</button>
+          <button id="wallet-submit" class="primary" type="submit">用 ANP 钱包登录</button>
         </form>
+        <p id="wallet-note" class="hint tight"></p>
+
+        <details id="token-fallback" class="fallback">
+          <summary>没有钱包？用访问令牌登录</summary>
+          <form id="login-form" class="stack">
+            <label class="field">
+              <span>访问令牌</span>
+              <input id="token" type="password" autocomplete="off" placeholder="至少 24 个字符" />
+            </label>
+            <button type="submit">连接工作空间</button>
+          </form>
+          <p class="hint tight">令牌是管理员登记主体时一次性给出的，等同于该主体的身份。</p>
+        </details>
+
         <p id="login-error" class="error" role="alert"></p>
-        <p class="hint">
-          本地原型：服务只监听 127.0.0.1，令牌等同于本机共享密钥，不代表企业身份或 DID。
-        </p>
       </div>
     </section>
 

@@ -6,16 +6,26 @@
  * TypeScript 类型不会在运行时提供任何保护。
  */
 
-export const ROLES = ['admin', 'owner', 'agent', 'reviewer'] as const;
+export const ROLES = ['admin', 'supervisor', 'owner', 'agent', 'reviewer'] as const;
 export type Role = (typeof ROLES)[number];
+
+/**
+ * 主体类型只影响展示与默认角色，**不参与授权**。
+ * 授权永远看 roles 与资源归属，避免"声明自己是人就多拿权限"。
+ */
+export const PRINCIPAL_KINDS = ['human', 'agent', 'service'] as const;
+export type PrincipalKind = (typeof PRINCIPAL_KINDS)[number];
 
 /** 主体：人、服务账号或智能体在本工作空间中的身份。 */
 export type Principal = {
   id: string;
   workspace: string;
   roles: Role[];
-  /** did:wba 标识，预留给 anpio-key / anpio-cli 身份，当前可为空。 */
+  /** did:wba 标识；一个主体可以绑定多个 DID（人与智能体共用账号）。 */
   did: string | null;
+  kind: PrincipalKind;
+  /** 注册服务器上的短名，例如 alice.awiki.ai。 */
+  handle: string | null;
   displayName: string;
   description: string;
   capabilities: string[];
@@ -67,9 +77,17 @@ export type Task = {
   input: TaskInput;
   result: unknown;
   version: number;
+  /** 谁发起的：人，还是某个智能体的自主提案。 */
+  origin: TaskOrigin;
+  originPrincipalId: string | null;
+  /** 智能体提案被人接管的时间；为空表示仍在提案池里。 */
+  adoptedAt: string | null;
   createdAt: string;
   updatedAt: string;
 };
+
+export const TASK_ORIGINS = ['human', 'agent'] as const;
+export type TaskOrigin = (typeof TASK_ORIGINS)[number];
 
 export type Subtask = {
   id: string;
@@ -131,6 +149,7 @@ export type Notification = {
 export type EventType =
   | 'task_created'
   | 'task_cancelled'
+  | 'task_adopted'
   | 'coordinator_delegated'
   | 'coordinator_removed'
   | 'subtask_invited'
@@ -151,4 +170,87 @@ export type EventType =
   | 'knowledge_revoked'
   | 'knowledge_revised'
   | 'knowledge_access_changed'
-  | 'knowledge_referenced';
+  | 'knowledge_referenced'
+  | 'comment_added'
+  | 'offer_published'
+  | 'offer_claimed'
+  | 'offer_withdrawn';
+
+// ---------------------------------------------------------------- 协作
+
+/** 任务评论：人和智能体共用一条时间线，提及者收到通知。 */
+export type TaskComment = {
+  id: string;
+  taskId: string;
+  authorId: string;
+  authorName: string;
+  authorKind: PrincipalKind;
+  body: string;
+  mentions: string[];
+  createdAt: string;
+  /** 仅在"我的提醒"里出现，避免为它多造一个类型。 */
+  taskTitle?: string;
+  /** 提醒行自身的 ID；确认已读时用它，而不是评论 ID。 */
+  mentionId?: string;
+};
+
+export const OFFER_STATUSES = ['open', 'claimed', 'withdrawn'] as const;
+export type OfferStatus = (typeof OFFER_STATUSES)[number];
+
+/** 开放子任务：负责人把工作挂出来，能力匹配的智能体自行认领。 */
+export type TaskOffer = {
+  id: string;
+  taskId: string;
+  kind: string;
+  description: string;
+  capability: string | null;
+  dueAt: string;
+  status: OfferStatus;
+  createdBy: string;
+  claimedBy: string | null;
+  claimedAt: string | null;
+  subtaskId: string | null;
+  createdAt: string;
+  /** 只在开放池列表里出现：让智能体知道这是哪件事，但不给目标与输入。 */
+  taskTitle?: string;
+};
+
+export const PRESENCE_STATES = ['online', 'busy', 'offline'] as const;
+export type PresenceState = (typeof PRESENCE_STATES)[number];
+
+export type Presence = {
+  principalId: string;
+  state: PresenceState;
+  note: string;
+  client: string;
+  lastSeenAt: string;
+  /** 距上次心跳的秒数；从未上报时为空。 */
+  silentSeconds: number | null;
+  /** 监管看板用；单条心跳响应不带。 */
+  displayName?: string;
+};
+
+// ---------------------------------------------------------------- 监管
+
+export const ALERT_SEVERITIES = ['critical', 'high', 'normal', 'low'] as const;
+export type AlertSeverity = (typeof ALERT_SEVERITIES)[number];
+
+export const ALERT_STATUSES = ['open', 'acknowledged', 'resolved'] as const;
+export type AlertStatus = (typeof ALERT_STATUSES)[number];
+
+export type Alert = {
+  id: string;
+  rule: string;
+  severity: AlertSeverity;
+  status: AlertStatus;
+  title: string;
+  detail: string;
+  subjectType: string;
+  subjectId: string;
+  taskId: string | null;
+  occurrences: number;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  acknowledgedBy: string | null;
+  resolvedAt: string | null;
+};

@@ -39,6 +39,8 @@ export function toPrincipal(row: Row): Principal {
     workspace: text(row.workspace),
     roles: parseJson<Role[]>(row.roles, []),
     did: row.did === null || row.did === undefined ? null : text(row.did),
+    kind: (row.kind === 'agent' || row.kind === 'service' ? row.kind : 'human') as Principal['kind'],
+    handle: row.handle === null || row.handle === undefined ? null : text(row.handle),
     displayName: text(row.display_name),
     description: text(row.description),
     capabilities: parseJson<string[]>(row.capabilities, []),
@@ -61,6 +63,12 @@ export function toTask(row: Row): Task {
     input: parseJson<Record<string, unknown>>(row.input, {}),
     result: parseJson<unknown>(row.result, null),
     version: number(row.version),
+    origin: row.origin === 'agent' ? 'agent' : 'human',
+    originPrincipalId:
+      row.origin_principal_id === null || row.origin_principal_id === undefined
+        ? null
+        : text(row.origin_principal_id),
+    adoptedAt: row.adopted_at === null || row.adopted_at === undefined ? null : text(row.adopted_at),
     createdAt: text(row.created_at),
     updatedAt: text(row.updated_at),
   };

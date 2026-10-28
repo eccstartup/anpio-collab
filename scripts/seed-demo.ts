@@ -38,29 +38,34 @@ const AGENTS = [
   { id: 'supplier', displayName: '供应商信息智能体', capabilities: ['supplier:read'] },
 ];
 
+/** 监管者不是管理员：能看异常与在线表，但不碰业务写入。 */
+const SUPERVISOR = { id: 'supervisor', displayName: '值班监管', capabilities: [] as string[] };
+
 const ids = (prefix: string) => {
   let n = 0;
   return (action: string) => `${prefix}:${action}:${++n}`;
 };
 
-async function ensureAgents(): Promise<void> {
-  for (const agent of AGENTS) {
-    try {
-      await admin.registerPrincipal(
-        { ...agent, roles: ['agent'], token: tokenFor(agent.id) },
-        `seed:register:${agent.id}`,
-      );
-      console.log(`登记主体 ${agent.id}`);
-    } catch (error) {
-      if (error instanceof CollabError && error.status === 409) {
-        console.log(`主体 ${agent.id} 已存在，跳过`);
-        continue;
-      }
-      throw error;
+async function registerOnce(
+  input: { id: string; roles: string[]; kind: string; displayName: string; capabilities: string[] },
+): Promise<void> {
+  try {
+    await admin.registerPrincipal({ ...input, token: tokenFor(input.id) }, `seed:register:${input.id}`);
+    console.log(`登记主体 ${input.id}`);
+  } catch (error) {
+    if (error instanceof CollabError && error.status === 409) {
+      console.log(`主体 ${input.id} 已存在，跳过`);
+      return;
     }
+    throw error;
   }
+}
+
+async function ensureAgents(): Promise<void> {
+  for (const agent of AGENTS) await registerOnce({ ...agent, roles: ['agent'], kind: 'agent' });
+  await registerOnce({ ...SUPERVISOR, roles: ['supervisor'], kind: 'human' });
   // 令牌是派生的：如果主体是别人用别的令牌建的，这里会立刻暴露出来。
-  for (const agent of AGENTS) {
+  for (const agent of [...AGENTS, SUPERVISOR]) {
     await new CollabClient(URL_BASE, tokenFor(agent.id)).me();
   }
 }
@@ -214,6 +219,107 @@ async function pendingTask(existing: Set<string>): Promise<void> {
   console.log(`任务「${title}」已创建`);
 }
 
+/**
+ * 让评论区、开放池、在线表与"智能体提案"都不是空的。
+ *
+ * 这些正是第二轮新增的协作面：没有它们，监管看板上什么都看不见，
+ * 也就没法判断"报警到底有没有用"。
+ */
+async function collaboration(): Promise<void> {
+  const tasks = await admin.tasks();
+  const running = tasks.find(task => task.title === 'M-100 二次询单');
+  const inventory = new CollabClient(URL_BASE, tokenFor('inventory'));
+  const supplier = new CollabClient(URL_BASE, tokenFor('supplier'));
+
+  if (running) {
+    const comments = await admin.comments(running.id).catch(() => []);
+    if (comments.length === 0) {
+      await admin.comment(
+        running.id,
+        '@inventory 这次数量从 100 变成 160，先确认快照时间，不要直接复用上次结论。',
+        'seed:comment:1',
+      );
+      await inventory.comment(running.id, '收到，上次快照是昨天 18:00 的，我先重新拉一次。', 'seed:comment:2');
+      console.log(`任务「${running.title}」已留下两条评论`);
+    }
+
+    const offers = await admin.offers(running.id).catch(() => []);
+    if (offers.length === 0) {
+      await admin.publishOffer(
+        running.id,
+        { kind: 'supplier', capability: 'supplier:read', description: '核对 M-100 本周可供量与交期' },
+        'seed:offer:1',
+      );
+      console.log('已挂出一条开放子任务（等能力匹配的智能体认领）');
+    }
+  }
+
+  await supplier.heartbeat({ state: 'busy', note: '核对交期', client: 'seed' }).catch(() => {});
+  // 库存智能体故意不心跳：它手上还挂着一个在办子任务，因此会触发 `agent_offline`。
+  // 这个组合是刻意的——评论里它在说话、心跳里它不存在，正好演示"心跳链路坏了"
+  // 这种最难发现的问题。协调者没有在办子任务，不心跳只会让在线表显示"未知"，不会报警。
+  console.log('只上报了一条心跳（库存智能体与协调者都没有心跳，用于演示失联告警）');
+
+  if (!tasks.some(task => task.title === 'M-200 紧急插单影响评估')) {
+    const proposal = await inventory.createTask(
+      {
+        title: 'M-200 紧急插单影响评估',
+        type: 'impact-assessment',
+        goal: '客户要求 M-200 提前两周交付，评估是否可行',
+        acceptance: '给出可行/不可行结论与依据，并标注数据观测时间',
+        priority: 'high',
+        dueAt: new Date(Date.now() + 2 * 86_400_000).toISOString(),
+        input: { material: 'M-200', quantity: 60 },
+      },
+      'seed:proposal:1',
+    );
+    await inventory.comment(
+      proposal.id,
+      '这条任务由智能体自己发起：观察到插单邮件后先立提案，等人接管再进入正式流程。',
+      'seed:proposal:comment',
+    );
+    console.log('已创建一条智能体提案（等待人接管）');
+  }
+}
+
+/**
+ * 一个真的逾期了的子任务。
+ *
+ * 监管看板最怕"演示数据一切正常"，那样看不出报警有没有用。
+ * 这里把截止时间放在 6 小时前，扫描后就会产生一条 high 级别的逾期告警。
+ */
+async function overdueTask(existing: Set<string>): Promise<void> {
+  const title = 'M-300 交期确认（已逾期）';
+  if (existing.has(title)) {
+    console.log(`任务「${title}」已存在，跳过`);
+    return;
+  }
+  const op = ids('seed:overdue');
+  const created = await admin.createTask(
+    {
+      title,
+      type: 'lead-time',
+      goal: '确认 M-300 的实际交期',
+      acceptance: '给出交期与来源，来源需可追溯',
+      priority: 'high',
+      dueAt: new Date(Date.now() + 86_400_000).toISOString(),
+      input: { material: 'M-300', quantity: 40 },
+    },
+    op('create'),
+  );
+  await admin.assign(
+    created.id,
+    { agent: 'supplier', kind: 'supplier', dueAt: new Date(Date.now() - 6 * 3_600_000).toISOString() },
+    op('assign'),
+  );
+
+  // 已接受但没有提交：既逾期、又算卡住，正是监管要找的状态。
+  const supplier = new CollabClient(URL_BASE, tokenFor('supplier'));
+  const item = (await supplier.inbox()).find(entry => entry.taskId === created.id);
+  if (item) await supplier.accept(item.id, op('accept'));
+  console.log(`任务「${title}」已建立逾期子任务`);
+}
+
 /** 留一条待审核的候选经验，让"经验库 → 待审核"不是空的。 */
 async function pendingCandidate(): Promise<void> {
   const candidates = await admin.candidates();
@@ -247,9 +353,18 @@ async function main(): Promise<void> {
   await completedTask(existing);
   await runningTask(existing);
   await pendingTask(existing);
+  await overdueTask(existing);
+  await collaboration();
   await pendingCandidate();
 
-  console.log('\n完成。用管理员令牌登录界面即可看到三条任务与一条已发布经验。');
+  // 扫描放在最后：告警是"按当前数据重新评估"的结果，提前扫会把还没上报心跳的
+  // 智能体判成失联，界面上就会同时出现"刚报过心跳"和"已失联"两条互相打脸的信息。
+  // 真实环境里这一步由调度器按间隔执行（见 docs/local-operations.md）。
+  const scan = await admin.scanAlerts();
+  console.log(`\n告警扫描：新开 ${scan.opened} 条，更新 ${scan.updated} 条，自动解决 ${scan.resolved} 条，现存 ${scan.total} 条`);
+
+  console.log('\n完成。用管理员令牌登录界面即可看到三条任务、一条已发布经验与新一轮协作数据。');
+  console.log('监管者令牌：COLLAB_TOKEN=' + tokenFor(SUPERVISOR.id) + '（或用 COLLAB_SEED_SECRET 重新派生）');
   console.log(`智能体令牌可用 COLLAB_SEED_SECRET=${SEED_SECRET} 与主体 ID 重新派生。`);
 }
 

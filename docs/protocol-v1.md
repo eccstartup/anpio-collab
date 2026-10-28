@@ -47,6 +47,88 @@
 | `payload_too_large` | 413 | 请求体超过上限 |
 | `internal` | 500 | 未预期错误；详细信息只写服务端日志 |
 
+ANP 登录另外有两个业务码，出现在 `/auth/anp/login` 的响应体里：
+
+| code | HTTP | 含义 |
+| --- | --- | --- |
+| `challenge_required` | 401 | 需要（或需要新的）nonce；响应带 `WWW-Authenticate: ANP nonce="..."` |
+| `enrollment_pending` | 403 | 身份通过验签，但主体还在等管理员批准；响应带 `principalId` |
+
+## ANP 登录
+
+平台只做验签方（relying party），不托管私钥、不代签。浏览器插件、`anpio-cli`、智能体进程用的是同一条流程。
+
+### 1. 取挑战
+
+```
+GET /auth/anp/challenge
+→ 200 { "nonce": "b64url…", "expiresAt": "2026-10-28T09:19:20.539Z", "audience": "http://host/auth/anp/challenge" }
+```
+
+`nonce` 一次性：验签通过后被消费；验签失败**不**消费（否则失败一次就要重新取挑战）。
+
+### 2. 签名并登录
+
+```
+POST /auth/anp/login
+Content-Type: application/json
+Signature-Input: sig1=("@method" "@target-uri" "@authority" "content-digest");created=…;expires=…;nonce="…";keyid="<did>#key-1"
+Signature: sig1=:<base64 ed25519>:
+Content-Digest: sha-256=:<base64>
+
+{
+  "nonce": "…",
+  "did": "did:wba:agents.local:user:alice:e1_<fingerprint>",
+  "didDocument": { …内联 DID 文档… },
+  "bindCode": "可选：把这条 DID 绑到已有账号",
+  "client": "browser | agent"
+}
+```
+
+- 签名基覆盖 `@method`、`@target-uri`、`@authority`、`content-digest`；`@target-uri` 必须与实际请求地址逐字一致（含 scheme 与端口）。
+- 服务器用请求体里的 `didDocument` 解析公钥（`publicKeyMultibase` 或 `publicKeyJwk`），并校验 `doc.id` 与声明一致、`authentication` 引用了该 `keyid`。
+- 时间窗口允许 300 秒对时误差；`expires` 之后一律拒绝。
+
+### 3. 令牌投递
+
+成功时**两条通道都给**，客户端取任意一条：
+
+```
+200 OK
+Authentication-Info: access_token="…", token_type="Bearer"
+
+{ "ok": true, "token": "…", "tokenType": "Bearer", "did": "…", "enrollment": "auto|bound|existing",
+  "sessionExpiresAt": "…", "principal": { "id": "…", "roles": ["agent"], "kind": "agent", … } }
+```
+
+### 4. 401 挑战语义（与 `anpio-cli` 互通）
+
+请求没带 `nonce`（或 `nonce` 已失效）时返回：
+
+```
+401 Unauthorized
+WWW-Authenticate: ANP nonce="<新 nonce>"
+{ "error": { "code": "challenge_required", … }, "nonce": "…" }
+```
+
+客户端读这个 `nonce` 重签一次即可登录。**只重签一次**：如果新的 `nonce` 与已用过的一样，就当成拒绝（避免无限重试）。这正是 `anpio-cli anp login` 的实现，因此 CLI 无需改动即可登录本平台。
+
+### 主体落位
+
+| 情况 | 结果 |
+| --- | --- |
+| 这个 DID 已登记 | 复用原主体，`enrollment: "existing"` |
+| 带 `bindCode` 且码有效 | 绑到该码指向的主体，`enrollment: "bound"`；码只能用一次，填错返回 `400` |
+| 都不满足且 `COLLAB_ANP_ENROLL=open` | 自动登记：`client: browser` → `kind: human` + `owner`；`client: agent` → `kind: agent` + `agent` |
+| `COLLAB_ANP_ENROLL=pending` | 主体落为 `active = 0`，登录返回 `403 enrollment_pending`，管理员批准后才能用 |
+| `COLLAB_ANP_ENROLL=off` | `403 forbidden` |
+
+### 会话
+
+- 会话令牌是 32 字节随机值，数据库只存 SHA-256；`COLLAB_SESSION_HOURS` 决定有效期（默认 168 小时）。
+- `POST /v1/me/logout` 只撤销当前这一个会话；`/v1/me/sessions` 列出全部，可逐个撤销。
+- 已停用的主体：令牌立即失效；`/v1/me/identities/:id/revoke` 解绑 DID 时同时撤销它的会话。
+
 ## 状态机
 
 ### 任务
@@ -89,13 +171,23 @@ accepted ──outcome-unknown──> outcome_unknown
 
 | 动作 | 允许的主体 |
 | --- | --- |
-| 读任务 | 管理员、负责人、委派协调者、受派智能体（后者只见自己的子任务） |
+| 读任务 | 管理员、监管者、负责人、委派协调者、受派智能体（后者只见自己的子任务） |
 | 创建任务 / 委派协调者 / 分派 / 汇总 / 阶段摘要 | `owner` 或 `admin`，或该任务的协调者 |
 | 验收 / 退回 / 取消 / 引用经验 / 沉淀候选 | 负责人或管理员 |
+| 接管智能体提案 | 负责人、监管者或管理员（且提案未接管、任务未终结） |
+| 挂开放池 / 撤回开放子任务 | 负责人、该任务协调者或管理员 |
+| 认领开放子任务 | `agent` 且能力声明包含该子任务要求的能力 |
+| 评论 / 读评论 | 对该任务可见的主体 |
+| 提案与评论的 `@提及` 已读 | 被提及的主体本人 |
 | 子任务 accept / reject / submit / progress / outcome-unknown | 被分派的那一个智能体（且需要 `agent` 角色） |
 | 子任务 timeout / return | 负责人或管理员 |
-| 主体登记、停用、轮换令牌、审计、超时检查 | 管理员 |
+| 主体登记、停用、轮换令牌、改角色、审计、超时检查 | 管理员 |
+| 批准待登记主体 | 管理员或监管者 |
+| 监管总览 / 扫描 / 确认与解决告警 / 在线表 | `supervisor` 或 `admin` |
+| 心跳上报 | `kind` 为 `agent` / `service`，或管理员 |
 | 经验发布 / 修订 / 撤销 / 调整范围 / 版本 / 待审核列表 | 审核人或管理员 |
+
+监管者刻意拿不到业务写权限：看得到异常，改不了状态。验收仍然必须由负责人本人完成。
 
 ## 接口清单
 

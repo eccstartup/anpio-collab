@@ -12,6 +12,8 @@ import type { Principal } from '../../protocol/types.ts';
 export type RequestContext = {
   app: App;
   principal: Principal;
+  /** 本次请求的 Bearer 令牌原文；只用于退出登录这类需要指名撤销的接口。 */
+  token: string;
   params: Record<string, string>;
   query: URLSearchParams;
   path: string;

@@ -24,7 +24,7 @@ async function main(): Promise<void> {
   const kind = requireEnv('COLLAB_KIND');
   const dataFile = requireEnv('COLLAB_DATA');
   const journalPath = requireEnv('COLLAB_WORKER_DB');
-  const client = clientFromEnv();
+  const client = await clientFromEnv();
 
   const raw = JSON.parse(await readFile(dataFile, 'utf8')) as Record<string, unknown>;
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {

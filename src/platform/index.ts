@@ -15,7 +15,10 @@ import { isMain } from './runtime.ts';
 export async function start(): Promise<void> {
   const config = loadConfig();
   const db = openDatabase(config.database);
-  const app = await createApp(db);
+  const app = await createApp(db, {
+    identity: { workspace: config.workspace, enroll: config.anpEnroll, sessionTtlHours: config.sessionHours },
+    oversight: config.oversight,
+  });
 
   if (await app.principals.isEmpty()) {
     if (!config.bootstrapToken) {

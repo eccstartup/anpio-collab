@@ -18,6 +18,7 @@ import {
   assertOwner,
   hasAnyRole,
   isCoordinator,
+  loadTask,
   readTask,
   requireRole,
 } from './access.ts';
@@ -50,6 +51,10 @@ export type TaskListItem = {
   updatedAt: string;
   subtaskCount: number;
   subtaskDone: number;
+  /** 任务是人建的还是智能体提案。 */
+  origin: 'human' | 'agent';
+  /** 提案是否已被人接管。 */
+  adopted: boolean;
 };
 
 /** 任务可见性：管理员、负责人、协调者、受派智能体。 */
@@ -72,6 +77,7 @@ export type ActivityItem = {
 
 const LIST_COLUMNS = `
   t.id, t.title, t.type, t.status, t.priority, t.owner_id, t.due_at, t.version, t.created_at, t.updated_at,
+  t.origin, t.adopted_at,
   p.display_name AS owner_name,
   (SELECT COUNT(*) FROM subtasks s WHERE s.task_id = t.id) AS subtask_count,
   (SELECT COUNT(*) FROM subtasks s WHERE s.task_id = t.id AND s.status IN ('submitted','verified')) AS subtask_done
@@ -92,6 +98,8 @@ function toListItem(row: Row): TaskListItem {
     updatedAt: String(row.updated_at),
     subtaskCount: Number(row.subtask_count ?? 0),
     subtaskDone: Number(row.subtask_done ?? 0),
+    origin: row.origin === 'agent' ? 'agent' : 'human',
+    adopted: row.adopted_at !== null && row.adopted_at !== undefined,
   };
 }
 
@@ -108,8 +116,17 @@ export class TaskService {
 
   // ---------------------------------------------------------------- 创建与查询
 
+  /**
+   * 创建任务。
+   *
+   * 人（负责人 / 管理员）创建的是**任务**，直接归自己负责；
+   * 智能体创建的是**提案**（`origin=agent`），同样归自己，但要等人接管
+   * 才算真正进入协作流程——这样"智能体自己发现的问题"能进系统，
+   * 又不会因为一个误判就变成别人必须处理的正式任务。
+   */
   async create(actor: Principal, body: unknown): Promise<{ id: string; status: TaskStatus; version: number }> {
-    requireRole(actor, 'owner', 'admin');
+    requireRole(actor, 'owner', 'admin', 'agent');
+    const byAgent = hasAnyRole(actor, 'agent') && !hasAnyRole(actor, 'owner', 'admin');
     const input = asObject(body);
     const now = this.ctx.now();
     const title = asString(input.title, 'title', { max: 200 });
@@ -126,9 +143,10 @@ export class TaskService {
     await this.ctx.db.transaction(async tx => {
       await tx.run(
         `INSERT INTO tasks(id, workspace, type, title, goal, acceptance, priority, due_at, owner_id,
-                           status, input, result, version, created_at, updated_at)
+                           status, input, result, version, origin, origin_principal_id, adopted_at,
+                           created_at, updated_at)
          VALUES(:id, :workspace, :type, :title, :goal, :acceptance, :priority, :dueAt, :owner,
-                'pending', :input, NULL, 0, :at, :at)`,
+                'pending', :input, NULL, 0, :origin, :originPrincipal, NULL, :at, :at)`,
         {
           id,
           workspace: actor.workspace,
@@ -140,6 +158,8 @@ export class TaskService {
           dueAt,
           owner: actor.id,
           input: encode(taskInput),
+          origin: byAgent ? 'agent' : 'human',
+          originPrincipal: byAgent ? actor.id : null,
           at: now,
         },
       );
@@ -148,11 +168,44 @@ export class TaskService {
         taskId: id,
         actorId: actor.id,
         type: 'task_created',
-        payload: { title, type, acceptance, dueAt },
+        payload: { title, type, acceptance, dueAt, origin: byAgent ? 'agent' : 'human' },
       });
       createdVersion = event.taskVersion;
     });
     return { id, status: 'pending', version: createdVersion };
+  }
+
+  /**
+   * 接管一个智能体发起的提案。
+   *
+   * 接管改变的是**责任归属**，不是内容：提案的目标、验收条件、输入都保留，
+   * 原发起者留在 `origin_principal_id` 里，事件里也留一条。
+   */
+  async adopt(actor: Principal, taskId: string): Promise<{ id: string; ownerId: string; version: number }> {
+    requireRole(actor, 'owner', 'admin', 'supervisor');
+    // 接管前读不到是正常的：提案本来就不在别人的任务列表里，
+    // 所以这里只按工作空间加载，授权由角色与"未被接管"共同决定。
+    const task = await loadTask(this.ctx, actor, taskId);
+    if (task.origin !== 'agent') throw conflict('只有智能体发起的提案需要接管');
+    if (task.adoptedAt !== null) throw conflict('该提案已经被接管');
+    if (task.status === 'cancelled' || task.status === 'completed') throw conflict('该提案已结束，无法接管');
+    const now = this.ctx.now();
+    let version = task.version;
+    await this.ctx.db.transaction(async tx => {
+      await tx.run('UPDATE tasks SET owner_id = :owner, adopted_at = :at WHERE id = :id', {
+        owner: actor.id,
+        at: now,
+        id: task.id,
+      });
+      const event = await appendEvent(this.ctx, tx, {
+        taskId: task.id,
+        actorId: actor.id,
+        type: 'task_adopted',
+        payload: { from: task.originPrincipalId ?? task.ownerId, to: actor.id },
+      });
+      version = event.taskVersion;
+    });
+    return { id: task.id, ownerId: actor.id, version };
   }
 
   private buildListSql(actor: Principal, filters: TaskFilters): { sql: string; params: Record<string, unknown> } {

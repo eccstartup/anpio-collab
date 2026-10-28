@@ -65,18 +65,70 @@ npm run test:postgres     # 需要本机已安装 initdb / pg_ctl / createdb
 
 脚本会拉起一个临时实例（默认端口 55439），跑完即删。测试文件共用一个库，因此**串行执行**——某个文件开头的 `DROP SCHEMA` 会清掉另一个文件正在用的表。
 
-## 超时调度
+## 超时调度与告警扫描
 
-平台不自带定时任务：超时是显式的管理操作，调一次留一次审计。
+平台不自带定时任务：超时与告警都是显式的管理操作，调一次留一次审计。调度器一轮做两件事，**顺序固定**：
+
+1. `POST /v1/maintenance/expire` —— 把"已过截止时间且仍未提交"的子任务标记为 `timed_out`
+2. `POST /v1/oversight/scan` —— 按 9 条规则开/并/关告警
+
+先超时后扫描，是为了让同一轮里新产生的逾期当轮就被看见，而不是等下一轮。每轮输出一行 JSON：
+
+```json
+{"at":"2026-01-01T00:00:00.000Z","expired":1,"checkedAt":"2026-01-01T00:00:00.000Z","alerts":{"opened":1,"updated":0,"resolved":0,"total":1}}
+```
 
 ```sh
 COLLAB_URL=http://127.0.0.1:8787 COLLAB_TOKEN=$ADMIN_TOKEN \
   npm run scheduler -- --once          # 只跑一次
 COLLAB_SCHEDULER_INTERVAL_MS=60000 \
   npm run scheduler                    # 每分钟一次，Ctrl-C 退出
+COLLAB_URL=http://127.0.0.1:8787 COLLAB_TOKEN=$ADMIN_TOKEN \
+  npm run scheduler -- --once --no-scan   # 只跑超时，不碰告警
 ```
 
-它把"已过截止时间且仍未提交"的子任务标记为 `timed_out`。标记只改变协作状态，**不推断业务执行失败**——超时后应先与外部系统核对实际结果，再决定是否退回。
+几个要点：
+
+- 令牌需要 `admin`：超时检查本身就是管理员动作（`POST /v1/maintenance/expire` 对非管理员返回 403）。告警扫描另外还接受 `supervisor`，所以纯监管者可以调 `POST /v1/oversight/scan`，但跑不了完整的一轮调度。`--no-scan` 给"只想推进超时、不想动告警"的场景用（比如告警已有独立节奏）。
+- 超时标记只改变协作状态，**不推断业务执行失败**——超时后应先与外部系统核对实际结果，再决定是否退回。事件里记的是 `subtask_timed_out`，与"执行失败"是两类结论。
+- 告警扫描是幂等的：按 `(rule, subjectType, subjectId)` 去重累加 `occurrences`，不会一轮刷一堆重复告警；条件消失时自动置 `resolved_by='auto'`，人工确认过的告警**不会**被扫描器重开。
+- 调度器进程挂了没人会发现。生产上把它交给 systemd / launchd / K8s CronJob，并给"连续 N 分钟没有调度轮次"单独做外部探测——平台的在线表只反映智能体心跳，不反映自己是否被扫过。
+
+## 智能体密钥与登录
+
+智能体有两种接入方式，可以并存：
+
+**静态令牌**（最简单，适合内网试用）
+
+```sh
+COLLAB_URL=http://127.0.0.1:8787 COLLAB_TOKEN=$AGENT_TOKEN \
+  node src/agents/cli.ts inbox
+```
+
+**DID 密钥**（走 ANP-02，与浏览器钱包同一套签名）
+
+```sh
+export COLLAB_URL=http://127.0.0.1:8787
+export COLLAB_ANP_KEY=$PWD/keys/inventory.json      # Ed25519 JWK，文件名即 handle
+export COLLAB_ANP_DOMAIN=127.0.0.1                   # 可选，DID 的 domain 部分
+node src/agents/cli.ts login                          # 首次登录，落一份会话缓存
+node src/agents/cli.ts whoami
+```
+
+- DID 由**公钥 + handle + domain** 共同决定：换文件名就是换身份，换机器请把密钥文件一起带走。
+- 会话缓存写在 `.anpio-collab/session-<host>-<handle>.json`（`0600`），含访问令牌。已在 `.gitignore` 里。缓存未过期就直接复用，过期或被撤销时 `withAgentClient` 收到 401 会自动重登一次。
+- 陌生 DID 的落位由 `COLLAB_ANP_ENROLL` 决定：
+  - `open`（默认）——首次登录自动登记为 `human`/`owner` 或 `agent` 主体并立即可用。**只适合本机或可信内网**。
+  - `pending`——登记但 `active=0`，接口返回 `403 enrollment_pending`。CLI 会把 DID 打出来，管理员在"参与者"页批准后即可登录。企业部署应该用这个。
+  - `off`——不接受自动登记，只有已绑定的 DID 能进。
+- 想让智能体和人共用同一个账号（协作同一个主体的任务与提醒），由人先登录，在"设置"页签发一个绑定码，再让智能体带码登录：
+
+  ```sh
+  node src/agents/cli.ts login 8F3K-2QX9
+  ```
+
+  绑定码一次性、有有效期。绑定成功后智能体的 DID 挂到该账号的 `identities` 下，读到的任务、评论、提醒与人完全一致。
+- `anpio-cli` 也能直接登录（同一套挑战语义，无需改参数）：`anpio-cli anp login --target http://127.0.0.1:8787/auth/anp/login`，身份取自它自己的密钥库（`--agent` / `--profile`）。令牌如何落地由 CLI 决定，平台侧只看 `Authorization: Bearer`。
 
 ## 反向代理与端口
 
@@ -91,6 +143,16 @@ COLLAB_SCHEDULER_INTERVAL_MS=60000 \
 **启动报"COLLAB_BOOTSTRAP_TOKEN 至少需要 24 个字符"**：令牌太短。用 `openssl rand -hex 32`。
 
 **启动后登录 401**：数据库不是空的，环境变量里的令牌不再生效。用现有管理员令牌轮换，或换一个空的 `COLLAB_DB` 重新开始。
+
+**界面提示"没有检测到 ANP 钱包插件"**：`anpio-extension` 是 MV3 扩展，需要先在 Chrome/Edge 里加载并解锁；页面只探测 `window.anp.isAnpWallet`，装好插件后刷新即可，也可以展开"用访问令牌登录"直接贴管理员给的令牌。
+
+**钱包签名一直 401 `challenge_required`**：客户端只该重签一次。反复 401 通常是签名的 `url` 与真实请求地址不一致（比如页面用 `localhost` 打开、插件按 `127.0.0.1` 签），或者请求体被重新序列化过——插件返回的 `body` 字节必须原样发出。改用一个固定的 host 访问即可。
+
+**登录报 `403 enrollment_pending`**：这是 `COLLAB_ANP_ENROLL=pending` 的正常行为，不是故障。让管理员在"参与者"页批准这个 DID（CLI 会把 DID 打出来）。
+
+**换了密钥之后旧 DID 还能登录吗**：不能。DID 里带着公钥指纹（`e1_<fingerprint>`），换密钥就是另一个 DID、另一个主体；旧的那个请用管理员令牌 `POST /v1/principals/:id/deactivate` 停掉，不要手工改库里的 `did` 字段——历史审计还引用着它。
+
+**绑定码报"无效或不属于当前工作空间"**：码是签发它的那个工作空间里的一次性凭证，跨库无效；已使用或超过 24 小时（默认）也会失效。绑定码只登记"这条 DID 属于谁"，**不会**给主体加角色。
 
 **请求一直 412**：界面或脚本持有旧的 `version`。重新 `GET /v1/tasks/:id` 后再操作。
 

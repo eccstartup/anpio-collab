@@ -25,7 +25,7 @@ type TaskView = {
 const STALE_DAYS = 7;
 
 async function main(): Promise<void> {
-  const client = clientFromEnv();
+  const client = await clientFromEnv();
   const taskId = requireEnv('COLLAB_TASK');
   const plan: { kind: string; agent: string }[] = [
     { kind: 'inventory', agent: requireEnv('COLLAB_INVENTORY_AGENT') },

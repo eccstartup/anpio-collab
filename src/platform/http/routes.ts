@@ -76,9 +76,72 @@ export const routes: Route[] = [
       workspace: principal.workspace,
       roles: principal.roles,
       did: principal.did,
+      kind: principal.kind,
+      handle: principal.handle,
       displayName: principal.displayName,
       capabilities: principal.capabilities,
     }),
+  },
+  {
+    method: 'POST',
+    path: '/v1/me/logout',
+    description: '退出当前会话（只撤销这一个令牌）',
+    write: {
+      execute: async ({ app, token }) => {
+        await app.identity.logout(token);
+        return { ok: true };
+      },
+    },
+  },
+  {
+    method: 'GET',
+    path: '/v1/me/identities',
+    description: '当前主体绑定的 DID',
+    read: async ({ app, principal }) => app.identity.listIdentities(principal),
+  },
+  {
+    method: 'POST',
+    path: '/v1/me/identities/invite',
+    description: '签发绑定码：让另一个 DID（通常是智能体）登进同一账号',
+    write: { execute: async ({ app, principal, body }) => app.identity.createInvite(principal, body) },
+  },
+  {
+    method: 'POST',
+    path: '/v1/me/identities/:id/revoke',
+    description: '解绑一个 DID 并撤销它的会话',
+    write: {
+      execute: async ({ app, principal, params }) =>
+        app.identity.revokeIdentity(principal, params.id ?? ''),
+    },
+  },
+  {
+    method: 'GET',
+    path: '/v1/me/sessions',
+    description: '当前主体的会话列表',
+    read: async ({ app, principal }) => app.identity.listSessions(principal),
+  },
+  {
+    method: 'POST',
+    path: '/v1/me/sessions/:id/revoke',
+    description: '撤销指定会话',
+    write: {
+      execute: async ({ app, principal, params }) =>
+        app.identity.revokeSession(principal, params.id ?? ''),
+    },
+  },
+  {
+    method: 'GET',
+    path: '/v1/me/mentions',
+    description: '我被提及但尚未处理的评论',
+    read: async ({ app, principal }) => app.collab.mentions(principal),
+  },
+  {
+    method: 'POST',
+    path: '/v1/me/mentions/:id/read',
+    description: '把一条提及标记为已读',
+    write: {
+      execute: async ({ app, principal, params }) => app.collab.readMention(principal, params.id ?? ''),
+    },
   },
 
   // ------------------------------------------------------------ 主体目录
@@ -95,6 +158,29 @@ export const routes: Route[] = [
     description: '参与者目录，可按能力过滤',
     read: async ({ app, principal, query }) =>
       app.principals.directory(principal, query.get('capability') ?? undefined),
+  },
+  {
+    method: 'GET',
+    path: '/v1/principals/pending',
+    description: '待批准的自动登记主体（管理员、监管者）',
+    read: async ({ app, principal }) => app.principals.pending(principal),
+  },
+  {
+    method: 'POST',
+    path: '/v1/principals/:id/activate',
+    description: '批准一个待登记主体（管理员）',
+    write: {
+      execute: async ({ app, principal, params }) => app.principals.activate(principal, params.id ?? ''),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/principals/:id/roles',
+    description: '调整主体角色（管理员）',
+    write: {
+      execute: async ({ app, principal, params, body }) =>
+        app.principals.setRoles(principal, params.id ?? '', body),
+    },
   },
   {
     method: 'POST',
@@ -229,6 +315,66 @@ export const routes: Route[] = [
     write: {
       authorize: ctx => onTask(ctx, 'owner'),
       execute: async ({ app, principal, params, body }) => app.tasks.cancel(principal, params.id ?? '', body),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/tasks/:id/adopt',
+    description: '接管智能体发起的提案（负责人、监管者或管理员）',
+    write: {
+      execute: async ({ app, principal, params }) => app.tasks.adopt(principal, params.id ?? ''),
+    },
+  },
+  {
+    method: 'GET',
+    path: '/v1/tasks/:id/comments',
+    description: '任务评论流（人与智能体共用）',
+    read: async ({ app, principal, params }) => app.collab.listComments(principal, params.id ?? ''),
+  },
+  {
+    method: 'POST',
+    path: '/v1/tasks/:id/comments',
+    description: '追加评论，支持 @ 提及',
+    write: {
+      execute: async ({ app, principal, params, body }) =>
+        app.collab.addComment(principal, params.id ?? '', body),
+    },
+  },
+  {
+    method: 'GET',
+    path: '/v1/tasks/:id/offers',
+    description: '任务下挂出的开放子任务',
+    read: async ({ app, principal, params }) => app.collab.listOffers(principal, params.id ?? ''),
+  },
+  {
+    method: 'POST',
+    path: '/v1/tasks/:id/offers',
+    description: '发布开放子任务，等待能力匹配的智能体认领',
+    write: {
+      execute: async ({ app, principal, params, body }) =>
+        app.collab.createOffer(principal, params.id ?? '', body),
+    },
+  },
+  {
+    method: 'GET',
+    path: '/v1/offers',
+    description: '与我能力匹配的开放子任务',
+    read: async ({ app, principal }) => app.collab.openOffers(principal),
+  },
+  {
+    method: 'POST',
+    path: '/v1/offers/:id/claim',
+    description: '认领开放子任务（智能体）',
+    write: {
+      execute: async ({ app, principal, params }) => app.collab.claimOffer(principal, params.id ?? ''),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/offers/:id/withdraw',
+    description: '撤回开放子任务（负责人）',
+    write: {
+      execute: async ({ app, principal, params }) => app.collab.withdrawOffer(principal, params.id ?? ''),
     },
   },
   {
@@ -424,6 +570,54 @@ export const routes: Route[] = [
     write: {
       execute: async ({ app, principal, params, body }) =>
         app.knowledge.changeAccess(principal, params.id ?? '', body),
+    },
+  },
+
+  // ------------------------------------------------------------ 在线状态
+  {
+    method: 'POST',
+    path: '/v1/agent/heartbeat',
+    description: '智能体上报心跳（只表示还在，不表示做对了）',
+    write: {
+      execute: async ({ app, principal, body }) => app.collab.heartbeat(principal, body),
+    },
+  },
+  {
+    method: 'GET',
+    path: '/v1/agent/presence',
+    description: '智能体在线表（负责人、监管者、管理员）',
+    read: async ({ app, principal }) => app.collab.presenceBoard(principal),
+  },
+
+  // ------------------------------------------------------------ 监管
+  {
+    method: 'GET',
+    path: '/v1/oversight',
+    description: '监管总览：告警、计数、风险任务、待批准主体',
+    read: async ({ app, principal }) => app.oversight.overview(principal),
+  },
+  {
+    method: 'POST',
+    path: '/v1/oversight/scan',
+    description: '按当前数据重新评估告警规则（监管者、管理员、调度器）',
+    write: {
+      execute: async ({ app, principal }) => app.oversight.scanFor(principal),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/oversight/alerts/:id/ack',
+    description: '确认告警（表示人已看到）',
+    write: {
+      execute: async ({ app, principal, params }) => app.oversight.acknowledge(principal, params.id ?? ''),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/oversight/alerts/:id/resolve',
+    description: '解决告警（人工结论，扫描器不会立刻重开）',
+    write: {
+      execute: async ({ app, principal, params }) => app.oversight.resolve(principal, params.id ?? ''),
     },
   },
 
