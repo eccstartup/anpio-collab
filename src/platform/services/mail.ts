@@ -18,7 +18,7 @@ export type MailInput = {
   subject: string;
   body: string;
   link?: string;
-  kind: 'login' | 'invite' | 'agent-approval';
+  kind: 'login' | 'invite' | 'agent-approval' | 'bind';
 };
 
 export type MailRecord = MailInput & {

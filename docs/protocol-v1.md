@@ -115,6 +115,8 @@ WWW-Authenticate: ANP nonce="<新 nonce>"
 
 ### 主体落位
 
+先决条件：`did` 必须能解析到 `did.json`（见下节），解析失败一律 `401`，不进入落位判断。
+
 | 情况 | 结果 |
 | --- | --- |
 | 这个 DID 已登记 | 复用原主体，`enrollment: "existing"`；若该主体还没有账号，顺手补建并回填 `account_id` |
@@ -122,6 +124,18 @@ WWW-Authenticate: ANP nonce="<新 nonce>"
 | 都不满足且 `COLLAB_ANP_ENROLL=open` | 自动登记：`client: browser` → `kind: human` + `owner`；`client: agent` → `kind: agent` + `agent` |
 | `COLLAB_ANP_ENROLL=pending` | 主体落为 `active = 0`，登录返回 `403 enrollment_pending`，管理员批准后才能用 |
 | `COLLAB_ANP_ENROLL=off` | `403 forbidden` |
+
+### DID 文档解析（注册校验）
+
+`did:wba:<authority>:<path...>` → `<scheme>://<authority>/<path...>/did.json`。
+
+- 只支持 `did:wba`；`authority` 里的 `%3A` 按端口解码。
+- 只走 https；回环地址默认允许 http，内网其它地址需 `COLLAB_DID_HTTP=1`。
+- 不跟随 3xx、3 秒超时、64KB 上限；成功结果缓存 5 分钟，失败不缓存。
+- 文档 `id` 必须与请求的 DID 一致，`keyid` 指向的 `verificationMethod` 必须在 `authentication` 里。
+- 请求体里的 `didDocument` 仅作兼容字段接收，**不参与验签**。
+
+`404/410` → `401`「这条 DID 没有在注册服务器上登记」；连不上 → `401`「无法连接 DID 注册服务器」；文档不可信 → `401`「DID 文档不可信」。
 
 ### 会话
 
@@ -281,9 +295,9 @@ accepted ──outcome-unknown──> outcome_unknown
 | 方法 | 路径 | 作用 |
 | --- | --- | --- |
 | GET | `/auth/anp/challenge` | 领取登录挑战 nonce |
-| POST | `/auth/anp/login` | 签名登录（RFC 9421） |
+| POST | `/auth/anp/login` | 签名登录（RFC 9421，需 DID 已登记） |
 | POST | `/auth/email/start` | 发送一次性登录链接 |
-| POST | `/auth/email/verify` | 用票据换会话（或多租户选择） |
+| POST | `/auth/email/verify` | 用票据换会话（或多租户选择）；补绑邮箱票据返回 `{ bound, email }` |
 | POST | `/auth/email/choose` | 选择要进入的租户 |
 | POST | `/auth/agent/request` | Agent 申请设备授权 |
 | POST | `/auth/agent/token` | Agent 轮询换取令牌 |
@@ -295,6 +309,8 @@ accepted ──outcome-unknown──> outcome_unknown
 | GET | `/v1/me` | 当前主体、角色、租户角色、账号、Agent 授权范围 |
 | GET | `/v1/me/tenants` | 我所属的全部租户（跨租户） |
 | POST | `/v1/me/switch` | 切换租户并换发会话 |
+| GET | `/v1/me/links` | 当前账号绑定的登录方式（邮箱 + DID） |
+| POST | `/v1/me/emails/start` | 补绑邮箱：发确认信，点开链接才生效（不换发会话） |
 | GET | `/v1/me/identities` | 当前主体绑定的 DID |
 | GET | `/v1/me/identities/challenge` | 领取补绑 DID 的挑战（`purpose=bind`） |
 | POST | `/v1/me/identities/bind` | 用 DID 签名补绑到当前主体（同时要 Bearer 令牌） |

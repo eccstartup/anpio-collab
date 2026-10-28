@@ -8,6 +8,7 @@
 - **组织**：每次登录都在某个租户里；管理员能看自己的成员、加人、改角色。
 - **智能体**：不自己注册。它先申请拿到一个 8 位批准码，由已登录的人（主人或管理员）批准并勾选范围，之后拿受限令牌。
 - **邮件**：只负责把链接送到你面前。链接可以邀请你入组，但它不是永久权限；权限来自角色，角色随时可改。
+- **DID 必须是登记过的**：平台会去这条 DID 的服务器上取 `did.json`，取不到就当未注册，登录和绑定都会被拒。
 
 ## 2. 两种登录方式
 
@@ -30,6 +31,19 @@
 ### 2.2 DID 钱包签名（有 ANP 身份）
 
 沿用 ANP-02：领 nonce → 钱包按 RFC 9421 签名 → 平台验签 → 换会话。私钥不出插件，平台不代签、不保管私钥。适合已经有 `did:wba` 身份的人或智能体。
+
+**登录取信的对象是注册服务器，不是请求体。** 平台按 DID 推出文档地址（`did:wba:awiki.ai:user:alice:e1_x` → `https://awiki.ai/user/alice/e1_x/did.json`），自己取回来验签：
+
+| 情况 | 结果 |
+| --- | --- |
+| 取不到（404） | 401「这条 DID 没有在注册服务器上登记」 |
+| 连不上 / 超时 | 401「无法连接 DID 注册服务器」 |
+| 文档里的 id 与请求的 DID 不一致 | 401「DID 文档不可信」 |
+| 请求体里自带一份 `didDocument` | 只当兼容字段接收，**不参与判断** |
+
+原因很直接：以前的实现相信请求体里的文档，等于"你带一份写着自己是别人的文档来"。现在只有注册服务器上的那份才算数——"我生成了一对密钥"和"这个 DID 存在"是两件事。
+
+内网部署没有证书时，把 DID 里的 authority 写成 `host%3Aport` 并设置 `COLLAB_DID_HTTP=1`；公网部署保持 https，不要开这个开关。回环地址（`127.0.0.1`）默认允许 http，方便本机联调。
 
 两种方式产出的会话完全一样，后续授权只看主体，不看登录方式。
 
@@ -56,6 +70,22 @@
 - 一条 DID 在一个组织里只属于一个主体；已属于别人时返回 409，不会静默改写归属。
 - 解绑后这条 DID 再来登录，会作为新主体重新登记，不会回到原账号（见第 7 节）。
 - 绑定码仍然保留：它给的是"另一台设备 / 智能体在登录时填进来"的路，不需要那台设备先登录。
+- 这条 DID 必须已在注册服务器登记（同 2.2）：平台先取 `did.json`，取不到就不会写进账号。
+
+### 2.4 反过来：DID 登录之后补绑邮箱
+
+钱包先登录的人，账号里只有 DID。想再用邮箱登录，就在「设置 → 登录方式 → 绑定邮箱」里补一个：
+
+1. 填一个你能收信的邮箱，服务端发一条 15 分钟有效的链接；
+2. 点开链接 → 这个邮箱登记到**当前账号**下；
+3. 之后用这个邮箱登录，进入的仍是同一个账号、同一个组织。
+
+要点：
+
+- 只填不算：必须点开链接，否则等于允许任何人把别人的邮箱挂到自己名下；
+- 绑定链接**不签发会话**，也不换掉你当前的登录状态；
+- 邮箱已属于另一个账号 → 409，当场拒绝，不会白发一封信；
+- 链接一次性，过期或已用过都要求重新发。
 
 ## 3. 你收到的邮件
 
@@ -63,6 +93,7 @@
 | --- | --- | --- | --- |
 | 登录链接 | 你自己在登录页填邮箱 | 验证邮箱 → 进入组织 | 15 分钟，一次 |
 | 邀请 | 管理员邀请你加入组织 | 验证邮箱 → 加入组织 → 登录 | 72 小时，一次 |
+| 绑定邮箱 | 你在设置里给账号补一个邮箱 | 只把邮箱登记到当前账号，不发会话 | 15 分钟，一次 |
 | 批准提醒 | 你勾选把批准链接发到邮箱 | 打开批准页，仍需登录后生效 | 10 分钟 |
 
 邀请邮件样例：
@@ -167,7 +198,8 @@ https://collab.example.com/login?ticket=Yl9m...
 - 邮件默认写入 `mail_outbox` 并在控制台打印；接真实 SMTP 需替换 `MailService`，本轮不含重试与退信处理。
 - 限流在进程内（发送 5 次/10 分钟/IP），多实例需外部存储。
 - 票据不绑定浏览器指纹：链接被转发仍可能被使用，缓解手段是一次性 + 短有效期。
-- 没有 SSO/SAML、SCIM、密码、SMS、第三方社交登录。
+- 没有 SSO/SAML、SCIM、密码、SMS、第三方社交登录；手机号绑定在计划里（见 [plan-v4](plan-v4.md)），本轮未做。
+- DID 解析是**对外请求**：默认只走 https、不跟重定向、3 秒超时、64KB 上限、成功缓存 5 分钟。内网明文解析要显式开 `COLLAB_DID_HTTP=1`，这意味着信任内网链路。
 - 没有跨租户任务共享：本轮只做隔离与切换。
 
 ## 附录：相关接口
@@ -175,12 +207,15 @@ https://collab.example.com/login?ticket=Yl9m...
 ```text
 POST /auth/email/start    { email, invite? }          → 202 { sent, expiresAt, [devLink] }
 POST /auth/email/verify   { ticket }                  → 200 { token, tenant, principal }
+                                                      | 200 { bound: true, email }（绑定邮箱）
                                                       | 409 { selectionToken, tenants }
 POST /auth/email/choose   { selectionToken, tenantId }→ 200 { token, tenant, principal }
 
 POST /auth/agent/request  { did, name, capabilities } → 201 { deviceCode, userCode, expiresIn }
 POST /auth/agent/token    { deviceCode }              → 202 pending | 200 { token, scopes }
 
+GET  /v1/me/links                                     → 当前账号的登录方式（邮箱 + DID）
+POST /v1/me/emails/start  { email }                   → 200 { sent, email, expiresAt, [devLink] }
 GET  /v1/me/identities/challenge                      → { nonce, expiresAt }（需登录）
 POST /v1/me/identities/bind (ANP 签名请求)            → { did, primary, existing, loginCount }
 POST /v1/me/identities/:id/revoke                     → 解绑一条 DID

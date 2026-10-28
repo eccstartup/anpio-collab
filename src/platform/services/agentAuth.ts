@@ -164,6 +164,9 @@ export class AgentAuthService {
     if (!request) throw notFound('批准码不存在、已使用或已过期');
 
     const did = String(request.requested_did);
+    // 批准即绑定：先确认这条 DID 在注册服务器上真的存在，否则写进去的是一条
+    // 永远登不进来的身份，出问题时也看不出是谁的错。
+    await this.identity.assertDidRegistered(did);
     const name = displayName || String(request.name ?? '') || `Agent ${did.slice(-6)}`;
     const now = this.ctx.now();
     const expiresAt = new Date(Date.parse(now) + hours * 3600 * 1000).toISOString();

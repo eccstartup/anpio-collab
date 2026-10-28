@@ -11,7 +11,7 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { generateIdentity, type AnpIdentity } from '../src/anp/identity.ts';
+import type { AnpIdentity } from '../src/anp/identity.ts';
 import { signRequest } from '../src/anp/signature.ts';
 import { anpLogin } from '../src/anp/client.ts';
 import { ADMIN_TOKEN, startHarness, type Harness } from './helpers/harness.ts';
@@ -70,7 +70,7 @@ async function bind(
     ? ((await (await fetch(`${harness.url}/auth/anp/challenge`)).json()) as { nonce: string }).nonce
     : options.nonce ?? (await challenge(harness, token));
   const signed = await signBind(harness, identity, nonce);
-  const body = options.tamper ? signed.body.replace(identity.did, identity.did.replace(/e1_/, 'e1_x')) : signed.body;
+  const body = options.tamper ? signed.body.replace('{', '{"note":"x",') : signed.body;
   return fetch(signed.url, {
     method: 'POST',
     headers: {
@@ -86,7 +86,7 @@ async function bind(
 test('已登录后补绑 DID：登记归属、设为主身份、之后用该 DID 登录落到同一主体', async () => {
   const harness = await startHarness();
   try {
-    const identity = generateIdentity({ handle: 'carol' });
+    const identity = harness.did.identity('carol');
     const before = await harness.client(ADMIN_TOKEN).me();
     assert.equal(before.did, null);
 
@@ -125,7 +125,7 @@ test('已登录后补绑 DID：登记归属、设为主身份、之后用该 DID
 test('重复绑定同一条 DID：幂等成功，不重复登记', async () => {
   const harness = await startHarness();
   try {
-    const identity = generateIdentity({ handle: 'dave' });
+    const identity = harness.did.identity('dave');
     assert.equal((await bind(harness, ADMIN_TOKEN, identity)).status, 200);
 
     const again = await bind(harness, ADMIN_TOKEN, identity);
@@ -144,7 +144,7 @@ test('重复绑定同一条 DID：幂等成功，不重复登记', async () => {
 test('挑战只能用一次：同一份签名换一个 Idempotency-Key 重放被拒', async () => {
   const harness = await startHarness();
   try {
-    const identity = generateIdentity({ handle: 'replay-bind' });
+    const identity = harness.did.identity('replay-bind');
     const nonce = await challenge(harness, ADMIN_TOKEN);
     const signed = await signBind(harness, identity, nonce);
     const headers = (key: string) => ({
@@ -169,7 +169,7 @@ test('挑战只能用一次：同一份签名换一个 Idempotency-Key 重放被
 test('请求体被改动后签名失效', async () => {
   const harness = await startHarness();
   try {
-    const identity = generateIdentity({ handle: 'tamper-bind' });
+    const identity = harness.did.identity('tamper-bind');
     const response = await bind(harness, ADMIN_TOKEN, identity, { tamper: true });
     assert.equal(response.status, 401);
   } finally {
@@ -180,7 +180,7 @@ test('请求体被改动后签名失效', async () => {
 test('登录挑战不能拿去补绑 DID', async () => {
   const harness = await startHarness();
   try {
-    const identity = generateIdentity({ handle: 'wrong-purpose' });
+    const identity = harness.did.identity('wrong-purpose');
     const response = await bind(harness, ADMIN_TOKEN, identity, { loginNonce: true });
     assert.equal(response.status, 401);
     const payload = (await response.json()) as { error: { message: string } };
@@ -196,7 +196,7 @@ test('登录挑战不能拿去补绑 DID', async () => {
 test('没有会话就不能补绑：DID 归属必须靠已登录的账号来确认', async () => {
   const harness = await startHarness();
   try {
-    const identity = generateIdentity({ handle: 'anon' });
+    const identity = harness.did.identity('anon');
     const nonce = ((await (await fetch(`${harness.url}/auth/anp/challenge`)).json()) as { nonce: string }).nonce;
     const signed = await signBind(harness, identity, nonce);
     const response = await fetch(signed.url, {
@@ -217,7 +217,7 @@ test('没有会话就不能补绑：DID 归属必须靠已登录的账号来确�
 test('一条 DID 已属于别人时拒绝，不会静默改写归属', async () => {
   const harness = await startHarness();
   try {
-    const identity = generateIdentity({ handle: 'taken' });
+    const identity = harness.did.identity('taken');
     // 先让这条 DID 自己登录，落成一个独立主体。
     const owner = await anpLogin({ baseUrl: harness.url, identity });
     assert.notEqual(owner.principal.id, 'admin');
@@ -237,8 +237,8 @@ test('一条 DID 已属于别人时拒绝，不会静默改写归属', async () 
 test('补绑成功后可以解绑，且不影响主体与其他身份', async () => {
   const harness = await startHarness();
   try {
-    const walletA = generateIdentity({ handle: 'multi-a' });
-    const walletB = generateIdentity({ handle: 'multi-b' });
+    const walletA = harness.did.identity('multi-a');
+    const walletB = harness.did.identity('multi-b');
     assert.equal((await bind(harness, ADMIN_TOKEN, walletA)).status, 200);
     const second = (await (await bind(harness, ADMIN_TOKEN, walletB)).json()) as { primary: boolean };
     assert.equal(second.primary, false, '已有主 DID 时不再改主身份');

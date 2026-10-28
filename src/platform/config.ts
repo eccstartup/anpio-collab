@@ -22,6 +22,8 @@ export type Config = {
   logRequests: boolean;
   /** 陌生 DID 首次登录时的落位策略。 */
   anpEnroll: EnrollMode;
+  /** 内网部署允许用 http 取 did.json（默认只对本机回环放行）。 */
+  didAllowHttp: boolean;
   sessionHours: number;
   oversight: Partial<OversightThresholds>;
 };
@@ -67,6 +69,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, cwd = process.c
     webRoot: env.COLLAB_WEB_ROOT ?? resolve(cwd, 'src/web'),
     logRequests: env.COLLAB_LOG_REQUESTS === '1',
     anpEnroll: parseEnroll(env.COLLAB_ANP_ENROLL),
+    didAllowHttp: env.COLLAB_DID_HTTP === '1',
     sessionHours: parsePositiveInt(env.COLLAB_SESSION_HOURS, 24 * 7, 'COLLAB_SESSION_HOURS'),
     oversight: {
       offlineMinutes: parsePositiveInt(env.COLLAB_OFFLINE_MINUTES, 15, 'COLLAB_OFFLINE_MINUTES'),

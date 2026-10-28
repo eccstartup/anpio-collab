@@ -13,7 +13,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
-import { generateIdentity, type AnpIdentity } from '../src/anp/identity.ts';
+import type { AnpIdentity } from '../src/anp/identity.ts';
 import { signRequest } from '../src/anp/signature.ts';
 import { ADMIN_ID, ADMIN_TOKEN, startHarness, type Harness } from './helpers/harness.ts';
 import { DomElement, DomNode, DomDocument } from './helpers/dom.ts';
@@ -333,7 +333,7 @@ test('登录说明页：无需登录即可访问，两种登录方式都在', as
 
 test('用钱包插件登录：领取挑战、签名、换令牌、按角色生成导航', async () => {
   const harness = await startHarness();
-  const identity = generateIdentity({ handle: 'alice' });
+  const identity = harness.did.identity('alice');
   const mounted = await mount({ url: harness.url, wallet: fakeWallet(identity) });
   try {
     const login = element(mounted.document, 'login');
@@ -379,7 +379,7 @@ test('用钱包插件登录：领取挑战、签名、换令牌、按角色生�
 
 test('设置页用钱包补绑 DID：令牌登录的账号也能挂上 ANP 身份', async () => {
   const harness = await startHarness();
-  const identity = generateIdentity({ handle: 'binder' });
+  const identity = harness.did.identity('binder');
   const mounted = await mount({ url: harness.url, wallet: fakeWallet(identity) });
   try {
     element(mounted.document, 'token').value = ADMIN_TOKEN;
@@ -392,6 +392,9 @@ test('设置页用钱包补绑 DID：令牌登录的账号也能挂上 ANP 身�
     await visit(mounted.document, '设置');
     assert.ok(text(element(mounted.document, 'view')).includes('绑定我的 DID'), '设置页缺少绑定入口');
     assert.ok(text(element(mounted.document, 'view')).includes('已检测到钱包插件'), '应提示检测到钱包插件');
+    assert.ok(text(element(mounted.document, 'view')).includes('登录方式'), '设置页缺少登录方式总览');
+    assert.ok(text(element(mounted.document, 'view')).includes('绑定邮箱'), '设置页缺少补绑邮箱入口');
+    assert.ok(text(element(mounted.document, 'view')).includes('did.json'), '应说明 DID 必须已登记');
 
     await buttonByText(mounted.document, '用钱包绑定 DID').fire('click');
     await waitFor(
@@ -416,6 +419,37 @@ test('设置页用钱包补绑 DID：令牌登录的账号也能挂上 ANP 身�
       await realFetch(`${harness.url}/v1/me/identities`, { headers: { authorization: `Bearer ${ADMIN_TOKEN}` } })
     ).json()) as unknown[];
     assert.equal(identities.length, 1);
+  } finally {
+    await sleep(80);
+    mounted.dispose();
+    await harness.close();
+  }
+});
+
+test('未注册的 DID 绑不上：设置页把"没登记"说清楚，也不留下半条绑定', async () => {
+  const harness = await startHarness();
+  // 有私钥、但文档没登记到注册服务器：这正是"我造了个 DID" 与 "这个 DID 存在" 的区别。
+  const ghost = harness.did.generate('ghost');
+  const mounted = await mount({ url: harness.url, wallet: fakeWallet(ghost) });
+  try {
+    element(mounted.document, 'token').value = ADMIN_TOKEN;
+    await element(mounted.document, 'login-form').fire('submit');
+    await waitFor(
+      () => element(mounted.document, 'shell').hidden === false,
+      `令牌登录未完成：${text(element(mounted.document, 'login-error'))}`,
+    );
+
+    await visit(mounted.document, '设置');
+    await buttonByText(mounted.document, '用钱包绑定 DID').fire('click');
+    await waitFor(
+      () => text(element(mounted.document, 'toast')).includes('没有在注册服务器上登记'),
+      `失败原因没有说清楚：${text(element(mounted.document, 'toast'))}`,
+    );
+
+    const identities = (await (
+      await realFetch(`${harness.url}/v1/me/identities`, { headers: { authorization: `Bearer ${ADMIN_TOKEN}` } })
+    ).json()) as unknown[];
+    assert.equal(identities.length, 0, '被拒绝的绑定不应留下记录');
   } finally {
     await sleep(80);
     mounted.dispose();

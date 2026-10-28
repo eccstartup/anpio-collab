@@ -207,7 +207,7 @@ test('Agent 授权：申请 → 人批准 → 换成令牌 → 撤销后立即�
     const owner = await emailLogin(harness, 'owner@example.com');
 
     const requested = await post(harness, '/auth/agent/request', {
-      did: 'did:wba:example.com:agent:z6MkInventory',
+      did: harness.did.identity('inventory-agent').did,
       name: '库存查询 Agent',
       capabilities: ['inventory'],
     });
@@ -273,7 +273,7 @@ test('Agent 授权：共用账号模式不会新建主体，撤销时也不停�
   try {
     const owner = await emailLogin(harness, 'owner@example.com');
     const requested = await post(harness, '/auth/agent/request', {
-      did: 'did:wba:example.com:agent:z6MkShared',
+      did: harness.did.identity('shared-agent').did,
       name: '共用账号 Agent',
     });
     const request = await json<{ deviceCode: string; userCode: string }>(requested);
@@ -311,7 +311,7 @@ test('Agent 授权：撤销后同一个 DID 重新申请，复用原主体而不
   const harness = await startHarness({ workspace: 'acme' });
   try {
     const owner = await emailLogin(harness, 'owner@example.com');
-    const did = 'did:wba:example.com:agent:z6MkRerun';
+    const did = harness.did.identity('rerun-agent').did;
 
     const first = await json<{ deviceCode: string; userCode: string }>(
       await post(harness, '/auth/agent/request', { did, name: '巡检 Agent' }),
@@ -357,7 +357,7 @@ test('成员角色：智能体不能被设成管理员，更不能被转让所�
     const owner = await emailLogin(harness, 'owner@example.com');
     const request = await json<{ userCode: string }>(
       await post(harness, '/auth/agent/request', {
-        did: 'did:wba:example.com:agent:z6MkPromote',
+        did: harness.did.identity('promote-agent').did,
         name: '想当管理员的 Agent',
       }),
     );

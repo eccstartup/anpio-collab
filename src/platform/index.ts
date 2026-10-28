@@ -16,7 +16,12 @@ export async function start(): Promise<void> {
   const config = loadConfig();
   const db = openDatabase(config.database);
   const app = await createApp(db, {
-    identity: { workspace: config.workspace, enroll: config.anpEnroll, sessionTtlHours: config.sessionHours },
+    identity: {
+      workspace: config.workspace,
+      enroll: config.anpEnroll,
+      sessionTtlHours: config.sessionHours,
+      didAllowHttp: config.didAllowHttp,
+    },
     oversight: config.oversight,
   });
 

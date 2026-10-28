@@ -7,7 +7,9 @@
  *  - 申请永远返回 202，不透露邮箱是否存在；
  *  - 票据只存摘要、一次性、15 分钟，验证失败不消耗（误点不会毁掉链接）；
  *  - 邀请链接复用同一条通道：票据里带 invite_id，验证通过即入组，
- *    但邮箱必须与邀请一致，转发给第三个人无效。
+ *    但邮箱必须与邀请一致，转发给第三个人无效；
+ *  - 补绑邮箱也走这条通道（purpose=bind_email + account_id）：DID 先登录的人
+ *    可以反过来把邮箱挂到账号上，验证只确认地址归属，不换发会话。
  */
 
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -37,7 +39,9 @@ export type VerifyResult =
       tenant: { id: string; name: string; role: string };
       joinedTenant?: boolean;
     }
-  | { status: 'select'; selectionToken: string; tenants: Tenant[] };
+  | { status: 'select'; selectionToken: string; tenants: Tenant[] }
+  /** 补绑邮箱的链接被点开：只登记凭证，不签发会话。 */
+  | { status: 'bound'; email: string };
 
 export class EmailAuthService {
   private readonly ctx: Context;
@@ -134,12 +138,95 @@ export class EmailAuthService {
     };
   }
 
+  // ---------------------------------------------------------------- 补绑邮箱
+
+  /**
+   * 已登录的人补绑邮箱：钱包先登录、再反过来把邮箱挂到账号上。
+   *
+   * 与登录共用同一条通道——发一封带票据的信，点开才算数。直接把用户填的邮箱
+   * 写进账号，等于允许任何人把别人的邮箱挂到自己名下，之后就能用它登录。
+   * 票据里记着 account_id：链接只能确认这个地址，不能换来另一个会话。
+   */
+  async startBind(input: {
+    accountId: string;
+    email: unknown;
+    origin?: string;
+    userAgent?: string;
+  }): Promise<{ sent: true; email: string; expiresAt: string; devLink?: string }> {
+    const rawEmail = asString(input.email, 'email', { max: 254, min: 3 });
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(rawEmail.trim())) throw invalid('email 格式不正确');
+    const email = rawEmail.trim().toLowerCase();
+    if (!input.accountId) throw conflict('当前主体还没有账号，无法绑定邮箱');
+
+    // 先查冲突，别让人白点一封注定失败的邮件。
+    const owner = await this.accounts.findByLink('email', email);
+    if (owner && owner.id !== input.accountId) throw conflict('这个邮箱已经绑定在另一个账号上');
+    if (owner) throw conflict('这个邮箱已经绑定在本账号上了');
+
+    const token = randomBytes(32).toString('base64url');
+    const now = this.ctx.now();
+    const expiresAt = new Date(Date.parse(now) + this.options.ticketMinutes * 60 * 1000).toISOString();
+    await this.ctx.db.transaction(async tx => {
+      await tx.run('DELETE FROM login_tickets WHERE expires_at < :now', { now });
+      await tx.run(
+        `INSERT INTO login_tickets(id, token_hash, email, purpose, invite_id, account_id,
+                                   expires_at, created_at, user_agent)
+         VALUES(:id, :hash, :email, 'bind_email', NULL, :account, :expiresAt, :at, :ua)`,
+        {
+          id: randomUUID(),
+          hash: hashToken(token),
+          email,
+          account: input.accountId,
+          expiresAt,
+          at: now,
+          ua: (input.userAgent ?? '').slice(0, 200),
+        },
+      );
+    });
+
+    const base = (input.origin ?? this.mail.baseUrl).replace(/\/+$/, '');
+    const link = `${base}/login?ticket=${encodeURIComponent(token)}`;
+    await this.mail.send({
+      to: email,
+      subject: '[Anpio Collab] 绑定邮箱',
+      body:
+        `点下面的链接把这个邮箱绑定到你的账号（${this.options.ticketMinutes} 分钟内有效，只能使用一次）：\n\n` +
+        `${link}\n\n` +
+        '绑定后可以用这个邮箱登录，进入的是同一个账号。不是你发起的就忽略这封邮件。',
+      link,
+      kind: 'bind',
+    });
+
+    return {
+      sent: true,
+      email,
+      expiresAt,
+      ...(this.mail.exposeOutbox ? { devLink: link } : {}),
+    };
+  }
+
   // ---------------------------------------------------------------- 验证
 
   async verify(input: { ticket: unknown }): Promise<VerifyResult> {
     const ticket = asString(input.ticket, 'ticket', { max: 512, min: 8 });
-    const row = await this.consumeTicket(ticket, ['login', 'invite']);
+    const row = await this.consumeTicket(ticket, ['login', 'invite', 'bind_email']);
     const email = String(row.email).toLowerCase();
+
+    // 补绑邮箱：票据只证明"这个地址归你"，会话保持不变。
+    if (String(row.purpose) === 'bind_email') {
+      const accountId = row.account_id === null || row.account_id === undefined ? '' : String(row.account_id);
+      const account = await this.accounts.findById(accountId);
+      if (!account) throw notFound('账号不存在');
+      const owner = await this.accounts.findByLink('email', email);
+      if (owner && owner.id !== account.id) throw conflict('这个邮箱已经绑定在另一个账号上');
+      if (!owner) {
+        await this.ctx.db.transaction(async tx => {
+          await this.accounts.attach(tx, account.id, 'email', email);
+        });
+      }
+      return { status: 'bound', email };
+    }
+
     const account = await this.accounts.ensure('email', email, {
       verified: true,
       displayName: email.split('@')[0],

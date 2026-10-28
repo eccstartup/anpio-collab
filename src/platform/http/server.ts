@@ -239,6 +239,11 @@ async function handlePublicAuth(
     const body = asObject(await readBody(req, context.bodyLimit)) as Record<string, unknown>;
     try {
       const result = await app.emailAuth.verify({ ticket: body.ticket });
+      if (result.status === 'bound') {
+        // 补绑邮箱：链接只用来确认地址归属，不签发、也不替换当前会话。
+        sendJson(res, 200, { ok: true, bound: true, email: result.email });
+        return true;
+      }
       if (result.status === 'select') {
         sendJson(res, 409, {
           error: { code: 'tenant_selection_required', message: '该邮箱属于多个组织，请选择要进入的组织' },
@@ -349,6 +354,7 @@ function publicPrincipal(principal: Principal) {
     roles: principal.roles,
     tenantRole: principal.tenantRole,
     workspace: principal.workspace,
+    accountId: principal.accountId,
   };
 }
 

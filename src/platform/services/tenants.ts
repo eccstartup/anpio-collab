@@ -66,11 +66,19 @@ export class TenantService {
 
   async listFor(accountId: string | null): Promise<Tenant[]> {
     if (!accountId) return [];
+    // LEFT JOIN：workspace 早于租户表存在，老数据里主体有 workspace 却没有 tenants 行。
+    // 用 INNER JOIN 的话，这类账号会"看不到自己所在的组织"，登录后被当成第一次来，
+    // 于是又建一个新组织——同一个人的两条登录方式会落到两个组织里。
     const rows = await this.ctx.db.read.all(
-      `SELECT t.*, p.tenant_role AS role
-       FROM principals p JOIN tenants t ON t.id = p.workspace
+      `SELECT p.workspace AS id,
+              COALESCE(t.name, p.workspace) AS name,
+              COALESCE(t.status, 'active') AS status,
+              COALESCE(t.personal, 0) AS personal,
+              COALESCE(t.created_at, p.created_at) AS created_at,
+              p.tenant_role AS role
+       FROM principals p LEFT JOIN tenants t ON t.id = p.workspace
        WHERE p.account_id = :account AND p.active = 1
-       ORDER BY t.created_at`,
+       ORDER BY COALESCE(t.created_at, p.created_at)`,
       { account: accountId },
     );
     return rows.map(row => ({

@@ -7,6 +7,7 @@
 
 import type { Database } from './db/driver.ts';
 import { migrate } from './db/schema.ts';
+import { createHttpDidResolver, type DidResolver } from '../anp/resolver.ts';
 import { createContext, type Context } from './context.ts';
 import { AccountService } from './services/accounts.ts';
 import { AgentAuthService } from './services/agentAuth.ts';
@@ -28,6 +29,10 @@ export type IdentitySettings = {
   enroll: EnrollMode;
   sessionTtlHours: number;
   nonceTtlSeconds: number;
+  /** 内网部署没有证书时打开，允许用 http 取 did.json。默认只对本机回环放行。 */
+  didAllowHttp?: boolean;
+  /** 自定义解析器（测试注入）；不传就按 didAllowHttp 建一个 HTTP 解析器。 */
+  didResolver?: DidResolver;
 };
 
 export type MailSettings = {
@@ -93,6 +98,9 @@ export async function createApp(db: Database, options: AppOptions = {}): Promise
       enroll: options.identity?.enroll ?? 'open',
       sessionTtlHours: options.identity?.sessionTtlHours ?? 24 * 7,
       nonceTtlSeconds: options.identity?.nonceTtlSeconds ?? 300,
+      didResolver:
+        options.identity?.didResolver ??
+        createHttpDidResolver({ allowInsecureHttp: options.identity?.didAllowHttp ?? false }),
     },
     accounts,
   );

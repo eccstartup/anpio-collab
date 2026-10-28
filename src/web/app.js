@@ -162,6 +162,7 @@ const state = {
   oversight: null,
   presence: [],
   identities: [],
+  links: [],
   sessions: [],
   heartbeatAt: '',
   tenants: [],
@@ -571,6 +572,8 @@ async function verifyEmailTicket(ticket) {
     body: JSON.stringify({ ticket }),
   });
   const payload = await readPayload(response);
+  // 补绑邮箱的票据只确认地址，不换发会话。
+  if (payload?.bound) return { bound: payload };
   if (response.status === 409 && payload?.selectionToken) return { selection: payload };
   if (!response.ok) throw new Error(payload?.error?.message ?? `登录失败（HTTP ${response.status}）`);
   return { session: payload };
@@ -761,6 +764,9 @@ async function refresh() {
     }
     if (state.view === 'settings') {
       state.identities = await api('me/identities').catch(() => []);
+      state.links = await api('me/links')
+        .then((data) => data?.links ?? [])
+        .catch(() => []);
       state.sessions = await api('me/sessions').catch(() => []);
     }
     render();
@@ -2106,6 +2112,17 @@ function alertRow(alert) {
 function renderSettings() {
   const me = state.me;
   const walletReady = wallet.available();
+  const emailLinks = state.links.filter((item) => item.kind === 'email');
+  const emailRows = emailLinks.map((item) =>
+    el('div', { class: 'list-item static' },
+      el('div', { class: 'row spread top' },
+        el('div', {},
+          el('div', { class: 'mono' }, item.value),
+          el('div', { class: 'meta' },
+            el('span', {}, item.verifiedAt ? '已验证' : '未验证'),
+            el('span', {}, '可用于登录'))),
+        toneBadge('ok', '邮箱'))));
+
   const identityRows = state.identities.map((item) =>
     el('div', { class: 'list-item static' },
       el('div', { class: 'row spread top' },
@@ -2144,6 +2161,29 @@ function renderSettings() {
 
   return frag(
     el('div', { class: 'card' },
+      el('div', { class: 'card-head' },
+        el('h3', {}, '登录方式'),
+        el('span', { class: 'muted' }, `${emailLinks.length + state.identities.length} 种`)),
+      el('p', { class: 'hint tight' },
+        '邮箱与 DID 是并列的两条入口：先用邮箱进来再绑 DID，或先用钱包进来再绑邮箱，' +
+        '都会落到同一个账号、同一个组织里。'),
+      el('div', { class: 'list' },
+        emailRows,
+        state.identities.length
+          ? el('div', { class: 'list-item static' },
+            el('div', { class: 'row spread top' },
+              el('div', {},
+                el('div', { class: 'mono' }, me.did || shortDid(state.identities[0].did)),
+                el('div', { class: 'meta' }, el('span', {}, 'ANP 钱包'))),
+              toneBadge('ok', 'DID')))
+          : null,
+        emailRows.length === 0 && state.identities.length === 0
+          ? el('div', { class: 'empty' }, '还没有可用的登录方式。')
+          : null),
+      el('div', { class: 'row', style: 'margin-top:12px' },
+        el('button', { class: 'accent', type: 'button', onclick: openBindEmail }, '绑定邮箱'),
+        el('span', { class: 'muted small' }, '手机号登录还没开放。'))),
+    el('div', { class: 'card' },
       el('div', { class: 'card-head' }, el('h3', {}, '我的身份')),
       el('dl', { class: 'kv' },
         el('dt', {}, '主体'), el('dd', {}, `${me.displayName || me.id}（${me.id}）`),
@@ -2165,6 +2205,9 @@ function renderSettings() {
         '用浏览器里的 ANP 钱包（anpio-extension）签一次名，证明这条 DID 归你，就能把它挂到当前账号下：' +
         '以后用这条 DID 登录会直接进这个账号，人和智能体的记录留在同一处。' +
         '绑定只登记归属——它不会给你新的角色，也不会把别人的权限带进来。'),
+      el('p', { class: 'hint tight' },
+        '只接受在注册服务器上登记过的 DID：平台会去取这条 DID 的 did.json，' +
+        '取不到就判定未注册，登录和绑定都会被拒——自己没有私钥、只借一个 DID 字符串是绑不上的。'),
       el('div', { class: 'row', style: 'margin-top:12px' },
         bindButton,
         el('span', { class: 'muted small' },
@@ -2210,6 +2253,30 @@ async function bindWalletIdentity(button) {
     button.disabled = false;
     button.textContent = label;
   }
+}
+
+/** 已登录后补绑邮箱：发确认链接，点开才算证明这个地址是你的。 */
+function openBindEmail() {
+  openDialog({
+    title: '绑定邮箱',
+    description:
+      '填一个你能收信的邮箱，我们会发一条确认链接。点开链接才算绑定——只填进来只是声明，' +
+      '证明不了这个地址归你。绑定后可以用它登录，进入的仍是现在这个账号。',
+    fields: [{ name: 'email', label: '邮箱', type: 'email', placeholder: 'name@company.com', required: true }],
+    submitLabel: '发送确认链接',
+    onSubmit: (values) =>
+      act(async () => {
+        const result = await api('me/emails/start', { body: values });
+        showPanel(
+          '确认邮件已发出',
+          `已发送到 ${result.email}，点开邮件里的链接即完成绑定。`,
+          el('div', { class: 'stack' },
+            result.devLink ? el('div', { class: 'muted small' }, '开发模式：也可以直接打开这个链接。') : null,
+            result.devLink ? el('a', { class: 'invite-code small', href: result.devLink }, result.devLink) : null,
+            el('div', { class: 'muted small' }, '链接 15 分钟内有效，只能用一次；绑定不会换掉当前会话。')),
+        );
+      }, '已发送确认邮件'),
+  });
 }
 
 function openInvite() {
@@ -2686,6 +2753,11 @@ async function consumeTicketFromUrl() {
   if (note) note.textContent = '正在验证登录链接…';
   try {
     const result = await verifyEmailTicket(ticket);
+    if (result.bound) {
+      if (error) error.textContent = '';
+      if (note) note.textContent = `${result.bound.email} 已绑定到账号，以后可以用它登录。`;
+      return;
+    }
     if (result.selection) {
       chooseTenant(result.selection);
       return;

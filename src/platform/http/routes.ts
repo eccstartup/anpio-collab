@@ -144,6 +144,33 @@ export const routes: Route[] = [
   },
   {
     method: 'GET',
+    path: '/v1/me/links',
+    description: '当前账号绑定的登录方式（邮箱与 DID），用于设置页的账号总览',
+    read: async ({ app, principal }) => {
+      if (!principal.accountId) return { accountId: null, links: [] };
+      const links = await app.accounts.links(principal.accountId);
+      return { accountId: principal.accountId, links };
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/me/emails/start',
+    description: '给当前账号补绑一个邮箱：发一封确认信，点开链接才算绑定',
+    write: {
+      execute: async ({ app, principal, body, origin, headers }) => {
+        if (!principal.accountId) throw forbidden('当前主体还没有账号，无法绑定邮箱');
+        const input = asObject(body);
+        return app.emailAuth.startBind({
+          accountId: principal.accountId,
+          email: input.email,
+          origin: origin || undefined,
+          userAgent: String(headers['user-agent'] ?? ''),
+        });
+      },
+    },
+  },
+  {
+    method: 'GET',
     path: '/v1/me/identities',
     description: '当前主体绑定的 DID',
     read: async ({ app, principal }) => app.identity.listIdentities(principal),

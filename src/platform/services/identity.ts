@@ -3,6 +3,9 @@
  *
  * 职责边界：
  *  - 平台**验证**签名，不保管私钥、不代签；
+ *  - 公钥**不采信请求体**：登录与绑定都要到 DID 所属服务器解析 did.json，
+ *    解析不到就是"未注册"，直接拒绝。否则谁都能编一份带自己公钥的文档，
+ *    把别人的 DID 绑到自己账号上；
  *  - 一个主体可以绑定多个 DID（人与智能体共用账号），但审计始终记录具体 DID；
  *  - 陌生 DID 的落位由 `COLLAB_ANP_ENROLL` 决定，默认 `open`（本机验证友好），
  *    企业部署应改为 `pending`，由管理员在控制台批准。
@@ -16,7 +19,8 @@ import { ROLES } from '../../protocol/types.ts';
 import type { Context } from '../context.ts';
 import { toPrincipal } from '../db/mappers.ts';
 import type { Queryable } from '../db/driver.ts';
-import { didShortId, handleFromDid, isDid, resolveVerificationKey } from '../../anp/did.ts';
+import { didShortId, handleFromDid, isDid, resolveVerificationKey, type ResolvedKey } from '../../anp/did.ts';
+import { describeResolutionFailure, type DidResolver } from '../../anp/resolver.ts';
 import { verifySignature } from '../../anp/signature.ts';
 import { hashToken } from './principals.ts';
 import type { AccountService } from './accounts.ts';
@@ -28,6 +32,8 @@ export type IdentityOptions = {
   enroll: EnrollMode;
   sessionTtlHours: number;
   nonceTtlSeconds: number;
+  /** 去 DID 所属服务器取 did.json；未注入时登录与绑定一律拒绝（fail closed）。 */
+  didResolver: DidResolver | null;
 };
 
 /** 服务器要求客户端使用它签发的 nonce 重签一次。 */
@@ -155,13 +161,7 @@ export class IdentityService {
     const payload = this.parseBody(request.rawBody);
     const did = payload.did;
     if (!isDid(did)) throw invalid('did 必须是 did:wba 标识');
-
-    let resolved;
-    try {
-      resolved = resolveVerificationKey(did, String(payload.keyid ?? '#key-1'), payload.didDocument);
-    } catch (error) {
-      throw unauthenticated(`DID 文档不可用：${messageOf(error)}`);
-    }
+    const resolved = await this.resolveKey(did, payload.keyid);
 
     let verified;
     try {
@@ -223,6 +223,46 @@ export class IdentityService {
       throw invalid('请求体不是合法 JSON');
     }
     return asObject(parsed, '登录请求') as Record<string, unknown> & { did?: string };
+  }
+
+  /**
+   * 取回 DID 文档并定位签名用的公钥。
+   *
+   * 这里**不读请求体里的 `didDocument`**：那份文档由调用方自己提供，编一份带
+   * 自己公钥的文档就能冒充任意 DID。只有从 DID 所属服务器取回的 did.json 才算数，
+   * 取不到就按"未注册"拒绝（fail closed）。
+   */
+  private async resolveKey(did: string, keyid: unknown): Promise<ResolvedKey> {
+    if (!this.options.didResolver) {
+      throw unauthenticated('本部署没有配置 DID 解析器，无法校验 DID 归属');
+    }
+    let document: Record<string, unknown>;
+    try {
+      const resolved = await this.options.didResolver.resolve(did);
+      document = resolved.document;
+    } catch (error) {
+      throw unauthenticated(`DID 校验未通过：${describeResolutionFailure(error)}`);
+    }
+    try {
+      return resolveVerificationKey(did, String(keyid ?? '#key-1'), document);
+    } catch (error) {
+      throw unauthenticated(`DID 文档不可用：${messageOf(error)}`);
+    }
+  }
+
+  /**
+   * 绑定码/设备流批准前的预检：这条 DID 真的在注册服务器上存在吗。
+   *
+   * 不查就批准，会把一条永远登不进来的 DID 写进名单，出问题时没人看得出是谁的错。
+   */
+  async assertDidRegistered(did: string): Promise<void> {
+    if (!isDid(did)) throw invalid('did 必须是 did:wba 标识');
+    if (!this.options.didResolver) throw invalid('本部署没有配置 DID 解析器，无法校验 DID');
+    try {
+      await this.options.didResolver.resolve(did);
+    } catch (error) {
+      throw invalid(`该 DID 不能接入：${describeResolutionFailure(error)}`);
+    }
   }
 
   // ---------------------------------------------------------------- 主体
@@ -328,6 +368,21 @@ export class IdentityService {
     const kind: PrincipalKind = input.client === 'agent' ? 'agent' : 'human';
     const roles: Role[] = kind === 'agent' ? ['agent'] : ['owner'];
     const active = this.options.enroll === 'open';
+    // workspace 早于租户表：首次 ANP 登记时补一条，否则这个账号在 /v1/me/tenants 里
+    // 看不到自己所在的组织，之后用邮箱登录会当成"第一次来"再建一个新组织。
+    const tenant = await tx.one('SELECT id FROM tenants WHERE id = :id', { id: this.options.workspace });
+    if (!tenant) {
+      await tx.run(
+        `INSERT INTO tenants(id, name, status, personal, created_by, created_at)
+         VALUES(:id, :name, 'active', 0, :createdBy, :at)`,
+        {
+          id: this.options.workspace,
+          name: this.options.workspace,
+          createdBy: input.accountId,
+          at: this.ctx.now(),
+        },
+      );
+    }
     // 一个空工作空间里的第一个人类就是这个组织的所有者；之后自动登记的都是成员。
     const humans = await tx.one<{ count: number }>(
       `SELECT COUNT(*) AS count FROM principals WHERE workspace = :workspace AND kind = 'human'`,
@@ -589,13 +644,7 @@ export class IdentityService {
     const payload = this.parseBody(request.rawBody);
     const did = payload.did;
     if (!isDid(did)) throw invalid('did 必须是 did:wba 标识');
-
-    let resolved;
-    try {
-      resolved = resolveVerificationKey(did, String(payload.keyid ?? '#key-1'), payload.didDocument);
-    } catch (error) {
-      throw unauthenticated(`DID 文档不可用：${messageOf(error)}`);
-    }
+    const resolved = await this.resolveKey(did, payload.keyid);
 
     let verified;
     try {

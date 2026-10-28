@@ -10,7 +10,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { exportPrivateJwk, generateIdentity } from '../src/anp/identity.ts';
+import { exportPrivateJwk, type AnpIdentity } from '../src/anp/identity.ts';
 import { anpLogin } from '../src/anp/client.ts';
 import { loadIdentityFromEnv, resolveAgentSession, withAgentClient } from '../src/agents/session.ts';
 import { CollabClient } from '../src/sdk/client.ts';
@@ -37,7 +37,7 @@ function withEnv(env: Env): () => void {
  * 把身份写成 JWK 文件，模拟"智能体自己保管的密钥"。
  * 文件名就是默认 handle（DID 由公钥 + handle 共同决定），所以必须与生成时一致。
  */
-function writeKey(directory: string, handle: string, identity: ReturnType<typeof generateIdentity>): string {
+function writeKey(directory: string, handle: string, identity: AnpIdentity): string {
   const path = join(directory, `${handle}.json`);
   writeFileSync(path, JSON.stringify(exportPrivateJwk(identity)));
   return path;
@@ -46,12 +46,13 @@ function writeKey(directory: string, handle: string, identity: ReturnType<typeof
 test('智能体用 ANP 密钥登录：自动登记为 agent，会话缓存复用，撤销后重登', async () => {
   const harness: Harness = await startHarness();
   const directory = mkdtempSync(join(tmpdir(), 'collab-agent-'));
-  const identity = generateIdentity({ handle: 'inventory' });
+  const identity = harness.did.identity('inventory');
   const keyPath = writeKey(directory, 'inventory', identity);
   const restore = withEnv({
     COLLAB_URL: harness.url,
     COLLAB_ANP_KEY: keyPath,
     COLLAB_STATE_DIR: directory,
+    COLLAB_ANP_DOMAIN: harness.did.domain,
     COLLAB_TOKEN: undefined,
   });
 
@@ -98,12 +99,13 @@ test('智能体用 ANP 密钥登录：自动登记为 agent，会话缓存复用
 test('待批准模式下智能体登录：给出可执行的说明而不是裸露的 403', async () => {
   const harness = await startHarness({ enroll: 'pending' });
   const directory = mkdtempSync(join(tmpdir(), 'collab-agent-'));
-  const identity = generateIdentity({ handle: 'pending-agent' });
+  const identity = harness.did.identity('pending-agent');
   const keyPath = writeKey(directory, 'pending-agent', identity);
   const restore = withEnv({
     COLLAB_URL: harness.url,
     COLLAB_ANP_KEY: keyPath,
     COLLAB_STATE_DIR: directory,
+    COLLAB_ANP_DOMAIN: harness.did.domain,
     COLLAB_TOKEN: undefined,
   });
 
@@ -138,16 +140,17 @@ test('绑定码：智能体用绑定码登进人的账号，共享同一份任�
   const harness = await startHarness();
   const directory = mkdtempSync(join(tmpdir(), 'collab-agent-'));
   // 人先用钱包（这里是同一套 ANP 代码）登进来。
-  const human = generateIdentity({ handle: 'alice' });
+  const human = harness.did.identity('alice');
   const humanLogin = await anpLogin({ baseUrl: harness.url, identity: human, client: 'browser' });
   const humanClient = new CollabClient(harness.url, humanLogin.token);
   const invite = await humanClient.inviteIdentity({ role: 'agent', note: '库存智能体' }, 'invite:1');
 
-  const agent = generateIdentity({ handle: 'inventory-shared' });
+  const agent = harness.did.identity('inventory-shared');
   const restore = withEnv({
     COLLAB_URL: harness.url,
     COLLAB_ANP_KEY: writeKey(directory, 'inventory-shared', agent),
     COLLAB_STATE_DIR: directory,
+    COLLAB_ANP_DOMAIN: harness.did.domain,
     COLLAB_TOKEN: undefined,
   });
 
@@ -182,7 +185,7 @@ test('绑定码：智能体用绑定码登进人的账号，共享同一份任�
     assert.equal(comments[0]!.body, '这条评论由人写下');
 
     // 绑定码是一次性的：换一条 DID 再用就必须被挡住，而不是悄悄给个新账号。
-    const intruder = generateIdentity({ handle: 'intruder' });
+    const intruder = harness.did.identity('intruder');
     await assert.rejects(
       anpLogin({ baseUrl: harness.url, identity: intruder, client: 'agent', bindCode: invite.code }),
       /绑定码/,

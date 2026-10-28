@@ -1,10 +1,25 @@
 # 实现状态
 
-对照 [plan.md](../plan.md)、[第二轮计划](plan-v2.md) 与 [第三轮计划](plan-v3.md)，说明本仓库现在做到了什么、哪些只是本机验证、哪些还没开始。
+对照 [plan.md](../plan.md)、[第二轮计划](plan-v2.md)、[第三轮计划](plan-v3.md) 与 [第四轮计划](plan-v4.md)，说明本仓库现在做到了什么、哪些只是本机验证、哪些还没开始。
 
-> 结论先行：**阶段 1（本地协作闭环）、阶段 3（知识闭环）已实现；第二轮的身份、协作、监管三块已实现；第三轮的租户、两种登录与 Agent 授权已实现；第四轮补上"登录后补绑 DID"。阶段 4/5 未开始。** 通过本机测试不等于企业环境验收。
+> 结论先行：**阶段 1（本地协作闭环）、阶段 3（知识闭环）已实现；第二轮的身份、协作、监管三块已实现；第三轮的租户、两种登录与 Agent 授权已实现；第四轮补上"登录后补绑 DID"；本轮把 DID 准入改成"必须已注册"，并补上反向绑邮箱。阶段 4/5 未开始。** 通过本机测试不等于企业环境验收。
 
-## 第四轮新增（本轮）
+## 第五轮新增（本轮）
+
+| 能力 | 实现位置 | 验证方式 |
+| --- | --- | --- |
+| DID 文档解析器：`did:wba` → `did.json`，https/超时/大小/不跟重定向/缓存 | `src/anp/resolver.ts` | `tests/did-resolution.test.ts` |
+| 登录与补绑都以解析到的文档验签，未注册的 DID 一律拒绝 | `identity.ts#resolveKey` | 同上 |
+| 请求体自带的 `didDocument` 不再被采信（防冒充） | `identity.ts` | 同上（受害者 DID + 攻击者公钥 → 401） |
+| Agent 获批前预检 DID 是否已登记，避免写入永远登不进来的身份 | `agentAuth.ts#approve` | `tests/tenant-auth.test.ts` |
+| 反向绑定：DID 登录后补邮箱（发信验证、一次性、不换会话） | `emailAuth.ts#startBind`、`/auth/email/verify` | `tests/email-bind.test.ts` |
+| `GET /v1/me/links`：账号的登录方式总览 | `accounts.ts#links`、`routes.ts` | 同上 + `tests/web.test.ts` |
+| 设置页「登录方式」卡片 + 绑定邮箱对话框 | `src/web/app.js` | `tests/web.test.ts` |
+| 老库兼容：`listFor` 用 LEFT JOIN，ANP 首次登记补租户行 | `tenants.ts`、`identity.ts` | `tests/email-bind.test.ts`（同一账号不重复建组织） |
+
+测试合计 91 项（新增 5 项解析/未注册用例、4 项反向绑定用例、1 项设置页用例）。SQLite 与 PostgreSQL 跑同一套用例。
+
+## 第四轮新增
 
 | 能力 | 实现位置 | 验证方式 |
 | --- | --- | --- |

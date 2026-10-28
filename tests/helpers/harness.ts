@@ -6,6 +6,7 @@
  */
 
 import { mkdtempSync, rmSync } from 'node:fs';
+import { createServer as createHttpServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type http from 'node:http';
@@ -15,6 +16,7 @@ import type { Database } from '../../src/platform/db/driver.ts';
 import { openDatabase } from '../../src/platform/db/index.ts';
 import { createServer } from '../../src/platform/http/server.ts';
 import { CollabClient } from '../../src/sdk/client.ts';
+import { generateIdentity, type AnpIdentity } from '../../src/anp/identity.ts';
 import { randomBytes } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { CollabError } from '../../src/sdk/client.ts';
@@ -22,10 +24,31 @@ import { CollabError } from '../../src/sdk/client.ts';
 export const ADMIN_TOKEN = 'admin-token-0123456789abcdef';
 export const ADMIN_ID = 'admin';
 
+/**
+ * 本机 DID 注册服务器。
+ *
+ * 平台在登录/绑定前必须解析 did.json，所以测试也得有个"注册服务器"——
+ * 这里用真的 HTTP：DID 域写成 `127.0.0.1%3A<port>`，文档登记在内存里，
+ * 平台通过回环 http 取回。这样测的是真实解析路径，而不是"信任请求体"的旧行为。
+ */
+export type DidHost = {
+  /** DID 里的域段（带端口），形如 `127.0.0.1%3A34567`。 */
+  domain: string;
+  url: string;
+  /** 生成一条身份并登记文档（模拟"已注册"）。 */
+  identity(handle: string): AnpIdentity;
+  /** 只生成身份，不登记（模拟"未注册"）。 */
+  generate(handle: string): AnpIdentity;
+  register(identity: AnpIdentity): void;
+  revoke(identity: AnpIdentity): void;
+  close(): Promise<void>;
+};
+
 export type Harness = {
   app: App;
   db: Database;
   url: string;
+  did: DidHost;
   directory: string;
   databasePath: string;
   server: http.Server;
@@ -41,6 +64,50 @@ async function resetPostgres(db: Database): Promise<void> {
   await db.exec('DROP SCHEMA public CASCADE; CREATE SCHEMA public;');
 }
 
+async function startDidHost(): Promise<DidHost> {
+  const registry = new Map<string, unknown>();
+  const pathOf = (did: string): string => `/${did.split(':').slice(3).join('/')}/did.json`;
+  const server: Server = createHttpServer((req, res) => {
+    const path = decodeURIComponent((req.url ?? '').split('?')[0] ?? '');
+    const document = registry.get(path);
+    if (!document) {
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end('{"error":"did_document_not_found"}');
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'application/did+json' });
+    res.end(JSON.stringify(document));
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as AddressInfo;
+  const domain = `127.0.0.1%3A${port}`;
+  let closed = false;
+
+  return {
+    domain,
+    url: `http://127.0.0.1:${port}`,
+    identity(handle: string): AnpIdentity {
+      const identity = generateIdentity({ handle, domain });
+      registry.set(pathOf(identity.did), identity.didDocument);
+      return identity;
+    },
+    generate(handle: string): AnpIdentity {
+      return generateIdentity({ handle, domain });
+    },
+    register(identity: AnpIdentity): void {
+      registry.set(pathOf(identity.did), identity.didDocument);
+    },
+    revoke(identity: AnpIdentity): void {
+      registry.delete(pathOf(identity.did));
+    },
+    close: async () => {
+      if (closed) return;
+      closed = true;
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    },
+  };
+}
+
 export async function startHarness(
   options: { workspace?: string; enroll?: 'open' | 'pending' | 'off' } = {},
 ): Promise<Harness> {
@@ -50,6 +117,7 @@ export async function startHarness(
   const db = openDatabase(databasePath);
   if (postgres) await resetPostgres(db);
 
+  const did = await startDidHost();
   const workspace = options.workspace ?? 'acme';
   const app = await createApp(db, {
     identity: { workspace, enroll: options.enroll ?? 'open' },
@@ -74,6 +142,7 @@ export async function startHarness(
     app,
     db,
     url,
+    did,
     directory,
     databasePath,
     server,
@@ -83,10 +152,12 @@ export async function startHarness(
     stop: async () => {
       await new Promise<void>(resolve => server.close(() => resolve()));
       await db.close();
+      await did.close();
     },
     close: async () => {
       await new Promise<void>(resolve => server.close(() => resolve()));
       await db.close();
+      await did.close();
       rmSync(directory, { recursive: true, force: true });
     },
   };

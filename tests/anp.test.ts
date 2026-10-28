@@ -10,7 +10,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ADMIN_TOKEN, startHarness } from './helpers/harness.ts';
 import { anpLogin, AnpLoginError, nonceFromChallenge } from '../src/anp/client.ts';
-import { generateIdentity, type AnpIdentity } from '../src/anp/identity.ts';
+import type { AnpIdentity } from '../src/anp/identity.ts';
 import { signRequest } from '../src/anp/signature.ts';
 
 /** 手动构造一次登录请求，用来覆盖客户端会避开的坏路径。 */
@@ -31,14 +31,14 @@ async function rawLogin(
   return fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json', ...signed.headers },
-    body: options.tamper ? signed.body.replace(identity.did, identity.did.replace(/e1_/, 'e1_fake')) : signed.body,
+    body: options.tamper ? signed.body.replace('"agent"', '"browser"') : signed.body,
   });
 }
 
 test('钱包身份首次登录：自动登记、签发会话、可读 /v1/me', async () => {
   const harness = await startHarness();
   try {
-    const identity = generateIdentity({ handle: 'alice' });
+    const identity = harness.did.identity('alice');
     const result = await anpLogin({ baseUrl: harness.url, identity, client: 'browser' });
 
     assert.equal(result.tokenType, 'Bearer');
@@ -51,7 +51,7 @@ test('钱包身份首次登录：自动登记、签发会话、可读 /v1/me', a
     assert.equal(me.id, result.principal.id);
     assert.equal(me.did, identity.did);
     assert.equal(me.kind, 'human');
-    assert.equal(me.handle, 'alice@agents.local');
+    assert.equal(me.handle, `alice@${decodeURIComponent(harness.did.domain)}`);
   } finally {
     await harness.close();
   }
@@ -60,7 +60,7 @@ test('钱包身份首次登录：自动登记、签发会话、可读 /v1/me', a
 test('同一个 DID 再次登录落到同一个主体，不会重复登记', async () => {
   const harness = await startHarness();
   try {
-    const identity = generateIdentity({ handle: 'bob' });
+    const identity = harness.did.identity('bob');
     const first = await anpLogin({ baseUrl: harness.url, identity });
     const second = await anpLogin({ baseUrl: harness.url, identity });
     assert.equal(second.principal.id, first.principal.id);
@@ -78,7 +78,7 @@ test('同一个 DID 再次登录落到同一个主体，不会重复登记', asy
 test('nonce 只能用一次；重放被拒并换发新挑战', async () => {
   const harness = await startHarness();
   try {
-    const identity = generateIdentity({ handle: 'replay' });
+    const identity = harness.did.identity('replay');
     const challenge = (await (await fetch(`${harness.url}/auth/anp/challenge`)).json()) as { nonce: string };
 
     const url = `${harness.url}/auth/anp/login`;
@@ -107,7 +107,7 @@ test('nonce 只能用一次；重放被拒并换发新挑战', async () => {
 test('请求体被改动后签名失效', async () => {
   const harness = await startHarness();
   try {
-    const identity = generateIdentity({ handle: 'tamper' });
+    const identity = harness.did.identity('tamper');
     const challenge = (await (await fetch(`${harness.url}/auth/anp/challenge`)).json()) as { nonce: string };
     const response = await rawLogin(harness.url, identity, { nonce: challenge.nonce, tamper: true });
     assert.equal(response.status, 401);
@@ -121,7 +121,7 @@ test('请求体被改动后签名失效', async () => {
 test('不带 nonce 时返回 401 挑战，客户端读 WWW-Authenticate 重签即可登录（anpio-cli 语义）', async () => {
   const harness = await startHarness();
   try {
-    const identity = generateIdentity({ handle: 'cli' });
+    const identity = harness.did.identity('cli');
     const rejected = await rawLogin(harness.url, identity, { nonce: '' });
     assert.equal(rejected.status, 401);
     const challenge = nonceFromChallenge(rejected.headers.get('www-authenticate'));
@@ -143,7 +143,7 @@ test('不带 nonce 时返回 401 挑战，客户端读 WWW-Authenticate 重签�
 test('退出登录只撤销当前会话，其他会话不受影响', async () => {
   const harness = await startHarness();
   try {
-    const identity = generateIdentity({ handle: 'sessions' });
+    const identity = harness.did.identity('sessions');
     const laptop = await anpLogin({ baseUrl: harness.url, identity });
     const desktop = await anpLogin({ baseUrl: harness.url, identity });
 
@@ -161,14 +161,14 @@ test('退出登录只撤销当前会话，其他会话不受影响', async () =>
 test('绑定码让智能体登进人的账号，审计仍能分辨 DID', async () => {
   const harness = await startHarness();
   try {
-    const human = generateIdentity({ handle: 'boss' });
+    const human = harness.did.identity('boss');
     const humanLogin = await anpLogin({ baseUrl: harness.url, identity: human, client: 'browser' });
     const client = harness.client(humanLogin.token);
 
     const invite = await client.inviteIdentity({ role: 'agent', note: '库存智能体' }, 'invite-1');
     assert.ok(invite.code.length >= 8);
 
-    const agent = generateIdentity({ handle: 'stock-bot' });
+    const agent = harness.did.identity('stock-bot');
     const bound = await anpLogin({ baseUrl: harness.url, identity: agent, bindCode: invite.code });
     assert.equal(bound.enrollment, 'bound');
     assert.equal(bound.principal.id, humanLogin.principal.id, '同一个账号');
@@ -181,7 +181,7 @@ test('绑定码让智能体登进人的账号，审计仍能分辨 DID', async (
     );
 
     // 绑定码一次性。
-    const second = await anpLogin({ baseUrl: harness.url, identity: generateIdentity({ handle: 'other' }), bindCode: invite.code }).catch(
+    const second = await anpLogin({ baseUrl: harness.url, identity: harness.did.identity('other'), bindCode: invite.code }).catch(
       (error: unknown) => error,
     );
     assert.ok(second instanceof AnpLoginError);
@@ -194,7 +194,7 @@ test('绑定码让智能体登进人的账号，审计仍能分辨 DID', async (
 test('pending 模式下陌生 DID 被拦在门外，管理员批准后才能进', async () => {
   const harness = await startHarness({ enroll: 'pending' });
   try {
-    const identity = generateIdentity({ handle: 'newbie' });
+    const identity = harness.did.identity('newbie');
     const blocked = await anpLogin({ baseUrl: harness.url, identity }).catch((error: unknown) => error);
     assert.ok(blocked instanceof AnpLoginError);
     assert.equal((blocked as AnpLoginError).status, 403);
@@ -213,7 +213,7 @@ test('pending 模式下陌生 DID 被拦在门外，管理员批准后才能进'
 test('无效签名不能换取会话，也不会消耗别人的 nonce', async () => {
   const harness = await startHarness();
   try {
-    const identity = generateIdentity({ handle: 'forger' });
+    const identity = harness.did.identity('forger');
     const challenge = (await (await fetch(`${harness.url}/auth/anp/challenge`)).json()) as { nonce: string };
     const url = `${harness.url}/auth/anp/login`;
     const body = JSON.stringify({ nonce: challenge.nonce, did: identity.did, didDocument: identity.didDocument });
@@ -223,7 +223,7 @@ test('无效签名不能换取会话，也不会消耗别人的 nonce', async ()
       nonce: challenge.nonce,
       keyid: identity.keyid,
       // 用别人的钥匙签这份文档：验签必须失败。
-      privateKey: generateIdentity({ handle: 'thief' }).privateKey,
+      privateKey: harness.did.identity('thief').privateKey,
     });
     const response = await fetch(url, {
       method: 'POST',
@@ -247,9 +247,9 @@ test('智能体的目录只包含自己和同任务的人', async () => {
     await harness.admin.registerPrincipal({ id: 'owner1', roles: ['owner'], token: ownerToken }, 'register-owner');
     const owner = harness.client(ownerToken);
 
-    const stock = generateIdentity({ handle: 'stock' });
+    const stock = harness.did.identity('stock');
     const stockLogin = await anpLogin({ baseUrl: harness.url, identity: stock });
-    const supplier = generateIdentity({ handle: 'supplier' });
+    const supplier = harness.did.identity('supplier');
     const supplierLogin = await anpLogin({ baseUrl: harness.url, identity: supplier });
 
     const task = await owner.createTask(
