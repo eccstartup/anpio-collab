@@ -176,7 +176,7 @@ export function createServer(options: ServerOptions): http.Server {
       if (appError.code === 'internal') console.error(appError.cause ?? appError);
       if (principal) {
         try {
-          await app.audit.record(principal, url.pathname, `denied:${appError.status}`);
+          await app.audit.record(principal, `${req.method ?? 'GET'} ${url.pathname}`, `denied:${appError.status}`);
         } catch (auditError) {
           console.error('审计写入失败', auditError);
         }

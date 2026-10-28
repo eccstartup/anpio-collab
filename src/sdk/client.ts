@@ -9,7 +9,7 @@
  */
 
 import type {
-  AuditEntry,
+  ActivityItem,  AuditEntry,
   Evidence,
   InboxItem,
   KnowledgeSearch,
@@ -25,6 +25,7 @@ import type {
 } from './types.ts';
 
 export type {
+  ActivityItem,
   AuditEntry,
   Evidence,
   InboxItem,
@@ -165,6 +166,10 @@ export class CollabClient {
     return this.request<{ items: TaskListItem[]; nextOffset: number | null }>(
       `tasks/page?limit=${limit}&offset=${offset}`,
     );
+  }
+
+  activity(limit = 30) {
+    return this.request<ActivityItem[]>(`activity?limit=${limit}`);
   }
 
   task(id: string) {

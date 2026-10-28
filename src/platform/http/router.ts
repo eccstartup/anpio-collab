@@ -38,6 +38,12 @@ export type Route = {
   description: string;
   /** 无需令牌的公开接口，例如健康检查。 */
   public?: boolean;
+  /**
+   * 读操作默认不写审计：平台每秒都有轮询式的读取，全量记录只会把审计表变成噪音。
+   * 只有确实需要留痕的敏感读取（例如知识正文与检索）在这里显式开启。
+   * 写操作、重放与所有被拒绝的请求始终记录。
+   */
+  auditRead?: boolean;
   read?: (ctx: ReadContext) => Promise<unknown>;
   write?: WriteSpec;
 };

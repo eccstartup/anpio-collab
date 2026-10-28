@@ -59,6 +59,17 @@ const VISIBLE_CLAUSE = `(
   OR EXISTS (SELECT 1 FROM task_coordinators vc WHERE vc.task_id = t.id AND vc.principal_id = :actor)
 )`;
 
+/** 动态流：一条事件 + 它所属任务的标题，供工作台直接展示。 */
+export type ActivityItem = {
+  seq: number;
+  taskId: string;
+  taskTitle: string;
+  actorId: string;
+  type: string;
+  payload: Record<string, unknown>;
+  recordedAt: string;
+};
+
 const LIST_COLUMNS = `
   t.id, t.title, t.type, t.status, t.priority, t.owner_id, t.due_at, t.version, t.created_at, t.updated_at,
   p.display_name AS owner_name,
@@ -183,6 +194,41 @@ export class TaskService {
     return { items, nextOffset: rows.length > filters.limit ? filters.offset + filters.limit : null };
   }
 
+  /**
+   * 最近的跨任务事件。
+   *
+   * 只对负责人、审核人与管理员开放：业务智能体没有控制台，
+   * 而事件正文可能包含其他智能体的结果，不适合再放宽。
+   */
+  async activity(actor: Principal, limit = 30): Promise<ActivityItem[]> {
+    requireRole(actor, 'owner', 'reviewer', 'admin');
+    const rows = await this.ctx.db.read.all(
+      `SELECT e.seq, e.task_id, e.actor_id, e.type, e.payload, e.recorded_at, t.title
+       FROM events e JOIN tasks t ON t.id = e.task_id
+       WHERE t.workspace = :workspace
+         AND (t.owner_id = :actor OR :wide = 1
+              OR EXISTS (SELECT 1 FROM task_coordinators c
+                         WHERE c.task_id = t.id AND c.principal_id = :actor))
+       ORDER BY e.seq DESC
+       LIMIT :limit`,
+      {
+        workspace: actor.workspace,
+        actor: actor.id,
+        wide: hasAnyRole(actor, 'admin', 'reviewer') ? 1 : 0,
+        limit,
+      },
+    );
+    return rows.map(row => ({
+      seq: Number(row.seq),
+      taskId: String(row.task_id),
+      taskTitle: String(row.title),
+      actorId: String(row.actor_id),
+      type: String(row.type),
+      payload: JSON.parse(String(row.payload ?? '{}')) as Record<string, unknown>,
+      recordedAt: String(row.recorded_at),
+    }));
+  }
+
   async detail(actor: Principal, taskId: string): Promise<Record<string, unknown>> {
     const task = await readTask(this.ctx, actor, taskId);
     const unrestricted =
@@ -238,9 +284,16 @@ export class TaskService {
         .map(row => ({ knowledgeId: String(row.knowledge_id), version: Number(row.version) }));
     }
 
+    // 负责人名称与列表保持一致：详情页不必再查一次目录。
+    const owner = await this.ctx.db.read.one<{ display_name: string | null }>(
+      'SELECT display_name FROM principals WHERE id = :id AND workspace = :workspace',
+      { id: task.ownerId, workspace: task.workspace },
+    );
+
     return {
       task: {
         ...task,
+        ownerName: String(owner?.display_name ?? '') || task.ownerId,
         result: unrestricted ? task.result : null,
       },
       subtasks,

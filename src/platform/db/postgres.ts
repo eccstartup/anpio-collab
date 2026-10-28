@@ -44,6 +44,7 @@ class PostgresDatabase implements Database {
   readonly read: Queryable;
   private readonly pool: pg.Pool;
   private readonly queryable: PgQueryable;
+  private closed = false;
 
   constructor(url: string) {
     this.pool = new pg.Pool({ connectionString: url, max: 10 });
@@ -89,7 +90,10 @@ class PostgresDatabase implements Database {
     await this.pool.query(sql);
   }
 
+  /** 允许重复关闭：停机流程与测试清理都可能调用，pg 的 pool.end() 只接受一次。 */
   async close(): Promise<void> {
+    if (this.closed) return;
+    this.closed = true;
     await this.pool.end();
   }
 }

@@ -84,6 +84,13 @@ export const routes: Route[] = [
   // ------------------------------------------------------------ 主体目录
   {
     method: 'GET',
+    path: '/v1/activity',
+    description: '跨任务最近事件（负责人、审核人、管理员）',
+    read: async ({ app, principal, query }) => app.tasks.activity(principal, parseLimit(query, 30)),
+  },
+
+  {
+    method: 'GET',
     path: '/v1/principals',
     description: '参与者目录，可按能力过滤',
     read: async ({ app, principal, query }) =>
@@ -357,6 +364,7 @@ export const routes: Route[] = [
     method: 'GET',
     path: '/v1/knowledge/search',
     description: '带字符预算的词法检索',
+    auditRead: true,
     read: async ({ app, principal, query }) =>
       app.knowledge.search(
         principal,
@@ -381,6 +389,7 @@ export const routes: Route[] = [
     method: 'GET',
     path: '/v1/knowledge/:id/evidence',
     description: '当前有效版本的证据包',
+    auditRead: true,
     read: async ({ app, principal, params }) => app.knowledge.currentEvidence(principal, params.id ?? ''),
   },
   {

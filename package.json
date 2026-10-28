@@ -13,6 +13,7 @@
     "test": "node --disable-warning=ExperimentalWarning --test tests/*.test.ts",
     "test:postgres": "bash scripts/test-postgres.sh",
     "demo": "node --disable-warning=ExperimentalWarning examples/demo.ts",
+    "seed": "node --disable-warning=ExperimentalWarning scripts/seed-demo.ts",
     "check": "tsc --noEmit",
     "backup": "node src/platform/tools/backup.ts",
     "scheduler": "node src/platform/tools/scheduler.ts"

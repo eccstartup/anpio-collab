@@ -63,6 +63,7 @@ const state = {
   view: 'home',
   tab: 'published',
   tasks: [],
+  activity: [],
   taskId: null,
   detail: null,
   knowledge: [],
@@ -100,6 +101,9 @@ const frag = (...children) => {
 
 const badge = (value) =>
   el('span', { class: 'badge', dataset: { tone: STATUS_TONE[value] ?? 'muted' } }, STATUS_LABEL[value] ?? value);
+
+/** 类别与执行者常常同名，重复显示只会制造噪音。 */
+const combo = (agent, kind) => (!agent ? kind : !kind || kind === agent ? agent : `${kind}（${agent}）`);
 
 const formatTime = (iso) => {
   if (!iso) return '—';
@@ -305,6 +309,9 @@ function renderNav() {
 async function refresh() {
   try {
     if (state.view === 'home' || state.view === 'tasks') state.tasks = await api('tasks');
+    if (state.view === 'home') {
+      state.activity = hasRole('owner', 'reviewer', 'admin') ? await api('activity?limit=12') : [];
+    }
     if (state.view === 'tasks' && state.taskId) state.detail = await api(`tasks/${encodeURIComponent(state.taskId)}`);
     if (state.view === 'knowledge') {
       state.knowledge = await api(`knowledge${state.query ? `?q=${encodeURIComponent(state.query)}` : ''}`);
@@ -324,7 +331,7 @@ function render() {
   const view = document.getElementById('view');
   const topbar = document.getElementById('topbar');
   const titles = {
-    home: ['工作台', '今天需要你判断的事'],
+    home: ['工作台', '概览与需要你判断的事'],
     tasks: ['任务', '目标、分工、验收与证据'],
     knowledge: ['经验库', '经过审核、带范围与有效期的经验'],
     directory: ['参与者', '人与智能体的身份、能力与状态'],
@@ -364,14 +371,50 @@ function renderHome() {
     ? el('div', { class: 'list' }, attention.map(taskRow))
     : el('div', { class: 'empty' }, '暂时没有需要处理的任务。');
 
+  // 有数据之后不再占着首屏讲道理，把位置留给待处理的事。
+  const intro = state.tasks.length
+    ? null
+    : el('div', { class: 'card' },
+      el('h3', {}, '从这里开始'),
+      el('p', { class: 'muted', style: 'margin-top:8px' },
+        '创建任务并写明验收条件，委派协调智能体提出分工；业务智能体在各自授权范围内执行，结果由人验收。只有验收通过的任务，结论才能沉淀为经验。'),
+      el('div', { class: 'row', style: 'margin-top:14px' },
+        hasRole('owner', 'admin')
+          ? el('button', { class: 'primary', type: 'button', onclick: () => { state.view = 'tasks'; state.query = ''; renderNav(); refresh(); } }, '去创建第一个任务')
+          : null,
+        hasRole('reviewer', 'admin')
+          ? el('button', { type: 'button', onclick: () => { state.view = 'knowledge'; state.tab = 'candidates'; renderNav(); refresh(); } }, '查看待审核经验')
+          : null));
+
+  const feedRow = (entry) =>
+    el('button', { type: 'button', class: 'feed-row', onclick: () => openTaskById(entry.taskId) },
+      el('div', { class: 'feed-main' },
+        el('span', { class: 'feed-task' }, entry.taskTitle),
+        el('span', { class: 'muted' }, ` · ${EVENT_TEXT[entry.type] ?? entry.type}`)),
+      el('div', { class: 'when' }, `${entry.actorId} · ${formatTime(entry.recordedAt)}`));
+
+  const feed = state.activity.length
+    ? frag(
+      el('div', { class: 'section-title' }, '最近活动'),
+      el('div', { class: 'card feed' }, state.activity.map(feedRow)),
+    )
+    : null;
+
   return frag(
-    el('div', { class: 'card' }, el('h3', {}, '从这里开始'), el('p', { class: 'muted', style: 'margin-top:8px' },
-      '创建任务并写明验收条件，委派协调智能体提出分工；业务智能体在各自授权范围内执行，结果由人验收。验收后的结论才能沉淀为经验。')),
+    intro,
     el('div', { class: 'section-title' }, '概览'),
     stats,
     el('div', { class: 'section-title' }, '需要你判断'),
     attentionList,
+    feed,
   );
+}
+
+function openTaskById(taskId) {
+  state.view = 'tasks';
+  state.taskId = taskId;
+  renderNav();
+  refresh();
 }
 
 function statCard(label, value) {
@@ -391,14 +434,21 @@ function taskRow(task) {
         refresh();
       },
     },
-    el('div', { class: 'row spread' }, el('span', { class: 'title' }, task.title), badge(task.status)),
+    el(
+      'div',
+      { class: 'row spread' },
+      el('span', { class: 'row', style: 'gap:8px' },
+        task.priority === 'high' ? el('span', { class: 'dot', title: '高优先级' }) : null,
+        el('span', { class: 'title' }, task.title)),
+      badge(task.status),
+    ),
     el(
       'div',
       { class: 'meta' },
       el('span', {}, `负责人 ${task.ownerName}`),
       el('span', {}, `截止 ${formatDate(task.dueAt)}`),
       el('span', {}, `子任务 ${task.subtaskDone}/${task.subtaskCount}`),
-      el('span', { class: 'mono' }, task.id.slice(0, 8)),
+      el('span', { class: 'mono muted', title: `任务编号 ${task.id}` }, task.id.slice(0, 8)),
     ),
   );
 }
@@ -498,9 +548,11 @@ function renderTaskDetail() {
 
   const back = el(
     'button',
-    { class: 'ghost', type: 'button', onclick: () => { state.taskId = null; refresh(); } },
+    { class: 'link back', type: 'button', onclick: () => { state.taskId = null; refresh(); } },
     '← 返回任务列表',
   );
+
+  const hasGoal = task.goal && task.goal !== task.title;
 
   const head = el(
     'div',
@@ -508,31 +560,30 @@ function renderTaskDetail() {
     el('div', { class: 'row' }, badge(task.status), el('span', { class: 'badge' }, task.type),
       el('span', { class: 'badge' }, `优先级 ${task.priority}`)),
     el('h3', { class: 'detail-title' }, task.title),
-    el('p', { class: 'muted' }, task.goal),
+    hasGoal ? el('p', { class: 'lede tight' }, task.goal) : null,
   );
 
   const meta = el(
     'dl',
     { class: 'kv' },
     el('dt', {}, '负责人'),
-    el('dd', {}, task.ownerId),
+    el('dd', {}, task.ownerName ? `${task.ownerName}（${task.ownerId}）` : task.ownerId),
     el('dt', {}, '截止'),
     el('dd', {}, formatTime(task.dueAt)),
     el('dt', {}, '验收条件'),
     el('dd', {}, task.acceptance),
     el('dt', {}, '版本'),
-    el('dd', { class: 'mono' }, String(task.version)),
+    el('dd', {}, `v${task.version}`),
     el('dt', {}, '输入'),
-    el('dd', { class: 'mono' }, JSON.stringify(task.input)),
+    el('dd', {}, el('pre', { class: 'code' }, JSON.stringify(task.input))),
   );
 
   const actions = renderTaskActions(detail, owner);
 
   return frag(
     back,
-    el('div', { style: 'height:16px' }, ''),
     head,
-    actions ? el('div', { class: 'card' }, el('div', { class: 'actions' }, actions)) : null,
+    actions ? el('div', { class: 'toolbar' }, actions) : null,
     el('div', { class: 'card' }, meta),
     task.result ? el('div', { class: 'card' },
       el('div', { class: 'card-head' }, el('h3', {}, '汇总')),
@@ -543,10 +594,10 @@ function renderTaskDetail() {
         el('div', { class: 'card-head' }, el('h3', {}, '引用的经验')),
         el('div', { class: 'list' }, detail.knowledgeRefs.map((ref) =>
           el('div', { class: 'list-item', style: 'cursor:default' },
-            el('div', { class: 'mono' }, `${ref.knowledgeId}`),
-            el('div', { class: 'meta' }, `版本 v${ref.version}`)))))
+            el('div', { class: 'mono muted' }, `经验 ${ref.knowledgeId.slice(0, 8)}`),
+            el('div', { class: 'meta' }, `固定引用版本 v${ref.version}`)))))
       : null,
-    renderTimeline(detail.events),
+    renderTimeline(detail.events, detail.subtasks),
   );
 }
 
@@ -588,7 +639,8 @@ function renderSubtasks(detail, owner) {
   const rows = detail.subtasks.map((subtask) => {
     const result = subtask.result
       ? subtask.result.quantity !== undefined
-        ? `数量 ${subtask.result.quantity} · 来源 ${subtask.result.source ?? '—'}`
+        ? `数量 ${subtask.result.quantity} · 来源 ${subtask.result.source ?? '—'}` +
+          (subtask.result.observedAt ? ` · 观测 ${formatTime(subtask.result.observedAt)}` : '')
         : subtask.result.summary ?? subtask.result.reason ?? JSON.stringify(subtask.result)
       : '—';
     const cellActions = [];
@@ -601,10 +653,9 @@ function renderSubtasks(detail, owner) {
     return el(
       'tr',
       {},
-      el('td', {}, subtask.kind),
-      el('td', {}, subtask.agentId),
+      el('td', {}, combo(subtask.agentId, subtask.kind)),
       el('td', {}, badge(subtask.status)),
-      el('td', {}, el('div', { style: 'max-width:320px' }, result)),
+      el('td', {}, el('div', { style: 'max-width:420px' }, result)),
       el('td', {}, cellActions.length ? el('div', { class: 'row' }, cellActions) : '—'),
     );
   });
@@ -616,7 +667,7 @@ function renderSubtasks(detail, owner) {
     detail.subtasks.length
       ? el('div', { class: 'table-wrap' }, el('table', {},
         el('thead', {}, el('tr', {},
-          el('th', {}, '类别'), el('th', {}, '智能体'), el('th', {}, '状态'), el('th', {}, '结果'), el('th', {}, '操作'))),
+          el('th', {}, '子任务'), el('th', {}, '状态'), el('th', {}, '结果'), el('th', {}, '操作'))),
         el('tbody', {}, rows)))
       : el('div', { class: 'empty' }, '尚未分派'),
   );
@@ -647,12 +698,47 @@ const EVENT_TEXT = {
   knowledge_referenced: '引用经验',
 };
 
-function renderTimeline(events) {
-  const items = events.slice(-25).reverse().map((event) =>
-    el('li', {},
+/**
+ * 事件只显示"发生了什么"，但光有类型名太干瘪。
+ * 这里从载荷里取一两个最能说明问题的字段拼在后面，不堆砌整段 JSON。
+ */
+function eventDetail(type, payload, kinds) {
+  const text = (value) => (typeof value === 'string' ? value : null);
+  switch (type) {
+    case 'coordinator_delegated':
+    case 'coordinator_removed':
+      return text(payload.principal);
+    case 'subtask_invited':
+      return combo(text(payload.agent), text(payload.kind)) ?? null;
+    case 'subtask_accepted':
+    case 'subtask_timed_out':
+    case 'subtask_returned':
+      return kinds.get(text(payload.subtaskId) ?? '') ?? null;
+    case 'subtask_submitted':
+      return [text(payload.source), text(payload.observedAt) ? `观测 ${formatTime(payload.observedAt)}` : null]
+        .filter(Boolean)
+        .join(' · ');
+    case 'summary_submitted':
+      return typeof payload.subtaskCount === 'number' ? `${payload.subtaskCount} 个子任务` : null;
+    case 'knowledge_candidate':
+    case 'knowledge_published':
+    case 'knowledge_revoked':
+    case 'knowledge_revised':
+      return typeof payload.version === 'number' ? `v${payload.version}` : null;
+    default:
+      return text(payload.note) ?? text(payload.reason) ?? null;
+  }
+}
+
+function renderTimeline(events, subtasks = []) {
+  const kinds = new Map(subtasks.map((subtask) => [subtask.id, combo(subtask.agentId, subtask.kind)]));
+  const items = events.slice(-25).reverse().map((event) => {
+    const detailText = eventDetail(event.type, event.payload ?? {}, kinds);
+    return el('li', {},
       el('div', { class: 'what' }, EVENT_TEXT[event.type] ?? event.type,
-        event.payload && event.payload.note ? el('span', { class: 'muted' }, ` · ${event.payload.note}`) : null),
-      el('div', { class: 'when' }, `${event.actorId} · ${formatTime(event.recordedAt)}`)));
+        detailText ? el('span', { class: 'muted' }, ` · ${detailText}`) : null),
+      el('div', { class: 'when' }, `${event.actorId} · ${formatTime(event.recordedAt)}`));
+  });
   return el('div', { class: 'card' },
     el('div', { class: 'card-head' }, el('h3', {}, '事件时间线'), el('span', { class: 'muted' }, `${events.length} 条`)),
     events.length ? el('ul', { class: 'timeline' }, items) : el('div', { class: 'empty' }, '暂无事件'));
@@ -822,18 +908,20 @@ function renderPublished() {
   if (!state.knowledge.length) return el('div', { class: 'empty' }, '还没有对当前身份可见的经验。');
   return el('div', { class: 'list' }, state.knowledge.map((item) =>
     el('div', { class: 'list-item', style: 'cursor:default' },
-      el('div', { class: 'row spread' }, el('span', { class: 'title' }, item.content.slice(0, 80)), badge('published')),
+      el('div', { class: 'row spread top' },
+        el('p', { class: 'statement' }, item.content),
+        badge('published')),
       el('div', { class: 'meta' },
-        el('span', {}, `适用：${item.conditions}`),
         el('span', {}, `v${item.version}`),
+        el('span', {}, `适用：${item.conditions}`),
         el('span', {}, `有效期至 ${formatDate(item.expiresAt)}`),
-        el('span', { class: 'mono' }, item.id.slice(0, 8))),
+        el('span', { class: 'mono muted', title: `经验编号 ${item.id}` }, item.id.slice(0, 8))),
       hasRole('reviewer', 'admin')
-        ? el('div', { class: 'row', style: 'margin-top:6px' },
-          el('button', { class: 'link', type: 'button', onclick: () => openRevoke(item) }, '撤销'),
+        ? el('div', { class: 'row actions-row' },
           el('button', { class: 'link', type: 'button', onclick: () => openRevise(item) }, '修订'),
           el('button', { class: 'link', type: 'button', onclick: () => openAccess(item) }, '调整范围'),
-          el('button', { class: 'link', type: 'button', onclick: () => openVersions(item) }, '版本'))
+          el('button', { class: 'link', type: 'button', onclick: () => openVersions(item) }, '版本历史'),
+          el('button', { class: 'link danger', type: 'button', onclick: () => openRevoke(item) }, '撤销'))
         : null,
     )));
 }
@@ -842,12 +930,14 @@ function renderCandidates() {
   if (!state.candidates.length) return el('div', { class: 'empty' }, '没有待审核的候选经验。');
   return el('div', { class: 'list' }, state.candidates.map((item) =>
     el('div', { class: 'list-item', style: 'cursor:default' },
-      el('div', { class: 'row spread' }, el('span', { class: 'title' }, item.content.slice(0, 80)), badge('candidate')),
+      el('div', { class: 'row spread top' },
+        el('p', { class: 'statement' }, item.content),
+        badge('candidate')),
       el('div', { class: 'meta' },
-        el('span', {}, `适用：${item.conditions}`),
         el('span', {}, `v${item.version}`),
-        el('span', { class: 'mono' }, item.id.slice(0, 8))),
-      el('div', { class: 'row', style: 'margin-top:6px' },
+        el('span', {}, `适用：${item.conditions}`),
+        el('span', { class: 'mono muted', title: `经验编号 ${item.id}` }, item.id.slice(0, 8))),
+      el('div', { class: 'row actions-row' },
         el('button', { class: 'primary', type: 'button', onclick: () => openPublish(item) }, '审核发布')),
     )));
 }
@@ -972,7 +1062,7 @@ function renderDirectory() {
       el('td', {}, el('span', { class: 'badge', dataset: { tone: principal.active ? 'ok' : 'muted' } },
         principal.active ? '正常' : '已停用')),
       el('td', {}, isAdmin() && principal.id !== state.me.id && principal.active
-        ? el('button', { class: 'link', type: 'button', onclick: () => confirmDeactivate(principal) }, '停用')
+        ? el('button', { class: 'link danger', type: 'button', onclick: () => confirmDeactivate(principal) }, '停用')
         : '—')));
 
   return frag(
@@ -1036,19 +1126,38 @@ function confirmDeactivate(principal) {
 
 // ---------------------------------------------------------------- 审计
 
+const OUTCOME_LABEL = { success: '成功', replay: '幂等重放', read: '读取' };
+const OUTCOME_TONE = { success: 'ok', replay: 'muted', read: 'muted' };
+
+/** 路径里的 UUID 只留前 8 位，否则审计表会被长串编号撑开。 */
+const shortPath = (path) => path.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, (id) => id.slice(0, 8));
+
 function renderAudit() {
   if (!hasRole('admin')) return el('div', { class: 'empty' }, '只有管理员可以查看审计。');
   if (!state.audit.length) return el('div', { class: 'empty' }, '暂无记录。');
-  return el('div', { class: 'card' },
-    el('div', { class: 'table-wrap' }, el('table', {},
-      el('thead', {}, el('tr', {},
-        el('th', {}, '时间'), el('th', {}, '主体'), el('th', {}, '动作'), el('th', {}, '结果'))),
-      el('tbody', {}, state.audit.slice(0, 200).map((entry) =>
-        el('tr', {},
-          el('td', { class: 'mono' }, formatTime(entry.recordedAt)),
-          el('td', {}, entry.principalId),
-          el('td', { class: 'mono' }, entry.action),
-          el('td', {}, entry.outcome)))))));
+  return frag(
+    el('p', { class: 'hint tight' },
+      '写操作、幂等重放、被拒绝的请求与少数敏感读取会留痕；普通读取不记录，避免审计表被轮询淹没。'),
+    el('div', { class: 'card' },
+      el('div', { class: 'table-wrap' }, el('table', {},
+        el('thead', {}, el('tr', {},
+          el('th', {}, '时间'), el('th', {}, '主体'), el('th', {}, '接口'), el('th', {}, '结果'))),
+        el('tbody', {}, state.audit.slice(0, 200).map((entry) => {
+          const [method, ...rest] = entry.action.split(' ');
+          const path = rest.join(' ');
+          const denied = entry.outcome.startsWith('denied:');
+          const tone = denied ? 'danger' : OUTCOME_TONE[entry.outcome] ?? 'muted';
+          const label = denied ? `拒绝 ${entry.outcome.slice(7)}` : OUTCOME_LABEL[entry.outcome] ?? entry.outcome;
+          return el('tr', {},
+            el('td', { class: 'mono muted nowrap' }, formatTime(entry.recordedAt)),
+            el('td', {}, entry.principalId),
+            el('td', {},
+              el('span', { class: 'row', style: 'gap:8px' },
+                el('span', { class: 'method' }, method),
+                el('span', { class: 'mono', title: entry.action }, shortPath(path) || entry.action))),
+            el('td', {}, el('span', { class: 'badge', dataset: { tone } }, label)));
+        }))))),
+  );
 }
 
 // ---------------------------------------------------------------- 启动

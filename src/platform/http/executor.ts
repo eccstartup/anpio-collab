@@ -24,6 +24,9 @@ const fingerprintOf = (match: RouteMatch, ctx: WriteContext, expectedVersion?: n
     .update(JSON.stringify([match.route.method, ctx.path, ctx.body ?? null, expectedVersion ?? null]))
     .digest('hex');
 
+/** 审计里统一记成 "METHOD /path"，读列表时不用再猜动作类型。 */
+const actionOf = (match: RouteMatch, ctx: WriteContext): string => `${match.route.method} ${ctx.path}`;
+
 export async function executeWrite(
   app: App,
   match: RouteMatch,
@@ -55,7 +58,7 @@ export async function executeWrite(
         throw conflict('同一 Idempotency-Key 被用于不同请求');
       }
       await spec.authorize?.(ctx);
-      await app.audit.recordIn(tx, ctx.principal, ctx.path, 'replay');
+      await app.audit.recordIn(tx, ctx.principal, actionOf(match, ctx), 'replay');
       return JSON.parse(String(previous.response));
     }
 
@@ -84,7 +87,7 @@ export async function executeWrite(
         at: app.ctx.now(),
       },
     );
-    await app.audit.recordIn(tx, ctx.principal, ctx.path, 'success');
+    await app.audit.recordIn(tx, ctx.principal, actionOf(match, ctx), 'success');
     return response;
   });
 }
@@ -93,6 +96,9 @@ export async function executeRead(app: App, match: RouteMatch, ctx: WriteContext
   const handler = match.route.read;
   if (!handler) throw invalid('该路径不支持读操作');
   const result = await handler(ctx);
-  await app.audit.record(ctx.principal, ctx.path, 'success');
+  // 读操作默认不留痕，只有显式声明的敏感读取才写审计。
+  if (match.route.auditRead) {
+    await app.audit.record(ctx.principal, actionOf(match, ctx), 'read');
+  }
   return result;
 }

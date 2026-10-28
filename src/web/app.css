@@ -28,6 +28,12 @@
   box-sizing: border-box;
 }
 
+/* 组件里的 display 声明会盖掉浏览器默认的 [hidden]{display:none}，
+   这里统一兜底，页面切换只靠 hidden 属性，不再依赖顺序或遮罩。 */
+[hidden] {
+  display: none !important;
+}
+
 html,
 body {
   margin: 0;
@@ -196,6 +202,14 @@ label.checkbox input {
 .lede {
   color: var(--muted);
   margin-bottom: 26px;
+}
+
+.lede.tight {
+  margin: 0;
+}
+
+.hint.tight {
+  margin: 0 0 14px;
 }
 
 .hint {
@@ -396,6 +410,15 @@ label.checkbox input {
   justify-content: space-between;
 }
 
+.row.top {
+  align-items: flex-start;
+}
+
+.row.top .statement {
+  flex: 1;
+  min-width: 0;
+}
+
 .section-title {
   font-size: 12px;
   letter-spacing: 0.08em;
@@ -434,8 +457,51 @@ label.checkbox input {
   font-size: 12.5px;
   color: var(--muted);
   display: flex;
-  gap: 14px;
+  gap: 0;
   flex-wrap: wrap;
+  align-items: baseline;
+}
+
+/* 元信息之间用细点分隔，比连续空格更清楚谁和谁是一组。 */
+.list-item .meta > span + span::before {
+  content: "·";
+  margin-right: 14px;
+  color: #a9a59b;
+}
+
+.list-item .statement {
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.actions-row {
+  gap: 18px;
+  margin-top: 2px;
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex: none;
+}
+
+.code {
+  display: inline-block;
+  min-width: 220px;
+  max-width: 100%;
+  margin: 0;
+  padding: 10px 12px;
+  background: #f7f5f1;
+  border-radius: 10px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .empty {
@@ -444,6 +510,41 @@ label.checkbox input {
   color: var(--muted);
   border: 1px dashed var(--line-strong);
   border-radius: 12px;
+}
+
+/* ---------------- 动态 ---------------- */
+
+.feed {
+  padding: 6px 8px;
+}
+
+.feed-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.feed-row:hover {
+  background: #f5f3ee;
+  border-color: transparent;
+}
+
+.feed-main {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.feed-task {
+  font-weight: 500;
 }
 
 /* ---------------- 徽标 ---------------- */
@@ -520,6 +621,38 @@ tr:last-child td {
 
 /* ---------------- 详情 ---------------- */
 
+.back {
+  margin-bottom: 18px;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 18px 0;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.link.danger:hover {
+  color: var(--danger);
+}
+
+.method {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 0 5px;
+  line-height: 1.7;
+}
+
+.nowrap {
+  white-space: nowrap;
+}
+
 .detail-head {
   display: grid;
   gap: 12px;
@@ -570,7 +703,7 @@ tr:last-child td {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--line-strong);
+  background: #c9c5ba;
 }
 
 .timeline li:first-child::before {
@@ -608,6 +741,8 @@ tr:last-child td {
   border-radius: 18px;
   padding: 0;
   width: min(560px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  overflow: auto;
   box-shadow: 0 24px 60px rgba(27, 27, 25, 0.14);
   color: var(--ink);
 }

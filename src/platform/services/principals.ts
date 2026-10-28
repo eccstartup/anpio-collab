@@ -101,11 +101,17 @@ export class PrincipalService {
     if (input.token.length < MIN_TOKEN_LENGTH) {
       throw conflict(`令牌至少 ${MIN_TOKEN_LENGTH} 个字符`);
     }
-    const taken = await this.ctx.db.read.one(
-      `SELECT id FROM principals
-       WHERE workspace = :workspace AND (id = :id OR token_hash = :hash OR (:did IS NOT NULL AND did = :did))`,
-      { workspace, id: input.id, hash: hashToken(input.token), did: input.did ?? null },
-    );
+    // 不用 `:did IS NOT NULL AND did = :did`：PostgreSQL 无法推断裸 NULL 参数的类型。
+    // 分支写法在两种方言下都成立，也更容易读。
+    const clash = input.did
+      ? `SELECT id FROM principals WHERE workspace = :workspace AND (id = :id OR token_hash = :hash OR did = :did)`
+      : `SELECT id FROM principals WHERE workspace = :workspace AND (id = :id OR token_hash = :hash)`;
+    const taken = await this.ctx.db.read.one(clash, {
+      workspace,
+      id: input.id,
+      hash: hashToken(input.token),
+      ...(input.did ? { did: input.did } : {}),
+    });
     if (taken) throw conflict('主体 ID、令牌或 DID 已被占用');
 
     const principal: Principal = {

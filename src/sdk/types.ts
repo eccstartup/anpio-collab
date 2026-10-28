@@ -34,6 +34,17 @@ export type SubtaskRef = {
 
 export type StatusChange = { status: TaskStatus; version: number };
 
+/** 跨任务动态：工作台的「最近活动」直接消费这个结构。 */
+export type ActivityItem = {
+  seq: number;
+  taskId: string;
+  taskTitle: string;
+  actorId: string;
+  type: string;
+  payload: Record<string, unknown>;
+  recordedAt: string;
+};
+
 export type TaskListItem = {
   id: string;
   title: string;
@@ -53,7 +64,8 @@ export type TaskListItem = {
 export type KnowledgeRef = { knowledgeId: string; version: number };
 
 export type TaskDetail = {
-  task: Task;
+  /** 任务本体，附带负责人显示名，省去调用方再查目录。 */
+  task: Task & { ownerName: string };
   subtasks: Subtask[];
   coordinators: string[];
   events: TaskEvent[];
