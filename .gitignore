@@ -1,11 +1,13 @@
-__pycache__/
-*.py[cod]
+# 数据与构建产物
 *.sqlite3
 *.sqlite3-*
-
-.DS_Store
-
-node_modules/
 *.sqlite
 *.sqlite-*
+node_modules/
+
+# 本地配置与工具目录
 .env
+.workbuddy/
+.DS_Store
+__pycache__/
+*.py[cod]
