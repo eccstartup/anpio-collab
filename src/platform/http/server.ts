@@ -12,6 +12,7 @@ import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { extname, join, normalize, resolve } from 'node:path';
 import { AppError, invalid, notFound, unauthenticated } from '../../protocol/errors.ts';
+import { asObject } from '../../protocol/parse.ts';
 import type { Principal } from '../../protocol/types.ts';
 import type { App } from '../app.ts';
 import { ChallengeRequiredError, EnrollmentPendingError } from '../services/identity.ts';
@@ -93,7 +94,14 @@ async function serveStatic(
   webRoot: string,
   pathname: string,
 ): Promise<boolean> {
-  const relative = pathname === '/' ? 'index.html' : pathname.slice(1);
+  // 登录前可见的说明页：给一个干净地址，而不是 /login-help.html。
+  // /login 是邮件链接的落点，必须回落到同一个单页应用，否则点链接会拿到 401 JSON。
+  const aliases: Record<string, string> = {
+    '/help/login': 'login-help.html',
+    '/login': 'index.html',
+    '/agents/approve': 'index.html',
+  };
+  const relative = aliases[pathname] ?? (pathname === '/' ? 'index.html' : pathname.slice(1));
   // 只允许根目录下的单层文件，避免路径穿越。
   if (!/^[A-Za-z0-9._-]+$/.test(relative)) return false;
   const target = resolve(join(normalize(webRoot), relative));
@@ -186,7 +194,163 @@ type AnpContext = {
   app: App;
   bodyLimit: number;
   loginLimiter: RateLimiter;
+  emailLimiter: RateLimiter;
 };
+
+/**
+ * `/auth/*`：所有"登录之前"的端点。
+ *
+ * 这些端点不需要令牌，因此在这里统一做限流与错误映射。
+ * 返回 `true` 表示已经处理完这个请求。
+ */
+async function handlePublicAuth(
+  context: AnpContext,
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  url: URL,
+): Promise<boolean> {
+  const { app } = context;
+  const path = url.pathname;
+
+  // ------------------------------------------------------------ 邮箱链接
+  if (path === '/auth/email/start' && req.method === 'POST') {
+    const peer = req.socket.remoteAddress ?? 'unknown';
+    if (!context.emailLimiter.hit(peer)) {
+      sendError(res, new AppError('invalid', '发送过于频繁，请 10 分钟后再试'), { 'Retry-After': '600' });
+      return true;
+    }
+    const body = asObject(await readBody(req, context.bodyLimit)) as Record<string, unknown>;
+    const origin = absoluteUrl(req, '/')?.replace(/\/$/, '');
+    try {
+      const result = await app.emailAuth.start({
+        email: body.email,
+        invite: body.invite,
+        origin: origin ?? undefined,
+        userAgent: String(req.headers['user-agent'] ?? ''),
+      });
+      sendJson(res, 202, result);
+    } catch (error) {
+      sendError(res, toAppError(error));
+    }
+    return true;
+  }
+
+  if (path === '/auth/email/verify' && req.method === 'POST') {
+    const body = asObject(await readBody(req, context.bodyLimit)) as Record<string, unknown>;
+    try {
+      const result = await app.emailAuth.verify({ ticket: body.ticket });
+      if (result.status === 'select') {
+        sendJson(res, 409, {
+          error: { code: 'tenant_selection_required', message: '该邮箱属于多个组织，请选择要进入的组织' },
+          selectionToken: result.selectionToken,
+          tenants: result.tenants,
+        });
+        return true;
+      }
+      await app.audit.record(result.principal, 'POST /auth/email/verify', 'success');
+      sendJson(
+        res,
+        200,
+        {
+          token: result.token,
+          tokenType: 'Bearer',
+          expiresAt: result.expiresAt,
+          tenant: result.tenant,
+          joinedTenant: result.joinedTenant ?? false,
+          principal: publicPrincipal(result.principal),
+        },
+        { 'Authentication-Info': `access_token="${result.token}", token_type="Bearer"` },
+      );
+    } catch (error) {
+      sendError(res, toAppError(error));
+    }
+    return true;
+  }
+
+  if (path === '/auth/email/choose' && req.method === 'POST') {
+    const body = asObject(await readBody(req, context.bodyLimit)) as Record<string, unknown>;
+    try {
+      const result = await app.emailAuth.choose({
+        selectionToken: body.selectionToken,
+        tenantId: body.tenantId,
+      });
+      if (result.status !== 'ok') throw new AppError('internal', '选择组织失败');
+      await app.audit.record(result.principal, 'POST /auth/email/choose', 'success');
+      sendJson(res, 200, {
+        token: result.token,
+        tokenType: 'Bearer',
+        expiresAt: result.expiresAt,
+        tenant: result.tenant,
+        principal: publicPrincipal(result.principal),
+      });
+    } catch (error) {
+      sendError(res, toAppError(error));
+    }
+    return true;
+  }
+
+  // ------------------------------------------------------------ Agent 设备流
+  if (path === '/auth/agent/request' && req.method === 'POST') {
+    const peer = req.socket.remoteAddress ?? 'unknown';
+    if (!context.loginLimiter.hit(peer)) {
+      sendError(res, new AppError('invalid', '请求过于频繁，请稍后再试'), { 'Retry-After': '60' });
+      return true;
+    }
+    try {
+      const body = await readBody(req, context.bodyLimit);
+      const result = await app.agentAuth.request(body);
+      sendJson(res, 201, result);
+    } catch (error) {
+      sendError(res, toAppError(error));
+    }
+    return true;
+  }
+
+  if (path === '/auth/agent/token' && req.method === 'POST') {
+    try {
+      const body = await readBody(req, context.bodyLimit);
+      const result = await app.agentAuth.poll(body);
+      if (result.status === 'pending') {
+        sendJson(res, 202, result);
+        return true;
+      }
+      sendJson(res, 200, result, {
+        'Authentication-Info': `access_token="${result.token}", token_type="Bearer"`,
+      });
+    } catch (error) {
+      sendError(res, toAppError(error));
+    }
+    return true;
+  }
+
+  // ------------------------------------------------------------ 开发用邮件箱
+  if (path === '/auth/dev/mails' && req.method === 'GET') {
+    if (!app.mail.exposeOutbox) {
+      sendError(res, notFound('接口不存在'));
+      return true;
+    }
+    const email = (url.searchParams.get('email') ?? '').trim();
+    if (!email) {
+      sendError(res, invalid('缺少 email 参数'));
+      return true;
+    }
+    sendJson(res, 200, { items: await app.mail.recent(email) });
+    return true;
+  }
+
+  return false;
+}
+
+function publicPrincipal(principal: Principal) {
+  return {
+    id: principal.id,
+    displayName: principal.displayName,
+    kind: principal.kind,
+    roles: principal.roles,
+    tenantRole: principal.tenantRole,
+    workspace: principal.workspace,
+  };
+}
 
 /**
  * `/auth/anp/*`：挑战与登录。
@@ -241,13 +405,7 @@ async function handleAnpAuth(
           keyid: result.keyid,
           enrollment: result.enrollment,
           sessionExpiresAt: result.sessionExpiresAt,
-          principal: {
-            id: result.principal.id,
-            displayName: result.principal.displayName,
-            kind: result.principal.kind,
-            roles: result.principal.roles,
-            workspace: result.principal.workspace,
-          },
+          principal: publicPrincipal(result.principal),
         },
         { 'Authentication-Info': `access_token="${result.token}", token_type="Bearer"` },
       );
@@ -288,7 +446,12 @@ async function handleAnpAuth(
 export function createServer(options: ServerOptions): http.Server {
   const { app, webRoot, bodyLimit, logRequests = false } = options;
   const router = new Router(routes);
-  const anp: AnpContext = { app, bodyLimit, loginLimiter: new RateLimiter(30, 60_000) };
+  const anp: AnpContext = {
+    app,
+    bodyLimit,
+    loginLimiter: new RateLimiter(30, 60_000),
+    emailLimiter: new RateLimiter(5, 600_000),
+  };
 
   return http.createServer(async (req, res) => {
     const startedAt = Date.now();
@@ -307,6 +470,7 @@ export function createServer(options: ServerOptions): http.Server {
 
       if (req.method === 'GET' && (await serveStatic(res, webRoot, url.pathname))) return;
 
+      if (await handlePublicAuth(anp, req, res, url)) return;
       if (await handleAnpAuth(anp, req, res, url)) return;
     } catch (error) {
       const appError = toAppError(error);

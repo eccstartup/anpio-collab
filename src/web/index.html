@@ -13,58 +13,86 @@
         <p class="eyebrow">Anpio Collab</p>
         <h1>用你的身份进入</h1>
         <p class="lede">
-          人和智能体用各自的 DID 登录。同一个账号下的人与智能体共享任务、评论与验收记录，
-          谁做的、什么时候做的都留在事件里。
+          人和智能体用各自的身份登录，进入所属的组织。同一个账号下的人与智能体共享任务、
+          评论与验收记录，谁做的、什么时候做的都留在事件里。
         </p>
 
-        <ol id="wallet-steps" class="steps">
-          <li data-step="identity" data-state="idle">
-            <span>1</span>
-            <div>
-              <strong>读取钱包身份</strong>
-              <em>从浏览器插件取回 DID 与公钥，私钥不出插件</em>
-            </div>
-          </li>
-          <li data-step="challenge" data-state="idle">
-            <span>2</span>
-            <div>
-              <strong>领取一次性挑战</strong>
-              <em>服务端下发 nonce，签名只对它有效且只能用一次</em>
-            </div>
-          </li>
-          <li data-step="sign" data-state="idle">
-            <span>3</span>
-            <div>
-              <strong>在钱包里签名</strong>
-              <em>页面只拿到 RFC 9421 签名头，拿不到私钥</em>
-            </div>
-          </li>
-          <li data-step="session" data-state="idle">
-            <span>4</span>
-            <div>
-              <strong>换取会话</strong>
-              <em>验签通过后返回访问令牌，可随时在设置里撤销</em>
-            </div>
-          </li>
-        </ol>
-
-        <form id="wallet-form" class="stack">
+        <form id="email-form" class="stack">
           <label class="field">
-            <span>绑定码（可选）</span>
+            <span>工作邮箱</span>
             <input
-              id="bind-code"
-              type="text"
-              autocomplete="off"
+              id="email"
+              type="email"
+              autocomplete="email"
               spellcheck="false"
-              placeholder="填了就把这条 DID 绑到该账号，不填则按 DID 自动登记"
+              placeholder="you@company.com"
             />
           </label>
-          <button id="wallet-submit" class="primary" type="submit">用 ANP 钱包登录</button>
+          <button id="email-submit" class="primary" type="submit">发登录链接</button>
         </form>
-        <p id="wallet-note" class="hint tight"></p>
+        <div id="email-note" class="hint tight">
+          不需要密码。我们会把一条 15 分钟内有效、只能用一次的链接发到这个邮箱。
+        </div>
+
+        <details id="wallet-block" class="fallback">
+          <summary>用 DID 钱包登录（已有 ANP 身份）</summary>
+          <ol id="wallet-steps" class="steps">
+            <li data-step="identity" data-state="idle">
+              <span>1</span>
+              <div>
+                <strong>读取钱包身份</strong>
+                <em>从浏览器插件取回 DID 与公钥，私钥不出插件</em>
+              </div>
+            </li>
+            <li data-step="challenge" data-state="idle">
+              <span>2</span>
+              <div>
+                <strong>领取一次性挑战</strong>
+                <em>服务端下发 nonce，签名只对它有效且只能用一次</em>
+              </div>
+            </li>
+            <li data-step="sign" data-state="idle">
+              <span>3</span>
+              <div>
+                <strong>在钱包里签名</strong>
+                <em>页面只拿到 RFC 9421 签名头，拿不到私钥</em>
+              </div>
+            </li>
+            <li data-step="session" data-state="idle">
+              <span>4</span>
+              <div>
+                <strong>换取会话</strong>
+                <em>验签通过后返回访问令牌，可随时在设置里撤销</em>
+              </div>
+            </li>
+          </ol>
+          <form id="wallet-form" class="stack">
+            <label class="field">
+              <span>绑定码（可选）</span>
+              <input
+                id="bind-code"
+                type="text"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="填了就把这条 DID 绑到该账号，不填则按 DID 自动登记"
+              />
+            </label>
+            <button id="wallet-submit" class="primary" type="submit">用 ANP 钱包登录</button>
+          </form>
+          <p id="wallet-note" class="hint tight"></p>
+        </details>
+
+        <details id="agent-block" class="fallback">
+          <summary>我是智能体</summary>
+          <p class="hint tight">
+            智能体不在这里登录。先由程序调用 <code>/auth/agent/request</code> 取得批准码，
+            再由它的主人或组织管理员在「我的智能体」里输入批准码、勾选范围并批准。
+            批准后程序用同一个 device code 轮询换取令牌。<a href="/help/login#agent">看完整流程</a>
+          </p>
+        </details>
 
         <details id="token-fallback" class="fallback">
-          <summary>没有钱包？用访问令牌登录</summary>
+          <summary>高级：用访问令牌登录</summary>
           <form id="login-form" class="stack">
             <label class="field">
               <span>访问令牌</span>
@@ -72,10 +100,14 @@
             </label>
             <button type="submit">连接工作空间</button>
           </form>
-          <p class="hint tight">令牌是管理员登记主体时一次性给出的，等同于该主体的身份。</p>
+          <p class="hint tight">令牌是管理员登记主体时一次性给出的，等同于该主体的身份，只给脚本与联调使用。</p>
         </details>
 
         <p id="login-error" class="error" role="alert"></p>
+
+        <p class="login-help">
+          <a href="/help/login">第一次来？先读《登录与授权说明》</a>
+        </p>
       </div>
     </section>
 
@@ -87,6 +119,7 @@
         </div>
         <nav id="nav" class="nav"></nav>
         <div class="sidebar-footer">
+          <div id="tenant" class="tenant"></div>
           <div id="identity" class="identity"></div>
           <button id="logout" class="link">退出</button>
         </div>

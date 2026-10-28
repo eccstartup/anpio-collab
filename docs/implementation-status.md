@@ -1,8 +1,28 @@
 # 实现状态
 
-对照 [plan.md](../plan.md) 与 [第二轮计划](plan-v2.md)，说明本仓库现在做到了什么、哪些只是本机验证、哪些还没开始。
+对照 [plan.md](../plan.md)、[第二轮计划](plan-v2.md) 与 [第三轮计划](plan-v3.md)，说明本仓库现在做到了什么、哪些只是本机验证、哪些还没开始。
 
-> 结论先行：**阶段 1（本地协作闭环）、阶段 3（知识闭环）已实现；第二轮的身份、协作、监管三块已实现并通过自动化测试；阶段 4/5 未开始。** 通过本机测试不等于企业环境验收。
+> 结论先行：**阶段 1（本地协作闭环）、阶段 3（知识闭环）已实现；第二轮的身份、协作、监管三块已实现；第三轮的租户、两种登录与 Agent 授权已实现。阶段 4/5 未开始。** 通过本机测试不等于企业环境验收。
+
+## 第三轮新增（本轮）
+
+| 能力 | 实现位置 | 验证方式 |
+| --- | --- | --- |
+| 邮箱一次性链接登录（15 分钟、一次性、防枚举） | `services/emailAuth.ts`、`http/server.ts` | `tests/tenant-auth.test.ts` |
+| 首次登录自动建个人组织（本人是所有者） | `services/tenants.ts` | 同上 |
+| 多组织选择与切换（换发会话、旧会话作废） | `emailAuth.ts`、`routes.ts`、`app.js` | 同上 + 手工 |
+| 邀请：邮件链接一次完成验证邮箱、入组、登录 | `tenants.ts`、`emailAuth.ts` | 同上 |
+| 邀请邮箱不匹配即拒绝（链接被转发无效） | `tenants.ts#acceptInvite` | 同上 |
+| 租户角色 owner/admin/member/guest 及派生业务角色 | `tenants.ts#rolesFor` | 同上 |
+| 成员管理：列表、改角色、移除、撤销邀请；不能改自己、所有者唯一 | `tenants.ts`、`routes.ts`、`app.js` | 同上 |
+| Agent 设备授权：申请 → 人批准 → 轮询换令牌 → 撤销 | `services/agentAuth.ts` | 同上 |
+| 两种 Agent 模式：独立主体 / 绑定本人账号 | `agentAuth.ts` | 同上 |
+| 授权范围 scopes 与期限，`/v1/me` 返回实际范围 | `agentAuth.ts`、`routes.ts` | 同上 |
+| 登录前可见的说明页 `/help/login` | `src/web/login-help.html` | `tests/web.test.ts` |
+| 成员页、我的智能体页、组织切换器 | `src/web/app.js`、`app.css` | `tests/web.test.ts` + 手工 |
+| 撤销后可重新授权（同一 DID 复用主体）、智能体不能升管理员 | `services/agentAuth.ts`、`tenants.ts` | `tests/tenant-auth.test.ts` |
+
+测试合计 72 项（新增 10 项租户/登录/授权 + 1 项说明页）。SQLite 与 PostgreSQL 跑同一套用例。
 
 ## 第二轮新增（本轮）
 
@@ -41,7 +61,7 @@
 | PostgreSQL 方言兼容 | `src/platform/db/postgres.ts` | `npm run test:postgres` |
 | 一致性备份 | `src/platform/tools/backup.ts` | 备份后 `integrity_check` |
 
-测试合计 61 项（新增 31 项：ANP 10、协作 6、监管 8、智能体会话 3、前端 4）。`npm run check` 无类型错误。同一套 61 项在 SQLite（`npm test`）与临时 PostgreSQL 实例（`npm run test:postgres`）上各跑一遍，均全绿；`npm run demo` 端到端跑通（DID 登录 → 闭环 → 经验引用）。
+第二轮测试合计 61 项（当时新增 31 项）。`npm run check` 无类型错误；SQLite（`npm test`）与临时 PostgreSQL 实例（`npm run test:postgres`）各跑一遍；`npm run demo` 端到端跑通（DID 登录 → 闭环 → 经验引用）。
 
 ## 与本机验证的边界
 
@@ -64,7 +84,11 @@
 | 向量检索 / pgvector / 检索评测集 | 未开始。当前是词法匹配 |
 | 事件驱动的告警 | 现在是显式扫描（接口或调度器），不是事件触发；阈值是常量 |
 | 通知的可恢复投递 | 数据库内存量通知 + 拉取确认；没有退避、没有外部队列 |
-| 多租户 / 速率限制 / TLS / 集中审计 | 未实现。当前定位是单机内网参考实现 |
+| 多租户 | 已实现到应用层：租户、成员、角色、跨租户切换与隔离都有测试；**没有**数据库行级安全（管理员可直接读库） |
+| 邮件投递 | 只实现本地发件箱与控制台打印；SMTP、重试、退信、模板管理未做 |
+| 邮箱验证之外的登录方式 | 没有密码、SMS、SSO/SAML/SCIM、社交登录 |
+| 票据防转发 | 一次性 + 15 分钟是缓解；没有设备指纹或二次确认 |
+| 速率限制 / TLS / 集中审计 | 未实现。限流在进程内；当前定位是单机内网参考实现 |
 
 ## 截至本轮的关键修复
 

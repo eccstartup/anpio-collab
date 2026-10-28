@@ -117,7 +117,7 @@ WWW-Authenticate: ANP nonce="<新 nonce>"
 
 | 情况 | 结果 |
 | --- | --- |
-| 这个 DID 已登记 | 复用原主体，`enrollment: "existing"` |
+| 这个 DID 已登记 | 复用原主体，`enrollment: "existing"`；若该主体还没有账号，顺手补建并回填 `account_id` |
 | 带 `bindCode` 且码有效 | 绑到该码指向的主体，`enrollment: "bound"`；码只能用一次，填错返回 `400` |
 | 都不满足且 `COLLAB_ANP_ENROLL=open` | 自动登记：`client: browser` → `kind: human` + `owner`；`client: agent` → `kind: agent` + `agent` |
 | `COLLAB_ANP_ENROLL=pending` | 主体落为 `active = 0`，登录返回 `403 enrollment_pending`，管理员批准后才能用 |
@@ -128,6 +128,64 @@ WWW-Authenticate: ANP nonce="<新 nonce>"
 - 会话令牌是 32 字节随机值，数据库只存 SHA-256；`COLLAB_SESSION_HOURS` 决定有效期（默认 168 小时）。
 - `POST /v1/me/logout` 只撤销当前这一个会话；`/v1/me/sessions` 列出全部，可逐个撤销。
 - 已停用的主体：令牌立即失效；`/v1/me/identities/:id/revoke` 解绑 DID 时同时撤销它的会话。
+
+## 邮箱登录、租户与 Agent 授权
+
+### 三层身份
+
+| 概念 | 存在范围 | 说明 |
+| --- | --- | --- |
+| 账号 `accounts` | 全局 | 邮箱或 DID 证明的身份；一个账号可以有多个凭证 |
+| 租户 `tenants` | 全局 | 企业/组织；等于旧称 `workspace` |
+| 主体 `principals` | 租户内 | 角色挂在这里；任务、知识、审计只认主体 |
+
+`principals.workspace = tenants.id`，因此所有既有查询天然按租户隔离。
+
+### 邮箱一次性链接
+
+```
+POST /auth/email/start   { email, invite? }              → 202 { sent, expiresAt, [devLink] }
+POST /auth/email/verify  { ticket }                      → 200 { token, tenant, principal }
+                                                         | 409 { selectionToken, tenants }
+POST /auth/email/choose  { selectionToken, tenantId }    → 200 { token, tenant, principal }
+```
+
+- 无论邮箱是否存在都返回 202，避免枚举。
+- 票据 15 分钟、一次性、只存 SHA-256；验证成功才消费。
+- 首次登录创建个人租户（`personal=1`），本人 `tenant_role=owner`。
+- 账号属于多个租户时返回 409 + 30 分钟有效的 `selectionToken`，选完再换会话（不重新发信）。
+- 邀请票据（`purpose=invite`）带 `invite_id`：验证通过即入组，但邮箱必须与邀请一致。
+
+### Agent 设备授权
+
+```
+POST /auth/agent/request  { did, name, capabilities? }   → 201 { deviceCode, userCode, expiresIn }
+POST /auth/agent/token    { deviceCode }                 → 202 { status: "pending" }
+                                                         | 200 { token, scopes, expiresAt }
+POST /v1/agents/approve   { userCode, mode, scopes, expiresInHours? }   （需登录）
+```
+
+- `deviceCode` 32 字节，只存摘要；`userCode` 形如 `K7QM-2XPD`，10 分钟有效。
+- 批准必须由已登录主体发起；`mode=own` 建独立 Agent 主体（默认、推荐），`mode=link` 把 DID 绑到本人主体。
+- `own` 模式撤销时停用 Agent 主体并作废其会话；`link` 模式只作废 `client=agent` 的会话，不影响本人。
+- 授权记录在 `agent_grants`，`/v1/me` 对 Agent 返回 `scopes` 与 `grantExpiresAt`。
+
+### 租户与成员
+
+```
+GET  /v1/me/tenants                                      → 我所属的租户
+POST /v1/me/switch        { tenantId }                   → 换发会话（旧会话作废）
+GET  /v1/tenants/current                                 → 详情与计数
+POST /v1/tenants/current/rename { name }
+GET  /v1/tenants/current/members                         → 人 + Agent
+POST /v1/tenants/current/invites { email, role, kind }   → 发邀请
+GET  /v1/tenants/current/invites
+POST /v1/tenants/current/invites/:id/revoke
+POST /v1/members/:id/role { role }
+POST /v1/members/:id/remove
+```
+
+租户角色：`owner`（唯一，可转让）/ `admin` / `member` / `guest`。业务角色由它派生，但 Agent 永远是 `agent`，不继承主人的管理权。所有者与管理员不能改自己的角色，管理员不能动所有者，也不能邀请第二个所有者。
 
 ## 状态机
 
@@ -182,6 +240,8 @@ accepted ──outcome-unknown──> outcome_unknown
 | 子任务 accept / reject / submit / progress / outcome-unknown | 被分派的那一个智能体（且需要 `agent` 角色） |
 | 子任务 timeout / return | 负责人或管理员 |
 | 主体登记、停用、轮换令牌、改角色、审计、超时检查 | 管理员 |
+| 查看成员、邀请、改成员角色、移除成员 | 租户所有者或管理员 |
+| 批准 Agent 授权、撤销自己授权的 Agent | 已登录主体（管理员可撤销本租户任何授权） |
 | 批准待登记主体 | 管理员或监管者 |
 | 监管总览 / 扫描 / 确认与解决告警 / 在线表 | `supervisor` 或 `admin` |
 | 心跳上报 | `kind` 为 `agent` / `service`，或管理员 |
@@ -191,11 +251,25 @@ accepted ──outcome-unknown──> outcome_unknown
 
 ## 接口清单
 
+### 登录（无需令牌）
+
+| 方法 | 路径 | 作用 |
+| --- | --- | --- |
+| GET | `/auth/anp/challenge` | 领取登录挑战 nonce |
+| POST | `/auth/anp/login` | 签名登录（RFC 9421） |
+| POST | `/auth/email/start` | 发送一次性登录链接 |
+| POST | `/auth/email/verify` | 用票据换会话（或多租户选择） |
+| POST | `/auth/email/choose` | 选择要进入的租户 |
+| POST | `/auth/agent/request` | Agent 申请设备授权 |
+| POST | `/auth/agent/token` | Agent 轮询换取令牌 |
+
 ### 身份与主体
 
 | 方法 | 路径 | 作用 |
 | --- | --- | --- |
-| GET | `/v1/me` | 当前主体、角色、能力声明 |
+| GET | `/v1/me` | 当前主体、角色、租户角色、账号、Agent 授权范围 |
+| GET | `/v1/me/tenants` | 我所属的全部租户（跨租户） |
+| POST | `/v1/me/switch` | 切换租户并换发会话 |
 | GET | `/v1/principals?capability=` | 主体目录，可按能力过滤 |
 | POST | `/v1/principals` | 登记主体 `{id, roles, token, displayName?, capabilities?, did?}`；令牌只在响应中出现一次 |
 | POST | `/v1/principals/:id/profile` | 更新显示名、描述、能力声明 |

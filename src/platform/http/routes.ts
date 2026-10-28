@@ -8,8 +8,8 @@
  * 任务级操作比任务版本，子任务级操作比子任务版本。
  */
 
-import { invalid } from '../../protocol/errors.ts';
-import { asEnum, asInteger } from '../../protocol/parse.ts';
+import { forbidden, invalid } from '../../protocol/errors.ts';
+import { asEnum, asInteger, asObject, asString } from '../../protocol/parse.ts';
 import { TASK_STATUSES } from '../../protocol/types.ts';
 import {
   agentSubtask,
@@ -70,17 +70,66 @@ export const routes: Route[] = [
   {
     method: 'GET',
     path: '/v1/me',
-    description: '当前主体及其角色',
-    read: async ({ principal }) => ({
-      id: principal.id,
-      workspace: principal.workspace,
-      roles: principal.roles,
-      did: principal.did,
-      kind: principal.kind,
-      handle: principal.handle,
-      displayName: principal.displayName,
-      capabilities: principal.capabilities,
-    }),
+    description: '当前主体及其角色、租户与 Agent 授权范围',
+    read: async ({ app, principal }) => {
+      const grant = await app.ctx.db.read.one<{ scopes: string; expires_at: string | null; status: string }>(
+        'SELECT scopes, expires_at, status FROM agent_grants WHERE agent_principal_id = :id',
+        { id: principal.id },
+      );
+      const active =
+        grant && grant.status === 'active' && (grant.expires_at === null || String(grant.expires_at) > app.ctx.now());
+      return {
+        id: principal.id,
+        workspace: principal.workspace,
+        roles: principal.roles,
+        tenantRole: principal.tenantRole,
+        accountId: principal.accountId,
+        did: principal.did,
+        kind: principal.kind,
+        handle: principal.handle,
+        displayName: principal.displayName,
+        capabilities: principal.capabilities,
+        scopes: active ? (JSON.parse(String(grant.scopes)) as string[]) : null,
+        grantExpiresAt: active ? (grant.expires_at === null ? null : String(grant.expires_at)) : null,
+      };
+    },
+  },
+  {
+    method: 'GET',
+    path: '/v1/me/tenants',
+    description: '我所属的全部租户（跨租户，按账号）',
+    read: async ({ app, principal }) => {
+      const tenants = await app.tenants.listFor(principal.accountId);
+      // 遗留主体没有账号：至少让它看到自己当前所在的那一个。
+      if (tenants.length === 0) {
+        const detail = await app.tenants.detail(principal);
+        return [{ id: detail.id, name: detail.name, personal: detail.personal, role: principal.tenantRole }];
+      }
+      return tenants;
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/me/switch',
+    description: '切换到另一个租户，换发会话并作废当前会话',
+    write: {
+      execute: async ({ app, principal, body, token }) => {
+        const tenantId = asString(asObject(body).tenantId, 'tenantId', { max: 100, min: 1 });
+        if (!principal.accountId) throw forbidden('当前主体未绑定账号，无法切换组织');
+        const memberships = await app.tenants.listFor(principal.accountId);
+        if (!memberships.some(item => item.id === tenantId)) throw forbidden('你不属于这个组织');
+        const account = await app.accounts.findById(principal.accountId);
+        if (!account) throw forbidden('账号不存在');
+        const target = await app.tenants.principalFor(account, tenantId);
+        const session = await app.identity.openSession(target, target.did, 'browser');
+        await app.identity.logout(token);
+        return {
+          token: session.token,
+          expiresAt: session.expiresAt,
+          tenant: { id: tenantId, role: target.tenantRole },
+        };
+      },
+    },
   },
   {
     method: 'POST',
@@ -141,6 +190,98 @@ export const routes: Route[] = [
     description: '把一条提及标记为已读',
     write: {
       execute: async ({ app, principal, params }) => app.collab.readMention(principal, params.id ?? ''),
+    },
+  },
+
+  // ------------------------------------------------------------ 租户与成员
+  {
+    method: 'GET',
+    path: '/v1/tenants/current',
+    description: '当前租户详情与成员计数',
+    read: async ({ app, principal }) => app.tenants.detail(principal),
+  },
+  {
+    method: 'POST',
+    path: '/v1/tenants/current/rename',
+    description: '重命名当前租户（所有者、管理员）',
+    write: {
+      execute: async ({ app, principal, body }) => app.tenants.rename(principal, body),
+    },
+  },
+  {
+    method: 'GET',
+    path: '/v1/tenants/current/members',
+    description: '成员列表：人、Agent 与待接受邀请（所有者、管理员）',
+    read: async ({ app, principal }) => app.tenants.members(principal),
+  },
+  {
+    method: 'POST',
+    path: '/v1/members/:id/role',
+    description: '调整成员在租户中的角色（所有者、管理员）',
+    write: {
+      execute: async ({ app, principal, params, body }) =>
+        app.tenants.setMemberRole(principal, params.id ?? '', body),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/members/:id/remove',
+    description: '移除成员：停用主体并作废会话（所有者、管理员）',
+    write: {
+      execute: async ({ app, principal, params }) => app.tenants.removeMember(principal, params.id ?? ''),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/tenants/current/invites',
+    description: '邀请人加入租户，发送一次性链接（所有者、管理员）',
+    write: {
+      execute: async ({ app, principal, body }) => app.tenants.invite(principal, body),
+    },
+  },
+  {
+    method: 'GET',
+    path: '/v1/tenants/current/invites',
+    description: '尚未接受的邀请（所有者、管理员）',
+    read: async ({ app, principal }) => app.tenants.invites(principal),
+  },
+  {
+    method: 'POST',
+    path: '/v1/tenants/current/invites/:id/revoke',
+    description: '撤销一个尚未接受的邀请',
+    write: {
+      execute: async ({ app, principal, params }) =>
+        app.tenants.revokeInvite(principal, params.id ?? ''),
+    },
+  },
+
+  // ------------------------------------------------------------ Agent 授权
+  {
+    method: 'GET',
+    path: '/v1/agents',
+    description: '我授权出去的智能体及其范围',
+    read: async ({ app, principal }) => app.agentAuth.list(principal),
+  },
+  {
+    method: 'GET',
+    path: '/v1/agents/pending',
+    description: '最近发起、尚未批准的 Agent 授权请求',
+    read: async ({ app, principal }) => app.agentAuth.pendingRequests(principal),
+  },
+  {
+    method: 'POST',
+    path: '/v1/agents/approve',
+    description: '用批准码批准一个 Agent：新建独立主体，或绑定到本人账号',
+    write: {
+      execute: async ({ app, principal, body }) => app.agentAuth.approve(principal, body),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/agents/:id/revoke',
+    description: '撤销 Agent 授权：停用主体并作废其会话',
+    write: {
+      execute: async ({ app, principal, params }) => app.agentAuth.revoke(principal, params.id ?? ''),
     },
   },
 

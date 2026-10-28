@@ -34,10 +34,16 @@ function parseJson<T>(value: unknown, fallback: T): T {
 }
 
 export function toPrincipal(row: Row): Principal {
+  const tenantRole =
+    row.tenant_role === 'owner' || row.tenant_role === 'admin' || row.tenant_role === 'guest'
+      ? row.tenant_role
+      : 'member';
   return {
     id: text(row.id),
     workspace: text(row.workspace),
     roles: parseJson<Role[]>(row.roles, []),
+    accountId: row.account_id === null || row.account_id === undefined ? null : text(row.account_id),
+    tenantRole,
     did: row.did === null || row.did === undefined ? null : text(row.did),
     kind: (row.kind === 'agent' || row.kind === 'service' ? row.kind : 'human') as Principal['kind'],
     handle: row.handle === null || row.handle === undefined ? null : text(row.handle),

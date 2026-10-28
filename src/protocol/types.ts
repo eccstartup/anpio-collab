@@ -16,11 +16,23 @@ export type Role = (typeof ROLES)[number];
 export const PRINCIPAL_KINDS = ['human', 'agent', 'service'] as const;
 export type PrincipalKind = (typeof PRINCIPAL_KINDS)[number];
 
-/** 主体：人、服务账号或智能体在本工作空间中的身份。 */
+/**
+ * 租户角色与能力角色是两回事：
+ *  - `tenantRole` 决定"能不能管这个组织"（加人、改角色、撤销 Agent）；
+ *  - `roles` 决定"能做什么业务"（建任务、验收、看监管）。
+ * 分开是为了避免"把某人设成管理员"顺手把全部业务权限也送出去。
+ */
+export const TENANT_ROLES = ['owner', 'admin', 'member', 'guest'] as const;
+export type TenantRole = (typeof TENANT_ROLES)[number];
+
+/** 主体：人、服务账号或智能体在某个租户中的身份。 */
 export type Principal = {
   id: string;
   workspace: string;
   roles: Role[];
+  /** 全局账号：同一账号在不同租户里是不同主体。 */
+  accountId: string | null;
+  tenantRole: TenantRole;
   /** did:wba 标识；一个主体可以绑定多个 DID（人与智能体共用账号）。 */
   did: string | null;
   kind: PrincipalKind;
@@ -30,6 +42,72 @@ export type Principal = {
   description: string;
   capabilities: string[];
   active: boolean;
+};
+
+// ---------------------------------------------------------------- 租户
+
+export type Tenant = {
+  id: string;
+  name: string;
+  status: 'active' | 'suspended';
+  personal: boolean;
+  createdAt: string;
+  /** 当前账号在这个租户里的角色；列表接口会带上。 */
+  role?: TenantRole;
+};
+
+export type TenantMember = {
+  principalId: string;
+  displayName: string;
+  kind: PrincipalKind;
+  tenantRole: TenantRole;
+  roles: Role[];
+  email: string | null;
+  did: string | null;
+  active: boolean;
+  createdAt: string;
+  lastLoginAt: string | null;
+  /** Agent 成员显示持有者，人成员为空。 */
+  ownerId: string | null;
+  capabilities: string[];
+};
+
+export type TenantInvite = {
+  id: string;
+  email: string;
+  role: TenantRole;
+  kind: PrincipalKind;
+  invitedBy: string;
+  expiresAt: string;
+  acceptedAt: string | null;
+  createdAt: string;
+  /** 只在开发模式返回，便于本地演示时直接复制。 */
+  link?: string;
+};
+
+/** Agent 授权范围。默认最小集合，界面上逐项勾选。 */
+export const AGENT_SCOPES = [
+  'tasks:read',
+  'tasks:submit',
+  'offers:claim',
+  'knowledge:read',
+  'comments:write',
+  'presence:write',
+] as const;
+export type AgentScope = (typeof AGENT_SCOPES)[number];
+
+export type AgentGrant = {
+  id: string;
+  agentPrincipalId: string;
+  agentName: string;
+  agentDid: string | null;
+  ownerId: string;
+  scopes: AgentScope[];
+  status: 'active' | 'revoked';
+  expiresAt: string | null;
+  createdAt: string;
+  revokedAt: string | null;
+  lastSeenAt: string | null;
 };
 
 export const TASK_STATUSES = ['pending', 'running', 'review', 'completed', 'cancelled'] as const;

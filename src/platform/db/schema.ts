@@ -38,7 +38,9 @@ function statements(dialect: 'sqlite' | 'postgres'): string[] {
       description TEXT NOT NULL,
       capabilities TEXT NOT NULL,
       active INTEGER NOT NULL DEFAULT 1,
-      created_at TEXT NOT NULL
+      created_at TEXT NOT NULL,
+      account_id TEXT,
+      tenant_role TEXT NOT NULL DEFAULT 'member'
     )`,
     `CREATE INDEX IF NOT EXISTS principals_workspace ON principals(workspace, id)`,
     `CREATE UNIQUE INDEX IF NOT EXISTS principals_did ON principals(workspace, did)`,
@@ -321,6 +323,109 @@ function statements(dialect: 'sqlite' | 'postgres'): string[] {
       UNIQUE (workspace, rule, subject_type, subject_id)
     )`,
     `CREATE INDEX IF NOT EXISTS alerts_open ON alerts(workspace, status, severity, last_seen_at DESC)`,
+
+    // ---- v3：账号、租户与成员 ----
+    // 账号是全局的（邮箱/DID），主体是租户内的。这样一个人可以在多个组织里
+    // 有不同角色，而任务、知识、审计仍然只认主体，隔离不需要额外条件。
+    `CREATE TABLE IF NOT EXISTS accounts (
+      id TEXT PRIMARY KEY,
+      display_name TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at TEXT NOT NULL
+    )`,
+
+    `CREATE TABLE IF NOT EXISTS account_links (
+      id TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL REFERENCES accounts(id),
+      kind TEXT NOT NULL,
+      value TEXT NOT NULL,
+      verified_at TEXT,
+      created_at TEXT NOT NULL,
+      UNIQUE (kind, value)
+    )`,
+    `CREATE INDEX IF NOT EXISTS account_links_account ON account_links(account_id)`,
+
+    `CREATE TABLE IF NOT EXISTS tenants (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      personal INTEGER NOT NULL DEFAULT 0,
+      created_by TEXT,
+      created_at TEXT NOT NULL
+    )`,
+
+    `CREATE TABLE IF NOT EXISTS tenant_invites (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL REFERENCES tenants(id),
+      email TEXT NOT NULL,
+      role TEXT NOT NULL,
+      kind TEXT NOT NULL DEFAULT 'human',
+      token_hash TEXT NOT NULL UNIQUE,
+      invited_by TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      accepted_at TEXT,
+      accepted_principal_id TEXT,
+      created_at TEXT NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS tenant_invites_tenant ON tenant_invites(tenant_id, accepted_at)`,
+
+    `CREATE TABLE IF NOT EXISTS login_tickets (
+      id TEXT PRIMARY KEY,
+      token_hash TEXT NOT NULL UNIQUE,
+      email TEXT NOT NULL,
+      purpose TEXT NOT NULL,
+      invite_id TEXT,
+      account_id TEXT,
+      expires_at TEXT NOT NULL,
+      consumed_at TEXT,
+      created_at TEXT NOT NULL,
+      user_agent TEXT NOT NULL DEFAULT ''
+    )`,
+    `CREATE INDEX IF NOT EXISTS login_tickets_expiry ON login_tickets(expires_at)`,
+
+    // ---- v3：Agent 设备授权 ----
+    // 这里不存明文令牌：device_code 只存摘要，会话令牌在轮询成功时才签发。
+    `CREATE TABLE IF NOT EXISTS agent_requests (
+      id TEXT PRIMARY KEY,
+      device_code_hash TEXT NOT NULL UNIQUE,
+      user_code TEXT NOT NULL,
+      requested_did TEXT NOT NULL,
+      name TEXT NOT NULL DEFAULT '',
+      capabilities TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      approved_principal_id TEXT,
+      approved_by TEXT,
+      created_at TEXT NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS agent_requests_code ON agent_requests(user_code, status)`,
+
+    `CREATE TABLE IF NOT EXISTS agent_grants (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      agent_principal_id TEXT NOT NULL REFERENCES principals(id),
+      owner_principal_id TEXT NOT NULL REFERENCES principals(id),
+      scopes TEXT NOT NULL,
+      status TEXT NOT NULL,
+      expires_at TEXT,
+      created_at TEXT NOT NULL,
+      revoked_at TEXT
+    )`,
+    `CREATE INDEX IF NOT EXISTS agent_grants_owner ON agent_grants(tenant_id, owner_principal_id, status)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS agent_grants_agent ON agent_grants(agent_principal_id)`,
+
+    // ---- v3：本地邮件投递 ----
+    // 生产替换 MailService 即可；这张表只是本地演示与测试的可观测出口。
+    `CREATE TABLE IF NOT EXISTS mail_outbox (
+      id TEXT PRIMARY KEY,
+      to_email TEXT NOT NULL,
+      subject TEXT NOT NULL,
+      body TEXT NOT NULL,
+      link TEXT NOT NULL DEFAULT '',
+      kind TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS mail_outbox_to ON mail_outbox(to_email, created_at DESC)`,
   ];
 }
 
@@ -331,9 +436,11 @@ const ADDED_COLUMNS: { table: string; column: string; definition: string }[] = [
   { table: 'tasks', column: 'origin', definition: "TEXT NOT NULL DEFAULT 'human'" },
   { table: 'tasks', column: 'origin_principal_id', definition: 'TEXT' },
   { table: 'tasks', column: 'adopted_at', definition: 'TEXT' },
+  { table: 'principals', column: 'account_id', definition: 'TEXT' },
+  { table: 'principals', column: 'tenant_role', definition: "TEXT NOT NULL DEFAULT 'member'" },
 ];
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 async function existingColumns(db: Database, table: string): Promise<Set<string> | null> {
   try {
@@ -386,6 +493,32 @@ export async function migrate(db: Database, now: () => string): Promise<void> {
     }
     for (const item of pending) {
       await tx.run(`ALTER TABLE ${item.table} ADD COLUMN ${item.column} ${item.definition}`);
+    }
+    // v3 升级回填：老库没有 tenant_role，默认值 'member' 会让原来的管理员
+    // 突然管不了成员。按既有能力角色把管理员补回来；每个租户保证有一个所有者。
+    await tx.run(
+      `UPDATE principals SET tenant_role = 'admin'
+       WHERE tenant_role = 'member' AND roles LIKE '%"admin"%'`,
+    );
+    const orphans = await tx.all<{ workspace: string }>(
+      `SELECT workspace FROM principals
+       WHERE active = 1
+       GROUP BY workspace
+       HAVING SUM(CASE WHEN tenant_role = 'owner' THEN 1 ELSE 0 END) = 0`,
+    );
+    for (const orphan of orphans) {
+      const candidate = await tx.one<{ id: string }>(
+        `SELECT id FROM principals
+         WHERE workspace = :workspace AND active = 1
+         ORDER BY CASE WHEN roles LIKE '%"admin"%' THEN 0 ELSE 1 END, created_at, id
+         LIMIT 1`,
+        { workspace: String(orphan.workspace) },
+      );
+      if (candidate) {
+        await tx.run(`UPDATE principals SET tenant_role = 'owner' WHERE id = :id`, {
+          id: String(candidate.id),
+        });
+      }
     }
     const current = await tx.one<{ version: number }>(
       'SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1',

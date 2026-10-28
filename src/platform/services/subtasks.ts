@@ -14,7 +14,7 @@ import { asInteger, asObject, asString, asTimestamp } from '../../protocol/parse
 import type { Context } from '../context.ts';
 
 import { encode, toSubtask } from '../db/mappers.ts';
-import { agentSubtask, assertOwner, loadSubtask, readTask, requireRole } from './access.ts';
+import { agentSubtask, assertOwner, loadSubtask, readTask, requireAgentScope, requireRole } from './access.ts';
 import { appendEvent } from './events.ts';
 import { NotificationService } from './notifications.ts';
 
@@ -160,6 +160,7 @@ export class SubtaskService {
 
   async accept(actor: Principal, subtaskId: string): Promise<{ id: string; status: string; version: number }> {
     const subtask = await agentSubtask(this.ctx, actor, subtaskId);
+    await requireAgentScope(this.ctx, actor, 'tasks:submit');
     if (!['invited', 'returned'].includes(subtask.status)) throw conflict('只有已邀请或被退回的子任务可以接受');
     const task = await readTask(this.ctx, actor, subtask.taskId);
     if (task.status !== 'running') throw conflict('任务不在执行中');
@@ -180,6 +181,7 @@ export class SubtaskService {
 
   async submit(actor: Principal, subtaskId: string, body: unknown): Promise<{ id: string; status: string; version: number }> {
     const subtask = await agentSubtask(this.ctx, actor, subtaskId);
+    await requireAgentScope(this.ctx, actor, 'tasks:submit');
     if (subtask.status !== 'accepted') throw conflict('只有已接受的子任务可以提交');
     const task = await readTask(this.ctx, actor, subtask.taskId);
     if (task.status !== 'running') throw conflict('任务不在执行中');

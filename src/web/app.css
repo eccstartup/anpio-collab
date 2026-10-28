@@ -1065,3 +1065,239 @@ tr:last-child td {
     padding: 24px 18px 64px;
   }
 }
+
+/* ---------------------------------------------------------------- 租户与成员 */
+
+.tenant {
+  display: grid;
+  gap: 2px;
+  padding-bottom: 10px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.tenant-name {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tenant-role {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.tenant-label {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.tenant-select {
+  width: 100%;
+  font: inherit;
+  font-size: 13px;
+  padding: 5px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--line-strong);
+  background: var(--card);
+  color: var(--ink);
+}
+
+.list-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.list-row:last-child {
+  border-bottom: 0;
+}
+
+button.small {
+  font-size: 12.5px;
+  padding: 5px 10px;
+}
+
+button.danger {
+  color: var(--danger);
+}
+
+button.ghost.danger:hover {
+  background: var(--danger-soft);
+}
+
+.login-help {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+  font-size: 12.5px;
+  text-align: center;
+}
+
+.login-help a,
+.card a {
+  color: var(--ink-soft);
+  text-decoration-color: var(--line-strong);
+  text-underline-offset: 3px;
+}
+
+.snippet {
+  margin: 12px 0 0;
+  padding: 12px 14px;
+  background: #f7f5f1;
+  border-radius: 10px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: var(--ink-soft);
+  overflow-x: auto;
+  white-space: pre;
+}
+
+/* ---------------------------------------------------------------- 登录说明页 */
+
+.doc {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 56px 24px 96px;
+}
+
+.doc .back {
+  display: inline-block;
+  margin-bottom: 28px;
+  font-size: 12.5px;
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.doc .back:hover {
+  color: var(--ink);
+}
+
+.doc h1 {
+  font-size: 30px;
+  letter-spacing: -0.02em;
+}
+
+.doc .lede {
+  margin-top: 12px;
+  color: var(--ink-soft);
+  font-size: 15px;
+}
+
+.doc h2 {
+  margin: 44px 0 12px;
+  font-size: 19px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.doc h3 {
+  margin: 24px 0 8px;
+  font-size: 15px;
+}
+
+.doc p,
+.doc li {
+  color: var(--ink-soft);
+  font-size: 14px;
+}
+
+.doc p + p,
+.doc ul,
+.doc ol {
+  margin-top: 10px;
+}
+
+.doc ul,
+.doc ol {
+  padding-left: 20px;
+}
+
+.doc li + li {
+  margin-top: 6px;
+}
+
+.doc code {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  background: #f2f0eb;
+  padding: 1px 5px;
+  border-radius: 5px;
+}
+
+.doc pre {
+  margin: 14px 0;
+  padding: 16px 18px;
+  background: #f7f5f1;
+  border-radius: 12px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.75;
+  color: var(--ink-soft);
+  overflow-x: auto;
+}
+
+.doc blockquote {
+  margin: 16px 0;
+  padding: 12px 16px;
+  border-left: 2px solid var(--line-strong);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.doc table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 14px 0;
+  font-size: 13px;
+}
+
+.doc th,
+.doc td {
+  text-align: left;
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+
+.doc th {
+  font-weight: 600;
+  color: var(--ink);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+}
+
+.doc .note {
+  margin-top: 32px;
+  padding: 14px 16px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.doc .toc {
+  margin-top: 24px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.doc .toc a {
+  font-size: 12.5px;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--ink-soft);
+  text-decoration: none;
+  background: var(--card);
+}

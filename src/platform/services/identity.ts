@@ -19,6 +19,7 @@ import type { Queryable } from '../db/driver.ts';
 import { didShortId, handleFromDid, isDid, resolveVerificationKey } from '../../anp/did.ts';
 import { verifySignature } from '../../anp/signature.ts';
 import { hashToken } from './principals.ts';
+import type { AccountService } from './accounts.ts';
 
 export type EnrollMode = 'open' | 'pending' | 'off';
 
@@ -77,10 +78,12 @@ export type LoginResult = {
 export class IdentityService {
   private readonly ctx: Context;
   private readonly options: IdentityOptions;
+  private readonly accounts: AccountService | null;
 
-  constructor(ctx: Context, options: IdentityOptions) {
+  constructor(ctx: Context, options: IdentityOptions, accounts: AccountService | null = null) {
     this.ctx = ctx;
     this.options = options;
+    this.accounts = accounts;
   }
 
   // ---------------------------------------------------------------- 挑战
@@ -211,6 +214,15 @@ export class IdentityService {
     client: 'browser' | 'agent';
     bindCode: string;
   }): Promise<{ principal: Principal; enrollment: LoginResult['enrollment'] }> {
+    // 账号查询必须在事务外：它自己会开事务，嵌套会自锁。
+    const account = this.accounts
+      ? await this.accounts.ensure('did', input.did, {
+          verified: true,
+          displayName: handleFromDid(input.did) ?? undefined,
+        })
+      : null;
+    const accountId = account?.id ?? null;
+
     return this.ctx.db.transaction(async tx => {
       const existing = await tx.one<{ id: string; principal_id: string }>(
         'SELECT id, principal_id FROM identities WHERE workspace = :workspace AND did = :did',
@@ -225,11 +237,19 @@ export class IdentityService {
            WHERE id = :id`,
           { at: this.ctx.now(), fingerprint: input.fingerprint, client: input.client, id: existing.id },
         );
+        // 老数据没有账号：登录时补上，之后才能在多个租户之间切换。
+        if (accountId && (row.account_id === null || row.account_id === undefined)) {
+          await tx.run('UPDATE principals SET account_id = :account WHERE id = :id', {
+            account: accountId,
+            id: existing.principal_id,
+          });
+          row.account_id = accountId;
+        }
         return { principal: toPrincipal(row), enrollment: 'existing' as const };
       }
 
       if (input.bindCode) {
-        const bound = await this.bindWithCode(tx, input);
+        const bound = await this.bindWithCode(tx, { ...input, accountId });
         // 填了绑定码却对不上，就不要顺手给一个新账号：那会让人以为自己进对了地方。
         if (!bound) throw invalid('绑定码无效，或者不属于当前工作空间');
         return { principal: bound, enrollment: 'bound' as const };
@@ -239,7 +259,7 @@ export class IdentityService {
         throw forbidden('该 DID 未登记，且平台不接受自动登记');
       }
 
-      const principal = await this.enrollPrincipal(tx, input);
+      const principal = await this.enrollPrincipal(tx, { ...input, accountId });
       await this.insertIdentity(tx, input, principal.id);
       return { principal, enrollment: 'auto' as const };
     });
@@ -247,7 +267,7 @@ export class IdentityService {
 
   private async bindWithCode(
     tx: Queryable,
-    input: { did: string; fingerprint: string; client: 'browser' | 'agent'; bindCode: string },
+    input: { did: string; fingerprint: string; client: 'browser' | 'agent'; bindCode: string; accountId: string | null },
   ): Promise<Principal | null> {
     const now = this.ctx.now();
     const invite = await tx.one<{
@@ -270,17 +290,30 @@ export class IdentityService {
       `UPDATE identity_invites SET used_at = :at, used_by_did = :did WHERE code = :code`,
       { at: now, did: input.did, code: invite.code },
     );
+    // 共用账号：DID 挂到主人的账号上，之后同一个账号在多租户里也是同一个身份。
+    if (input.accountId && (row.account_id === null || row.account_id === undefined)) {
+      await tx.run('UPDATE principals SET account_id = :account WHERE id = :id', {
+        account: input.accountId,
+        id: invite.principal_id,
+      });
+    }
     await this.insertIdentity(tx, input, invite.principal_id);
     return toPrincipal(row);
   }
 
   private async enrollPrincipal(
     tx: Queryable,
-    input: { did: string; client: 'browser' | 'agent' },
+    input: { did: string; client: 'browser' | 'agent'; accountId: string | null },
   ): Promise<Principal> {
     const kind: PrincipalKind = input.client === 'agent' ? 'agent' : 'human';
     const roles: Role[] = kind === 'agent' ? ['agent'] : ['owner'];
     const active = this.options.enroll === 'open';
+    // 一个空工作空间里的第一个人类就是这个组织的所有者；之后自动登记的都是成员。
+    const humans = await tx.one<{ count: number }>(
+      `SELECT COUNT(*) AS count FROM principals WHERE workspace = :workspace AND kind = 'human'`,
+      { workspace: this.options.workspace },
+    );
+    const tenantRole = kind === 'human' && Number(humans?.count ?? 0) === 0 ? 'owner' : 'member';
     const base = didShortId(input.did);
     let id = base;
     for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -294,9 +327,9 @@ export class IdentityService {
     const handle = handleFromDid(input.did);
     await tx.run(
       `INSERT INTO principals(id, workspace, roles, token_hash, did, kind, handle, display_name, description,
-                              capabilities, active, created_at)
+                              capabilities, active, created_at, account_id, tenant_role)
        VALUES(:id, :workspace, :roles, :hash, :did, :kind, :handle, :displayName, :description,
-              :capabilities, :active, :at)`,
+              :capabilities, :active, :at, :accountId, :tenantRole)`,
       {
         id,
         workspace: this.options.workspace,
@@ -311,6 +344,8 @@ export class IdentityService {
         capabilities: JSON.stringify([]),
         active: active ? 1 : 0,
         at: this.ctx.now(),
+        accountId: input.accountId,
+        tenantRole,
       },
     );
     const row = await tx.one('SELECT * FROM principals WHERE id = :id', { id });
@@ -338,6 +373,18 @@ export class IdentityService {
   }
 
   // ---------------------------------------------------------------- 会话
+
+  /**
+   * 签发会话。邮箱登录与 Agent 轮询都复用它，保证三种登录方式产出同一种令牌，
+   * 后续授权只认主体，不认登录方式。
+   */
+  async openSession(
+    principal: Principal,
+    did: string | null,
+    client: 'browser' | 'agent',
+  ): Promise<{ token: string; expiresAt: string }> {
+    return this.createSession(principal, did ?? '', client);
+  }
 
   private async createSession(
     principal: Principal,

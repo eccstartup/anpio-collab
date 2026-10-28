@@ -16,7 +16,7 @@ import type { OfferStatus, Presence, Principal, TaskComment, TaskOffer } from '.
 import type { Context } from '../context.ts';
 import type { Queryable } from '../db/driver.ts';
 import { encode } from '../db/mappers.ts';
-import { hasAnyRole, loadTask, readTask } from './access.ts';
+import { hasAnyRole, loadTask, readTask, requireAgentScope } from './access.ts';
 import { appendEvent } from './events.ts';
 import { NotificationService } from './notifications.ts';
 
@@ -81,6 +81,7 @@ export class CollabService {
    */
   async addComment(actor: Principal, taskId: string, body: unknown): Promise<TaskComment> {
     const task = await readTask(this.ctx, actor, taskId);
+    await requireAgentScope(this.ctx, actor, 'comments:write');
     const input = asObject(body);
     const text = asString(input.body, 'body', { max: 4000 });
     const mentioned = [...new Set([...text.matchAll(MENTION)].map(match => match[1]!))].slice(0, 20);
@@ -288,6 +289,7 @@ export class CollabService {
 
   async claimOffer(actor: Principal, offerId: string): Promise<{ offerId: string; subtaskId: string }> {
     if (!hasAnyRole(actor, 'agent')) throw forbidden('只有智能体可以认领开放子任务');
+    await requireAgentScope(this.ctx, actor, 'offers:claim');
     const offer = await this.ctx.db.read.one('SELECT * FROM task_offers WHERE id = :id AND workspace = :workspace', {
       id: offerId,
       workspace: actor.workspace,

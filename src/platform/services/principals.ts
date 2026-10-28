@@ -10,7 +10,7 @@ import { createHash } from 'node:crypto';
 import { conflict, forbidden, notFound, unauthenticated } from '../../protocol/errors.ts';
 import { asEnum, asId, asObject, asString, asStringArray } from '../../protocol/parse.ts';
 import { PRINCIPAL_KINDS, ROLES } from '../../protocol/types.ts';
-import type { Principal, PrincipalKind, Role } from '../../protocol/types.ts';
+import type { Principal, PrincipalKind, Role, TenantRole } from '../../protocol/types.ts';
 import type { Context } from '../context.ts';
 import { toPrincipal } from '../db/mappers.ts';
 import { hasAnyRole } from './access.ts';
@@ -30,6 +30,8 @@ export type CreatePrincipalInput = {
   displayName?: string;
   description?: string;
   capabilities?: string[];
+  accountId?: string | null;
+  tenantRole?: TenantRole;
 };
 
 export class PrincipalService {
@@ -48,7 +50,7 @@ export class PrincipalService {
   async bootstrap(workspace: string, input: CreatePrincipalInput): Promise<Principal> {
     if (!(await this.isEmpty())) throw conflict('平台已完成初始化');
     if (!input.roles.includes('admin')) throw forbidden('初始化主体必须是管理员');
-    return this.insert(workspace, input);
+    return this.insert(workspace, { ...input, tenantRole: input.tenantRole ?? 'owner' });
   }
 
   /** 令牌 → 主体。每次请求重新读取，停用或改角色立即生效。 */
@@ -138,6 +140,9 @@ export class PrincipalService {
         input.capabilities === undefined
           ? []
           : asStringArray(input.capabilities, 'capabilities', { max: 50, maxLength: 100 }),
+      // 管理员登记的主体默认只给业务角色；组织管理权要在成员页显式授予，
+      // 避免"登记一个人"顺手把成员管理权限也送出去。
+      tenantRole: roles.includes('admin') ? 'admin' : 'member',
     });
   }
 
@@ -162,6 +167,8 @@ export class PrincipalService {
       id: input.id,
       workspace,
       roles: input.roles,
+      accountId: input.accountId ?? null,
+      tenantRole: input.tenantRole ?? 'member',
       did: input.did ?? null,
       kind: input.kind ?? 'human',
       handle: input.handle ?? null,
@@ -172,8 +179,8 @@ export class PrincipalService {
     };
     await this.ctx.db.transaction(async tx => {
       await tx.run(
-        `INSERT INTO principals(id, workspace, roles, token_hash, did, kind, handle, display_name, description, capabilities, active, created_at)
-         VALUES(:id, :workspace, :roles, :hash, :did, :kind, :handle, :displayName, :description, :capabilities, 1, :at)`,
+        `INSERT INTO principals(id, workspace, roles, token_hash, did, kind, handle, display_name, description, capabilities, active, created_at, account_id, tenant_role)
+         VALUES(:id, :workspace, :roles, :hash, :did, :kind, :handle, :displayName, :description, :capabilities, 1, :at, :accountId, :tenantRole)`,
         {
           id: principal.id,
           workspace: principal.workspace,
@@ -186,6 +193,8 @@ export class PrincipalService {
           description: principal.description,
           capabilities: JSON.stringify(principal.capabilities),
           at: this.ctx.now(),
+          accountId: principal.accountId,
+          tenantRole: principal.tenantRole,
         },
       );
     });

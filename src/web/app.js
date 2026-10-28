@@ -67,6 +67,26 @@ const ROLE_LABEL = {
 
 const KIND_LABEL = { human: '人', agent: '智能体', service: '服务账号' };
 
+/** 租户角色只管"能不能管这个组织"，与业务角色分开显示，避免混淆。 */
+const TENANT_ROLE_LABEL = { owner: '所有者', admin: '管理员', member: '成员', guest: '访客' };
+const TENANT_ROLE_OPTIONS = [
+  { value: 'member', label: '成员 · 建任务、验收自己的任务' },
+  { value: 'admin', label: '管理员 · 可加人、改角色、管授权' },
+  { value: 'guest', label: '访客 · 只读' },
+  { value: 'owner', label: '所有者 · 转让所有权（唯一）' },
+];
+
+const SCOPE_LABEL = {
+  'tasks:read': '读任务',
+  'tasks:submit': '提交结果',
+  'offers:claim': '认领开放子任务',
+  'knowledge:read': '读经验库',
+  'comments:write': '写评论',
+  'presence:write': '上报在线状态',
+};
+
+const SCOPE_OPTIONS = Object.entries(SCOPE_LABEL).map(([value, label]) => ({ value, label }));
+
 const SEVERITY_LABEL = { critical: '严重', high: '高', normal: '一般', low: '低' };
 const SEVERITY_TONE = { critical: 'critical', high: 'danger', normal: 'warn', low: 'muted' };
 const SEVERITY_ORDER = { critical: 0, high: 1, normal: 2, low: 3 };
@@ -96,6 +116,8 @@ const NAV = [
   { id: 'pool', label: '开放池', show: () => hasRole('agent') },
   { id: 'mentions', label: '提醒', show: () => true },
   { id: 'knowledge', label: '经验库', show: () => !isAgentOnly() },
+  { id: 'agents', label: '我的智能体', show: () => !isAgentOnly() },
+  { id: 'members', label: '成员', show: () => canManageTenant() },
   { id: 'directory', label: '参与者', show: () => !isAgentOnly() },
   { id: 'oversight', label: '监管', show: () => canSupervise() },
   { id: 'audit', label: '审计', show: () => hasRole('admin') },
@@ -108,6 +130,8 @@ const TITLES = {
   pool: ['开放池', '能力匹配就可以认领，认领即加入'],
   mentions: ['提醒', '有人在评论里提到了你'],
   knowledge: ['经验库', '经过审核、带范围与有效期的经验'],
+  agents: ['我的智能体', '批准、查看与撤销智能体的授权'],
+  members: ['成员', '这个组织里有谁，各自能做什么'],
   directory: ['参与者', '人与智能体的身份、能力与状态'],
   oversight: ['监管', '哪里不对：卡住、失联、积压与被反复拒绝'],
   audit: ['审计', '谁在何时做了什么，结果如何'],
@@ -140,6 +164,14 @@ const state = {
   identities: [],
   sessions: [],
   heartbeatAt: '',
+  tenants: [],
+  tenant: null,
+  members: [],
+  invites: [],
+  grants: [],
+  pendingAgents: [],
+  pendingCode: '',
+  tenantDetail: null,
 };
 
 // ---------------------------------------------------------------- 基础工具
@@ -207,6 +239,9 @@ function hasRole(...roles) {
 }
 
 const isAdmin = () => hasRole('admin');
+/** 组织管理权与业务权限分开：租户角色决定能不能管成员。 */
+const canManageTenant = () =>
+  Boolean(state.me && (state.me.tenantRole === 'owner' || state.me.tenantRole === 'admin'));
 const canSupervise = () => hasRole('supervisor', 'admin');
 /** 纯智能体账号：没有人的职责，所以不给它全局看板。 */
 const isAgentOnly = () => Boolean(state.me && state.me.kind === 'agent' && !hasRole('owner', 'admin', 'supervisor', 'reviewer'));
@@ -446,19 +481,87 @@ async function signInWithToken(token, method = 'token') {
   state.method = method;
   sessionStorage.setItem('collab.token', token);
   sessionStorage.setItem('collab.method', method);
+  await loadTenants();
   enterApp();
+}
+
+/** 邮箱链接与钱包登录最终都走这里：拿到的是同一种令牌。 */
+async function signInWithSession(payload, method) {
+  await signInWithToken(payload.token, method);
+  toast(`已进入「${state.tenant?.name ?? '组织'}」`, 'info');
+}
+
+async function loadTenants() {
+  state.tenants = await api('me/tenants').catch(() => []);
+  state.tenant = state.tenants.find((item) => item.id === state.me.workspace) ?? null;
 }
 
 async function signInWithWallet(bindCode) {
   const result = await wallet.login(bindCode);
-  await signInWithToken(result.token, 'wallet');
+  await signInWithSession(result, 'wallet');
   toast(`已用 ${result.did.split(':').slice(-1)[0]} 登录`, 'info');
+}
+
+// ---------------------------------------------------------------- 邮箱登录
+
+async function requestEmailLink(email, invite) {
+  const response = await fetch(`${AUTH_ROOT}/email/start`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ email, ...(invite ? { invite } : {}) }),
+  });
+  const payload = await readPayload(response);
+  if (!response.ok) throw new Error(payload?.error?.message ?? `发送失败（HTTP ${response.status}）`);
+  return payload;
+}
+
+async function verifyEmailTicket(ticket) {
+  const response = await fetch(`${AUTH_ROOT}/email/verify`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ ticket }),
+  });
+  const payload = await readPayload(response);
+  if (response.status === 409 && payload?.selectionToken) return { selection: payload };
+  if (!response.ok) throw new Error(payload?.error?.message ?? `登录失败（HTTP ${response.status}）`);
+  return { session: payload };
+}
+
+/** 一个邮箱属于多个组织时，让人选一个再进。 */
+function chooseTenant(payload) {
+  openDialog({
+    title: '选择要进入的组织',
+    description: '这个邮箱同时在几个组织里，本次会话只属于其中一个，之后可以在侧栏切换。',
+    fields: [
+      {
+        name: 'tenantId',
+        label: '组织',
+        type: 'select',
+        value: payload.tenants[0]?.id,
+        options: payload.tenants.map((tenant) => ({
+          value: tenant.id,
+          label: `${tenant.name}（${TENANT_ROLE_LABEL[tenant.role] ?? tenant.role}）`,
+        })),
+      },
+    ],
+    submitLabel: '进入',
+    onSubmit: async (values) => {
+      const response = await fetch(`${AUTH_ROOT}/email/choose`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ selectionToken: payload.selectionToken, tenantId: values.tenantId }),
+      });
+      const result = await readPayload(response);
+      if (!response.ok) throw new Error(result?.error?.message ?? `进入失败（HTTP ${response.status}）`);
+      await signInWithSession(result, 'email');
+    },
+  });
 }
 
 function enterApp() {
   document.getElementById('login').hidden = true;
   document.getElementById('shell').hidden = false;
-  state.view = defaultView();
+  state.view = state.pendingCode ? 'agents' : defaultView();
   renderIdentity();
   renderNav();
   refresh();
@@ -473,6 +576,8 @@ async function signOut(message) {
   state.token = '';
   state.me = null;
   state.method = '';
+  state.tenants = [];
+  state.tenant = null;
   sessionStorage.removeItem('collab.token');
   sessionStorage.removeItem('collab.method');
   document.getElementById('shell').hidden = true;
@@ -498,6 +603,40 @@ function renderIdentity() {
     el('span', {}, roleText(state.me.roles)),
     el('span', { class: 'mono', title: state.me.did ?? '' }, did),
   );
+  renderTenantSwitch();
+}
+
+function renderTenantSwitch() {
+  const box = document.getElementById('tenant');
+  if (!box) return;
+  const name = state.tenant?.name ?? state.me.workspace;
+  const role = TENANT_ROLE_LABEL[state.tenant?.role ?? state.me.tenantRole] ?? '成员';
+  if (state.tenants.length <= 1) {
+    box.replaceChildren(
+      el('span', { class: 'tenant-name', title: name }, name),
+      el('span', { class: 'tenant-role' }, role),
+    );
+    return;
+  }
+  const select = el('select', { class: 'tenant-select', 'aria-label': '切换组织' });
+  for (const tenant of state.tenants) {
+    const option = el('option', { value: tenant.id }, tenant.name);
+    if (tenant.id === state.me.workspace) option.selected = true;
+    select.append(option);
+  }
+  select.addEventListener('change', async () => {
+    const response = await act(async () => {
+      const result = await api('me/switch', { body: { tenantId: select.value } });
+      state.token = result.token;
+      sessionStorage.setItem('collab.token', result.token);
+      state.me = await api('me');
+      await loadTenants();
+      renderIdentity();
+      renderNav();
+    }, '已切换组织');
+    void response;
+  });
+  box.replaceChildren(el('span', { class: 'tenant-label' }, '组织'), select);
 }
 
 function renderNav() {
@@ -560,6 +699,15 @@ async function refresh() {
       state.presence = await api('agent/presence').catch(() => []);
     }
     if (state.view === 'audit') state.audit = await api('audit');
+    if (state.view === 'members') {
+      state.tenantDetail = await api('tenants/current').catch(() => null);
+      state.members = await api('tenants/current/members').catch(() => []);
+      state.invites = await api('tenants/current/invites').catch(() => []);
+    }
+    if (state.view === 'agents') {
+      state.grants = await api('agents');
+      state.pendingAgents = canManageTenant() ? await api('agents/pending').catch(() => []) : [];
+    }
     if (state.view === 'settings') {
       state.identities = await api('me/identities').catch(() => []);
       state.sessions = await api('me/sessions').catch(() => []);
@@ -585,6 +733,8 @@ function render() {
   else if (state.view === 'mentions') content = renderMentions();
   else if (state.view === 'knowledge') content = renderKnowledge();
   else if (state.view === 'directory') content = renderDirectory();
+  else if (state.view === 'agents') content = renderAgents();
+  else if (state.view === 'members') content = renderMembers();
   else if (state.view === 'oversight') content = renderOversight();
   else if (state.view === 'settings') content = renderSettings();
   else content = renderAudit();
@@ -2001,6 +2151,324 @@ function openInvite() {
   });
 }
 
+// ---------------------------------------------------------------- 成员
+
+function inviteMember() {
+  openDialog({
+    title: '邀请成员加入',
+    description:
+      '给对方发一条 72 小时内有效、只能用一次的链接。链接同时完成邮箱验证、入组和登录，不需要对方先注册。收件人必须是该邮箱的持有者——链接被转发给别人无效。',
+    fields: [
+      { name: 'email', label: '邮箱', type: 'email', placeholder: 'name@company.com', required: true },
+      {
+        name: 'role',
+        label: '角色',
+        type: 'select',
+        value: 'member',
+        options: TENANT_ROLE_OPTIONS.filter((item) => item.value !== 'owner'),
+      },
+      {
+        name: 'kind',
+        label: '类型',
+        type: 'select',
+        value: 'human',
+        options: [
+          { value: 'human', label: '人' },
+          { value: 'agent', label: '智能体（以成员身份接入）' },
+        ],
+      },
+    ],
+    submitLabel: '发送邀请',
+    onSubmit: (values) =>
+      act(async () => {
+        const invite = await api('tenants/current/invites', { body: values });
+        showPanel(
+          '邀请已发出',
+          `已发送到 ${invite.email}，有效期至 ${formatTime(invite.expiresAt)}。`,
+          el('div', { class: 'stack' },
+            invite.link ? el('div', { class: 'muted small' }, '开发模式：也可以直接复制这条链接给对方。') : null,
+            invite.link ? el('div', { class: 'invite-code small' }, invite.link) : null,
+            el('div', { class: 'muted small' },
+              '对方点开链接即完成登录并加入。邀请只能用一次；对方接受前，可以在这里撤销。')),
+        );
+      }, '已发送邀请'),
+  });
+}
+
+function changeMemberRole(member) {
+  openDialog({
+    title: `调整 ${member.displayName} 的角色`,
+    description:
+      '租户角色决定能不能管理这个组织，与任务权限是两件事。把某人设为所有者会同时把你自己降为管理员——所有者始终只有一个。',
+    fields: [
+      {
+        name: 'role',
+        label: '新角色',
+        type: 'select',
+        value: member.tenantRole === 'owner' ? 'member' : member.tenantRole,
+        // 只有所有者能转让所有权；管理员看到这一项只会白点一次。
+        options:
+          state.me.tenantRole === 'owner'
+            ? TENANT_ROLE_OPTIONS
+            : TENANT_ROLE_OPTIONS.filter((item) => item.value !== 'owner'),
+      },
+    ],
+    submitLabel: '保存',
+    onSubmit: (values) =>
+      act(async () => {
+        await api(`members/${encodeURIComponent(member.principalId)}/role`, { body: values });
+      }, '角色已更新'),
+  });
+}
+
+function renderMembers() {
+  if (!canManageTenant()) return el('div', { class: 'empty' }, '只有所有者或管理员可以查看成员。');
+  const tenant = state.tenantDetail;
+  const people = state.members.filter((item) => item.kind !== 'agent');
+  const agents = state.members.filter((item) => item.kind === 'agent');
+
+  const memberRow = (member) => {
+    const self = member.principalId === state.me.id;
+    const owner = member.tenantRole === 'owner';
+    // 智能体只能是普通成员，改角色对它是空操作；移除对它等于"撤销授权"。
+    const isAgent = member.kind === 'agent';
+    return el('tr', {},
+      el('td', {},
+        el('div', { class: 'row', style: 'gap:8px;align-items:baseline' },
+          el('strong', {}, member.displayName || member.principalId),
+          self ? el('span', { class: 'badge', dataset: { tone: 'muted' } }, '你') : null,
+          member.active ? null : el('span', { class: 'badge', dataset: { tone: 'danger' } }, '已停用')),
+        el('div', { class: 'muted small mono' },
+          member.email ?? (member.did ? `did:wba:…${member.did.slice(-12)}` : member.principalId))),
+      el('td', {}, KIND_LABEL[member.kind] ?? member.kind),
+      el('td', {}, toneBadge(owner ? 'active' : member.tenantRole === 'admin' ? 'ok' : 'muted',
+        TENANT_ROLE_LABEL[member.tenantRole] ?? member.tenantRole)),
+      el('td', { class: 'muted small' }, member.lastLoginAt ? formatTime(member.lastLoginAt) : '从未登录'),
+      el('td', {},
+        el('div', { class: 'row', style: 'gap:6px' },
+          !self && !owner && !isAgent
+            ? el('button', { type: 'button', class: 'ghost small', onclick: () => changeMemberRole(member) }, '改角色')
+            : null,
+          !self && !owner
+            ? el('button', {
+                type: 'button',
+                class: 'ghost small danger',
+                onclick: () =>
+                  act(async () => {
+                    await api(`members/${encodeURIComponent(member.principalId)}/remove`, { body: {} });
+                  }, isAgent ? '已撤销授权' : '已移除成员'),
+              }, isAgent ? '撤销授权' : '移除')
+            : null)));
+  };
+
+  const table = (rows, emptyText, firstHeader = '成员') =>
+    rows.length
+      ? el('div', { class: 'table-wrap' }, el('table', {},
+          el('thead', {}, el('tr', {},
+            el('th', {}, firstHeader), el('th', {}, '类型'), el('th', {}, '角色'), el('th', {}, '最近登录'), el('th', {}, ''))),
+          el('tbody', {}, rows.map(memberRow))))
+      : el('div', { class: 'empty' }, emptyText);
+
+  const inviteRows = state.invites.length
+    ? el('div', { class: 'list' }, state.invites.map((invite) =>
+        el('div', { class: 'list-row' },
+          el('div', {},
+            el('strong', {}, invite.email),
+            el('div', { class: 'muted small' },
+              `${TENANT_ROLE_LABEL[invite.role] ?? invite.role} · 有效期至 ${formatTime(invite.expiresAt)}`)),
+          el('button', {
+            type: 'button',
+            class: 'ghost small',
+            onclick: () =>
+              act(async () => {
+                await api(`tenants/current/invites/${encodeURIComponent(invite.id)}/revoke`, { body: {} });
+              }, '已撤销邀请'),
+          }, '撤销'))))
+    : el('div', { class: 'empty' }, '没有待接受的邀请。');
+
+  return frag(
+    el('div', { class: 'grid' },
+      statCard('组织', tenant?.name ?? state.tenant?.name ?? state.me.workspace,
+        `${TENANT_ROLE_LABEL[state.me.tenantRole] ?? state.me.tenantRole} · 你是这个组织的成员`),
+      statCard('人', String(people.length), '含所有者与管理员'),
+      statCard('智能体', String(agents.length), '由成员授权接入'),
+      statCard('待接受邀请', String(state.invites.length), '72 小时内有效')),
+
+    el('div', { class: 'card' },
+      el('div', { class: 'row', style: 'justify-content:space-between;align-items:center' },
+        el('h3', {}, '成员'),
+        el('button', { class: 'primary', type: 'button', onclick: inviteMember }, '邀请成员')),
+      el('p', { class: 'hint tight' },
+        '邀请不需要对方先注册：链接同时完成邮箱验证、入组与登录。管理员不能改自己的角色，也不能移除所有者。'),
+      table(people, '还没有其他成员，先邀请一个人。')),
+
+    el('div', { class: 'card' },
+      el('h3', {}, '智能体'),
+      el('p', { class: 'hint tight' },
+        '智能体不是"另一个登录方式"，而是组织里的一个独立成员。它只拿被勾选的范围，撤销时只影响它自己。'),
+      table(agents, '还没有接入的智能体。去「我的智能体」生成批准码。', '智能体')),
+
+    el('div', { class: 'card' },
+      el('h3', {}, '待接受的邀请'),
+      inviteRows),
+  );
+}
+
+// ---------------------------------------------------------------- 我的智能体
+
+function approveAgent(prefill = '') {
+  openDialog({
+    title: '批准一个智能体',
+    description:
+      '输入智能体程序显示的 8 位批准码。批准会为它建立**独立主体**，权限只包含你勾选的范围；选"绑定到我的账号"才会让它以你的身份行动，撤销时要单独处理。',
+    fields: [
+      { name: 'userCode', label: '批准码', type: 'text', value: prefill, placeholder: 'ABCD-2345', required: true },
+      {
+        name: 'mode',
+        label: '授权方式',
+        type: 'select',
+        value: 'own',
+        options: [
+          { value: 'own', label: '独立主体（推荐）· 只拿勾选的范围，可单独撤销' },
+          { value: 'link', label: '绑定到我的账号 · 拥有我的全部权限' },
+        ],
+      },
+      {
+        name: 'scopes',
+        label: '授权范围',
+        type: 'checkbox-group',
+        value: ['tasks:read', 'tasks:submit', 'offers:claim', 'comments:write'],
+        options: SCOPE_OPTIONS,
+      },
+      {
+        name: 'expiresInHours',
+        label: '有效期',
+        type: 'select',
+        value: '720',
+        options: [
+          { value: '168', label: '7 天' },
+          { value: '720', label: '30 天' },
+          { value: '2160', label: '90 天' },
+          { value: '8760', label: '365 天' },
+        ],
+      },
+    ],
+    submitLabel: '批准',
+    onSubmit: (values) =>
+      act(async () => {
+        if (state.pendingCode) {
+          state.pendingCode = '';
+          history.replaceState({}, '', '/');
+        }
+        const result = await api('agents/approve', {
+          body: {
+            userCode: values.userCode,
+            mode: values.mode,
+            scopes: values.scopes,
+            expiresInHours: Number(values.expiresInHours),
+          },
+        });
+        showPanel(
+          '已批准',
+          result.mode === 'link'
+            ? '这条智能体现在以你的身份行动。撤销授权会同时作废它用这份授权换取的令牌。'
+            : '智能体已作为独立成员加入。它下次轮询就能拿到令牌，页面会显示在下面的列表里。',
+          el('div', { class: 'stack' },
+            el('div', {}, el('strong', {}, result.agentName)),
+            el('div', { class: 'muted small mono' }, result.did),
+            el('div', { class: 'row', style: 'gap:6px;flex-wrap:wrap' },
+              result.scopes.map((scope) => el('span', { class: 'badge' }, SCOPE_LABEL[scope] ?? scope))),
+            el('div', { class: 'muted small' }, `有效期至 ${formatTime(result.expiresAt)}`)),
+        );
+      }, '已批准'),
+  });
+}
+
+function renderAgents() {
+  if (isAgentOnly()) return el('div', { class: 'empty' }, '智能体账号不能批准其他智能体。');
+
+  const grantRow = (grant) => el('tr', {},
+    el('td', {},
+      el('div', { class: 'row', style: 'gap:8px;align-items:baseline' },
+        el('strong', {}, grant.agentName),
+        grant.status === 'active'
+          ? el('span', { class: 'badge', dataset: { tone: 'ok' } }, '有效')
+          : el('span', { class: 'badge', dataset: { tone: 'danger' } }, '已撤销')),
+      el('div', { class: 'muted small mono' }, grant.agentDid ? `did:wba:…${grant.agentDid.slice(-12)}` : grant.agentPrincipalId)),
+    el('td', {},
+      el('div', { class: 'row', style: 'gap:6px;flex-wrap:wrap' },
+        grant.scopes.map((scope) => el('span', { class: 'badge' }, SCOPE_LABEL[scope] ?? scope)))),
+    el('td', { class: 'muted small' },
+      grant.status === 'revoked'
+        ? `撤销于 ${formatTime(grant.revokedAt)}`
+        : grant.expiresAt
+          ? `至 ${formatTime(grant.expiresAt)}`
+          : '长期有效'),
+    el('td', { class: 'muted small' }, grant.lastSeenAt ? formatTime(grant.lastSeenAt) : '尚未使用'),
+    el('td', {},
+      grant.status === 'active'
+        ? el('button', {
+            type: 'button',
+            class: 'ghost small danger',
+            onclick: () =>
+              act(async () => {
+                await api(`agents/${encodeURIComponent(grant.id)}/revoke`, { body: {} });
+              }, '已撤销授权'),
+          }, '撤销')
+        : null));
+
+  const pending = state.pendingAgents.length
+    ? el('div', { class: 'list' }, state.pendingAgents.map((item) =>
+        el('div', { class: 'list-row' },
+          el('div', {},
+            el('strong', {}, item.name || '未命名智能体'),
+            el('div', { class: 'muted small mono' }, `…${item.did.slice(-16)}`),
+            el('div', { class: 'muted small' }, `批准码 ${item.userCode} · ${formatTime(item.expiresAt)} 前有效`)),
+          el('button', { type: 'button', class: 'ghost small', onclick: () => approveAgent(item.userCode) }, '批准'))))
+    : el('div', { class: 'empty' }, '最近没有等待批准的请求。');
+
+  return frag(
+    el('div', { class: 'card' },
+      el('h3', {}, '连接我的智能体'),
+      el('p', { class: 'muted', style: 'margin-top:8px' },
+        '智能体先向平台申请，得到一个 8 位批准码；你在这里输入它、勾选范围，它才会拿到令牌。' +
+        '批准发生在你已登录的会话里——邮件或别人转发批准码都不构成批准。'),
+      el('div', { class: 'row', style: 'margin-top:14px' },
+        el('button', { class: 'primary', type: 'button', onclick: () => approveAgent(state.pendingCode ?? '') }, '输入批准码')),
+      state.pendingCode
+        ? el('p', { class: 'hint tight' }, `你带来一个待批准的批准码：${state.pendingCode}`)
+        : null,
+      el('pre', { class: 'snippet' },
+        '# 智能体侧（一次性）\n' +
+        'curl -s -X POST /auth/agent/request \\\n' +
+        '  -H "content-type: application/json" \\\n' +
+        '  -d \'{"did":"did:wba:...","name":"库存查询 Agent"}\'\n\n' +
+        '# 拿到 userCode 后在这里批准，再用 deviceCode 轮询：\n' +
+        'curl -s -X POST /auth/agent/token \\\n' +
+        '  -H "content-type: application/json" \\\n' +
+        '  -d \'{"deviceCode":"..."}\''),
+      el('p', { class: 'hint tight' },
+        '批准码 10 分钟内有效；一个 deviceCode 只能换一次令牌。完整流程见 ',
+        el('a', { href: '/help/login#agent' }, '登录与授权说明'))),
+
+    el('div', { class: 'card' },
+      el('h3', {}, '我授权出去的智能体'),
+      state.grants.length
+        ? el('div', { class: 'table-wrap' }, el('table', {},
+            el('thead', {}, el('tr', {},
+              el('th', {}, '智能体'), el('th', {}, '范围'), el('th', {}, '期限'), el('th', {}, '最近活跃'), el('th', {}, ''))),
+            el('tbody', {}, state.grants.map(grantRow))))
+        : el('div', { class: 'empty' }, '还没有授权任何智能体。')),
+
+    canManageTenant()
+      ? el('div', { class: 'card' },
+          el('h3', {}, '最近发起的授权请求'),
+          el('p', { class: 'hint tight' }, '如果智能体就在你旁边，它会把批准码显示在终端里，直接点批准即可。'),
+          pending)
+      : null,
+  );
+}
+
 // ---------------------------------------------------------------- 审计
 
 const OUTCOME_LABEL = { success: '成功', replay: '幂等重放', read: '读取' };
@@ -2045,9 +2513,8 @@ function bindWalletForm() {
   const error = document.getElementById('login-error');
 
   if (!wallet.available()) {
-    note.textContent = '未检测到 ANP 钱包插件。安装并解锁后刷新本页，或用下面的访问令牌进入。';
+    note.textContent = '未检测到 ANP 钱包插件。安装并解锁后刷新本页；用邮箱登录则不需要插件。';
     submit.disabled = true;
-    document.getElementById('token-fallback').open = true;
   } else {
     note.textContent = '已检测到 ANP 钱包插件：登录时插件会弹出确认，私钥不会离开插件。';
   }
@@ -2069,6 +2536,73 @@ function bindWalletForm() {
   });
 }
 
+/** 邮箱登录：先发链接，再让对方去邮箱点。 */
+function bindEmailForm() {
+  const form = document.getElementById('email-form');
+  const input = document.getElementById('email');
+  const submit = document.getElementById('email-submit');
+  const note = document.getElementById('email-note');
+  const error = document.getElementById('login-error');
+  if (!form) return;
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    error.textContent = '';
+    const email = input.value.trim();
+    if (!email) {
+      error.textContent = '请先填写邮箱。';
+      return;
+    }
+    submit.disabled = true;
+    submit.textContent = '正在发送…';
+    try {
+      const result = await requestEmailLink(email);
+      note.replaceChildren(
+        el('span', {}, `已发送到 ${email}，15 分钟内有效、只能用一次。没收到就看一眼垃圾邮件。`),
+        result.devLink
+          ? el('div', { class: 'stack', style: 'margin-top:8px' },
+              el('span', { class: 'muted small' }, '开发模式：不接邮件服务，直接点下面这条进。'),
+              el('a', { class: 'invite-code small', href: result.devLink }, result.devLink))
+          : null,
+      );
+    } catch (problem) {
+      error.textContent = problem.message;
+    } finally {
+      submit.disabled = false;
+      submit.textContent = '发登录链接';
+    }
+  });
+}
+
+/**
+ * 打开邮件里的链接时，地址栏带着 ticket。
+ *
+ * 先清掉参数再验证：避免刷新页面重复提交一张已经用掉的票。
+ */
+async function consumeTicketFromUrl() {
+  const params = new URLSearchParams(location.search);
+  const agentCode = params.get('agent');
+  if (agentCode) state.pendingCode = agentCode.toUpperCase();
+  const ticket = params.get('ticket');
+  if (!ticket) return;
+
+  history.replaceState({}, '', location.pathname);
+  const note = document.getElementById('email-note');
+  const error = document.getElementById('login-error');
+  if (note) note.textContent = '正在验证登录链接…';
+  try {
+    const result = await verifyEmailTicket(ticket);
+    if (result.selection) {
+      chooseTenant(result.selection);
+      return;
+    }
+    await signInWithSession(result.session, 'email');
+  } catch (problem) {
+    if (error) error.textContent = problem.message;
+    if (note) note.textContent = '链接不可用，可以重新发一条。';
+  }
+}
+
 function boot() {
   document.getElementById('login-form').addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -2084,6 +2618,7 @@ function boot() {
   });
 
   document.getElementById('logout').addEventListener('click', () => signOut());
+  bindEmailForm();
   bindWalletForm();
 
   // 钱包插件是异步注入的，晚一点再探测一次，免得刷新即可用的提示骗人。
@@ -2096,11 +2631,17 @@ function boot() {
         document.getElementById('wallet-note').textContent =
           '已检测到 ANP 钱包插件：登录时插件会弹出确认，私钥不会离开插件。';
         document.getElementById('wallet-submit').disabled = false;
-        document.getElementById('token-fallback').open = false;
       } else if (attempts >= 6) {
         clearInterval(timer);
       }
     }, 500);
+  }
+
+  // 邮件链接优先于已有会话：点邀请就该按邀请处理，不能因为浏览器里还留着
+  // 上一个账号的令牌就把它悄悄忽略掉。
+  if (new URLSearchParams(location.search).has('ticket')) {
+    void consumeTicketFromUrl();
+    return;
   }
 
   const remembered = sessionStorage.getItem('collab.token');

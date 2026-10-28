@@ -10,7 +10,18 @@ export COLLAB_DB="$PWD/data/collab.sqlite3"     # 可选，默认 ./collab.sqlit
 npm start
 ```
 
-首次启动会在同一个事务里建表并创建 `admin` 主体（角色 `admin/owner/reviewer`）。
+首次启动会在同一个事务里建表并创建 `admin` 主体（角色 `admin/owner/reviewer`，同时是该租户的所有者）。
+
+### 登录与本地邮件
+
+- 打开 <http://127.0.0.1:8787/>：填一个邮箱即可登录，首次登录会创建个人组织。
+- 本地没有邮件服务：邮件写进 `mail_outbox` 表，同时在控制台打印；接口也会返回 `devLink`，
+  登录页会把它显示出来（标着“开发模式”）。
+- 生产部署两个必须改的变量：`COLLAB_PUBLIC_URL` 指向真实域名（邮件链接的基地址）、
+  `COLLAB_DEV_MAIL=0`（关掉 devLink 与本地发件箱读取接口）。
+- 登录页的《登录与授权说明》挂在 `/help/login`，不需要登录；它和
+  [login-and-authorization.md](login-and-authorization.md) 讲的是同一件事。
+- `COLLAB_MAIL=console` 时只打印不发信；默认 `outbox` 会同时写库，便于本机排查。
 
 > `COLLAB_BOOTSTRAP_TOKEN` 只在**数据库为空**时生效。数据库里已有主体时修改环境变量不会改变任何令牌，需要用 `POST /v1/principals/:id/rotate-token` 轮换。令牌不要进 Git、命令历史或任务内容。
 
@@ -26,6 +37,21 @@ curl -s -X POST http://127.0.0.1:8787/v1/principals \
 ```
 
 令牌只以 SHA-256 摘要落库，响应里不会回显。停用主体立即拒绝其后续请求，已提交的结果与审计保留。
+
+## 数据库迁移
+
+schema 现在到 v3：新增 `accounts`、`account_links`、`tenants`、`tenant_invites`、
+`login_tickets`、`agent_requests`、`agent_grants`、`mail_outbox`，并给 `principals`
+补了 `account_id` 与 `tenant_role`。迁移在启动时幂等执行：先查现有列，再在同一个事务里
+`CREATE TABLE IF NOT EXISTS` 与必要的 `ALTER TABLE`。
+
+升级既有库时注意两点：
+
+- 旧数据的 `principals.account_id` 为空，第一次用 DID 登录时会自动补建账号并回填；
+  没登录过的遗留主体仍然可用，只是看不到跨租户的组织列表。
+- `tenant_role` 默认 `member`。迁移会做一次幂等回填：带 `admin` 能力角色的主体补成
+  `admin`，每个没有所有者的租户把最早的管理员补成 `owner`（否则升级后没人能管成员）。
+  回填在每次启动时都会跑，条件不满足就什么都不做；也可用 `POST /v1/members/:id/role` 手工调整。
 
 ## SQLite
 

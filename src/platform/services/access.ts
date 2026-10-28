@@ -6,7 +6,7 @@
  */
 
 import { forbidden, notFound } from '../../protocol/errors.ts';
-import type { Principal, Role, Subtask, Task } from '../../protocol/types.ts';
+import type { AgentScope, Principal, Role, Subtask, Task } from '../../protocol/types.ts';
 import type { Context } from '../context.ts';
 import { toSubtask, toTask } from '../db/mappers.ts';
 
@@ -99,4 +99,35 @@ export async function loadSubtask(
   );
   if (!row) throw notFound('子任务不存在');
   return toSubtask(row);
+}
+
+/**
+ * Agent 授权范围检查。
+ *
+ * 只对"通过设备授权码接入"的 Agent 生效：它们有 `agent_grants` 记录。
+ * 用静态令牌或 DID 直接登记的老主体没有这条记录，保持原有行为——
+ * 这是一次有意的兼容取舍，不是遗漏；迁移到设备授权的 Agent 都会走检查。
+ */
+export async function requireAgentScope(
+  ctx: Context,
+  principal: Principal,
+  scope: AgentScope,
+): Promise<void> {
+  if (principal.kind !== 'agent' && principal.kind !== 'service') return;
+  const grant = await ctx.db.read.one<{ scopes: string; status: string; expires_at: string | null }>(
+    'SELECT scopes, status, expires_at FROM agent_grants WHERE agent_principal_id = :id',
+    { id: principal.id },
+  );
+  if (!grant) return;
+  if (String(grant.status) !== 'active') throw forbidden('该智能体的授权已被撤销');
+  if (grant.expires_at !== null && String(grant.expires_at) <= ctx.now()) {
+    throw forbidden('该智能体的授权已过期，请让主人重新批准');
+  }
+  let scopes: string[] = [];
+  try {
+    scopes = JSON.parse(String(grant.scopes)) as string[];
+  } catch {
+    scopes = [];
+  }
+  if (!scopes.includes(scope)) throw forbidden(`缺少授权范围 ${scope}`);
 }

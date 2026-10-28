@@ -8,15 +8,20 @@
 import type { Database } from './db/driver.ts';
 import { migrate } from './db/schema.ts';
 import { createContext, type Context } from './context.ts';
+import { AccountService } from './services/accounts.ts';
+import { AgentAuthService } from './services/agentAuth.ts';
 import { AuditService } from './services/audit.ts';
 import { CollabService } from './services/collab.ts';
+import { EmailAuthService } from './services/emailAuth.ts';
 import { IdentityService, type EnrollMode } from './services/identity.ts';
 import { KnowledgeService } from './services/knowledge.ts';
+import { MailService, type MailMode } from './services/mail.ts';
 import { NotificationService } from './services/notifications.ts';
 import { OversightService, type OversightThresholds } from './services/oversight.ts';
 import { PrincipalService } from './services/principals.ts';
 import { SubtaskService } from './services/subtasks.ts';
 import { TaskService } from './services/tasks.ts';
+import { TenantService } from './services/tenants.ts';
 
 export type IdentitySettings = {
   workspace: string;
@@ -25,10 +30,21 @@ export type IdentitySettings = {
   nonceTtlSeconds: number;
 };
 
+export type MailSettings = {
+  mode: MailMode;
+  baseUrl: string;
+  exposeOutbox: boolean;
+};
+
 export type App = {
   ctx: Context;
   principals: PrincipalService;
   identity: IdentityService;
+  accounts: AccountService;
+  tenants: TenantService;
+  emailAuth: EmailAuthService;
+  agentAuth: AgentAuthService;
+  mail: MailService;
   tasks: TaskService;
   subtasks: SubtaskService;
   knowledge: KnowledgeService;
@@ -44,6 +60,7 @@ export type AppOptions = {
   /** ANP 身份默认值面向本机验证；企业部署应显式配置。 */
   identity?: Partial<IdentitySettings>;
   oversight?: Partial<OversightThresholds>;
+  mail?: Partial<MailSettings>;
 };
 
 export async function createApp(db: Database, options: AppOptions = {}): Promise<App> {
@@ -58,14 +75,51 @@ export async function createApp(db: Database, options: AppOptions = {}): Promise
   const principals = new PrincipalService(ctx);
   const workspace = process.env.COLLAB_WORKSPACE ?? 'local';
 
-  const identity = new IdentityService(ctx, {
-    workspace: options.identity?.workspace ?? process.env.COLLAB_WORKSPACE ?? 'local',
-    enroll: options.identity?.enroll ?? 'open',
-    sessionTtlHours: options.identity?.sessionTtlHours ?? 24 * 7,
-    nonceTtlSeconds: options.identity?.nonceTtlSeconds ?? 300,
+  const accounts = new AccountService(ctx);
+  const mail = new MailService(ctx, {
+    mode: options.mail?.mode ?? 'outbox',
+    baseUrl: options.mail?.baseUrl ?? process.env.COLLAB_PUBLIC_URL ?? 'http://127.0.0.1:8787',
+    // 本地参考实现默认开放"看最近邮件"，否则第一次跑起来根本收不到登录链接。
+    // 生产部署必须设置 COLLAB_DEV_MAIL=0。
+    exposeOutbox:
+      options.mail?.exposeOutbox ?? (process.env.COLLAB_DEV_MAIL ?? '1') !== '0',
   });
+  const tenants = new TenantService(ctx, accounts, mail);
+
+  const identity = new IdentityService(
+    ctx,
+    {
+      workspace: options.identity?.workspace ?? process.env.COLLAB_WORKSPACE ?? 'local',
+      enroll: options.identity?.enroll ?? 'open',
+      sessionTtlHours: options.identity?.sessionTtlHours ?? 24 * 7,
+      nonceTtlSeconds: options.identity?.nonceTtlSeconds ?? 300,
+    },
+    accounts,
+  );
+  const emailAuth = new EmailAuthService(
+    ctx,
+    { accounts, tenants, identity, mail },
+    { ticketMinutes: 15, selectionMinutes: 30 },
+  );
+  const agentAuth = new AgentAuthService(ctx, tenants, identity);
   const collab = new CollabService(ctx, notifications);
   const oversight = new OversightService(ctx, options.oversight);
 
-  return { ctx, principals, identity, tasks, subtasks, knowledge, notifications, collab, oversight, audit };
+  return {
+    ctx,
+    principals,
+    identity,
+    accounts,
+    tenants,
+    emailAuth,
+    agentAuth,
+    mail,
+    tasks,
+    subtasks,
+    knowledge,
+    notifications,
+    collab,
+    oversight,
+    audit,
+  };
 }

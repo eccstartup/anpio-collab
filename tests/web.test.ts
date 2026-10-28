@@ -292,9 +292,10 @@ async function seed(harness: Harness): Promise<{ agentToken: string; taskId: str
 test('index.html 与测试骨架的 id 保持一致', async () => {
   const html = await readFile(new URL('index.html', WEB_ROOT), 'utf8');
   for (const id of [
-    'login', 'wallet-steps', 'wallet-form', 'bind-code', 'wallet-submit', 'wallet-note',
-    'token-fallback', 'login-form', 'token', 'login-error', 'shell', 'nav', 'identity',
-    'logout', 'topbar', 'view', 'toast', 'dialog',
+    'login', 'email-form', 'email', 'email-submit', 'email-note',
+    'wallet-steps', 'wallet-form', 'bind-code', 'wallet-submit', 'wallet-note',
+    'agent-block', 'token-fallback', 'login-form', 'token', 'login-error', 'shell', 'nav',
+    'tenant', 'identity', 'logout', 'topbar', 'view', 'toast', 'dialog',
   ]) {
     assert.ok(html.includes(`id="${id}"`), `index.html 缺少 #${id}`);
   }
@@ -303,6 +304,31 @@ test('index.html 与测试骨架的 id 保持一致', async () => {
   }
   // CSP 只允许同源脚本，页面不能依赖内联事件。
   assert.ok(!/on(click|submit)=/.test(html), 'index.html 不应有内联事件处理器');
+  // 登录前必须能找到说明页的入口。
+  assert.ok(html.includes('/help/login'), '登录页缺少登录说明入口');
+});
+
+test('登录说明页：无需登录即可访问，两种登录方式都在', async () => {
+  const harness = await startHarness();
+  try {
+    const response = await realFetch(`${harness.url}/help/login`);
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get('content-type') ?? '', /text\/html/);
+    const html = await response.text();
+    assert.ok(html.includes('邮箱一次性链接'), '缺少邮箱登录说明');
+    assert.ok(html.includes('DID 钱包签名'), '缺少 DID 登录说明');
+    assert.ok(html.includes('id="agent"'), '缺少智能体授权章节');
+    assert.ok(html.includes('/login?ticket='), '缺少真实邮件样例');
+
+    // 邮件链接的落点必须回落到单页应用，否则点链接会拿到 401 JSON。
+    for (const path of ['/login?ticket=abc', '/agents/approve?code=ABCD-2345']) {
+      const page = await realFetch(`${harness.url}${path}`);
+      assert.equal(page.status, 200, `${path} 应该返回页面`);
+      assert.match(await page.text(), /id="email-form"/);
+    }
+  } finally {
+    await harness.close();
+  }
 });
 
 test('用钱包插件登录：领取挑战、签名、换令牌、按角色生成导航', async () => {
@@ -332,9 +358,9 @@ test('用钱包插件登录：领取挑战、签名、换令牌、按角色生�
     assert.deepEqual(me.roles, ['owner'], '人类钱包首次登录应按 owner 自动登记');
 
     // 纯负责人没有监管与审计，导航必须如实反映权限。
-    assert.deepEqual(navLabels(mounted.document), ['工作台', '任务', '提醒', '经验库', '参与者', '设置']);
+    assert.deepEqual(navLabels(mounted.document), ['工作台', '任务', '提醒', '经验库', '我的智能体', '参与者', '设置']);
 
-    for (const label of ['工作台', '任务', '提醒', '经验库', '参与者', '设置']) {
+    for (const label of ['工作台', '任务', '提醒', '经验库', '我的智能体', '参与者', '设置']) {
       await visit(mounted.document, label);
       assert.ok(text(element(mounted.document, 'view')).trim().length > 0, `「${label}」渲染为空`);
     }
@@ -415,7 +441,7 @@ test('监管者看板：列异常、看在线表、能触发扫描', async () =>
       `管理员登录后没有进入工作台：${text(element(mounted.document, 'login-error'))}`,
     );
 
-    assert.deepEqual(navLabels(mounted.document), ['工作台', '任务', '提醒', '经验库', '参与者', '监管', '审计', '设置']);
+    assert.deepEqual(navLabels(mounted.document), ['工作台', '任务', '提醒', '经验库', '我的智能体', '成员', '参与者', '监管', '审计', '设置']);
 
     await visit(mounted.document, '监管');
     const view = text(element(mounted.document, 'view'));

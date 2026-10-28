@@ -11,7 +11,7 @@ import type { Knowledge, Principal } from '../../protocol/types.ts';
 import { asObject, asString, asStringArray, asTimestamp } from '../../protocol/parse.ts';
 import type { Context } from '../context.ts';
 import { toKnowledge } from '../db/mappers.ts';
-import { assertOwner, hasAnyRole, readTask } from './access.ts';
+import { assertOwner, hasAnyRole, readTask, requireAgentScope } from './access.ts';
 import { appendEvent } from './events.ts';
 
 export type KnowledgeAudience = 'workspace' | string[];
@@ -349,6 +349,7 @@ export class KnowledgeService {
   /** 已发布、未过期、且对调用方可见的经验。 */
   async list(actor: Principal, query = '', limit = 100): Promise<Knowledge[]> {
     if (query.length > 200) throw invalid('查询过长');
+    await requireAgentScope(this.ctx, actor, 'knowledge:read');
     const pattern = `%${query.toLowerCase()}%`;
     const rows = await this.ctx.db.read.all(
       `SELECT k.* FROM knowledge k
