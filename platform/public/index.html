@@ -1,0 +1,5 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Anpio Collab</title><link rel="stylesheet" href="/app.css"><script src="/app.js" defer></script></head><body>
+<header><div><strong>Anpio Collab</strong><span class="tag">本地协作平台</span></div><span id="identity">未连接</span></header>
+<main><section id="login"><h1>连接工作空间</h1><p>输入管理员分配的访问令牌。令牌仅保存在当前页面内存。</p><form id="loginForm"><label>访问令牌<input id="token" type="password" autocomplete="off" required></label><button>连接</button></form></section>
+<div id="workspace" hidden><nav aria-label="主导航"><button data-tab="tasks">任务工作台</button><button data-tab="knowledge">知识库</button><button data-tab="directory">参与者目录</button><button data-tab="audit">审计</button><button id="logout" class="secondary">退出</button></nav><p id="notice" role="status" aria-live="polite"></p><section id="uncertain" hidden><h2>操作结果尚未确认</h2><p>先查询任务状态，或以相同操作编号重试原请求。确认前暂停其他写操作。</p><button id="retry">重试同一请求</button></section><div id="content"></div></div>
+</main><footer>示例业务只读；任务验收、知识审核和消息确认分别记录。</footer></body></html>
