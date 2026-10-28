@@ -114,9 +114,19 @@ test('引用固定版本，范围收窄后不可再用，撤销后仍可追溯�
     const revoked = (await owner.evidence(second.id, candidate.id, 1)) as { currentState: string };
     assert.equal(revoked.currentState, 'revoked');
 
-    // 任务详情里仍能看到曾经引用过哪个版本，便于影响分析。
-    const detail = (await owner.task(second.id)) as { knowledgeRefs: { knowledgeId: string; version: number }[] };
-    assert.deepEqual(detail.knowledgeRefs, [{ knowledgeId: candidate.id, version: 1 }]);
+    // 任务详情里仍能看到曾经引用过哪个版本，便于影响分析；
+    // 正文取自被钉住的版本，所以经验撤销之后依然读得到当时的依据。
+    const detail = (await owner.task(second.id)) as {
+      knowledgeRefs: { knowledgeId: string; version: number; content: string; conditions: string }[];
+    };
+    assert.deepEqual(detail.knowledgeRefs, [
+      {
+        knowledgeId: candidate.id,
+        version: 1,
+        content: '缺料时先查库存快照，再确认供应商可供',
+        conditions: 'M-100',
+      },
+    ]);
   } finally {
     await harness.close();
   }

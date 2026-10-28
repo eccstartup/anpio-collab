@@ -591,11 +591,17 @@ function renderTaskDetail() {
     renderSubtasks(detail, owner),
     detail.knowledgeRefs.length
       ? el('div', { class: 'card' },
-        el('div', { class: 'card-head' }, el('h3', {}, '引用的经验')),
+        el('div', { class: 'card-head' },
+          el('h3', {}, '引用的经验'),
+          el('span', { class: 'muted' }, '正文固定在被引用的版本上')),
         el('div', { class: 'list' }, detail.knowledgeRefs.map((ref) =>
           el('div', { class: 'list-item', style: 'cursor:default' },
-            el('div', { class: 'mono muted' }, `经验 ${ref.knowledgeId.slice(0, 8)}`),
-            el('div', { class: 'meta' }, `固定引用版本 v${ref.version}`)))))
+            el('p', { class: 'statement' }, ref.content ?? '（该版本正文不可见）'),
+            el('div', { class: 'meta' },
+              el('span', {}, `v${ref.version}`),
+              ref.conditions ? el('span', {}, `适用：${ref.conditions}`) : null,
+              el('span', { class: 'mono muted', title: `经验编号 ${ref.knowledgeId}` },
+                ref.knowledgeId.slice(0, 8)))))))
       : null,
     renderTimeline(detail.events, detail.subtasks),
   );

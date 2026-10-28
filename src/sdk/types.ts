@@ -61,7 +61,13 @@ export type TaskListItem = {
   subtaskDone: number;
 };
 
-export type KnowledgeRef = { knowledgeId: string; version: number };
+/** 任务引用的经验：正文取自被钉住的那一版，修订后仍能看到当时的依据。 */
+export type KnowledgeRef = {
+  knowledgeId: string;
+  version: number;
+  content: string | null;
+  conditions: string | null;
+};
 
 export type TaskDetail = {
   /** 任务本体，附带负责人显示名，省去调用方再查目录。 */

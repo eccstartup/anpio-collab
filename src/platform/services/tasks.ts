@@ -253,7 +253,12 @@ export class TaskService {
 
     // 智能体只看到自己的子任务，看不到别人的结果、事件和知识引用。
     let events: ReturnType<typeof toEvent>[] = [];
-    let references: { knowledgeId: string; version: number }[] = [];
+    let references: {
+      knowledgeId: string;
+      version: number;
+      content: string | null;
+      conditions: string | null;
+    }[] = [];
     if (unrestricted) {
       const eventRows = await this.ctx.db.read.all(
         'SELECT * FROM events WHERE task_id = :taskId ORDER BY seq',
@@ -273,15 +278,27 @@ export class TaskService {
           (typeof event.payload.id === 'string' && visible.has(event.payload.id)),
       );
 
+      // 引用是钉在版本上的，所以正文取自 knowledge_versions 而不是当前行：
+      // 经验被修订之后，仍要能看清当时依据的是哪一版。
       const refRows = await this.ctx.db.read.all(
-        'SELECT knowledge_id, version FROM knowledge_refs WHERE task_id = :taskId ORDER BY knowledge_id, version',
+        `SELECT r.knowledge_id, r.version, v.content, v.conditions
+         FROM knowledge_refs r
+         LEFT JOIN knowledge_versions v
+           ON v.knowledge_id = r.knowledge_id AND v.version = r.version
+         WHERE r.task_id = :taskId
+         ORDER BY r.knowledge_id, r.version`,
         { taskId },
       );
       const refIds = new Set(refRows.map(row => String(row.knowledge_id)));
       const visibleRefs = await this.visibleKnowledgeIds(actor, refIds);
       references = refRows
         .filter(row => visibleRefs.has(String(row.knowledge_id)))
-        .map(row => ({ knowledgeId: String(row.knowledge_id), version: Number(row.version) }));
+        .map(row => ({
+          knowledgeId: String(row.knowledge_id),
+          version: Number(row.version),
+          content: row.content == null ? null : String(row.content),
+          conditions: row.conditions == null ? null : String(row.conditions),
+        }));
     }
 
     // 负责人名称与列表保持一致：详情页不必再查一次目录。
@@ -346,7 +363,12 @@ export class TaskService {
       task: Task;
       subtasks: Subtask[];
       events: ReturnType<typeof toEvent>[];
-      knowledgeRefs: { knowledgeId: string; version: number }[];
+      knowledgeRefs: {
+        knowledgeId: string;
+        version: number;
+        content: string | null;
+        conditions: string | null;
+      }[];
       unrestricted: boolean;
     };
     const { task, subtasks, events, knowledgeRefs, unrestricted } = detail;
