@@ -6,8 +6,13 @@
  */
 
 import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { EnrollMode } from './services/identity.ts';
 import type { OversightThresholds } from './services/oversight.ts';
+
+// 按模块位置定位，而不是 process.cwd()：从别的目录启动时（服务管理器、IDE、脚本）
+// 工作目录往往不是仓库根，静态文件就会全部读不到，首页退化成 401 JSON。
+const DEFAULT_WEB_ROOT = fileURLToPath(new URL('../web/', import.meta.url));
 
 export type Config = {
   workspace: string;
@@ -66,7 +71,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, cwd = process.c
     bootstrapId: env.COLLAB_BOOTSTRAP_ID ?? 'admin',
     bootstrapToken: token,
     requestBodyLimit: Number(env.COLLAB_BODY_LIMIT ?? 65536),
-    webRoot: env.COLLAB_WEB_ROOT ?? resolve(cwd, 'src/web'),
+    webRoot: env.COLLAB_WEB_ROOT ?? DEFAULT_WEB_ROOT,
     logRequests: env.COLLAB_LOG_REQUESTS === '1',
     anpEnroll: parseEnroll(env.COLLAB_ANP_ENROLL),
     didAllowHttp: env.COLLAB_DID_HTTP === '1',

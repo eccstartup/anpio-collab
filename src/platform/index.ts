@@ -6,6 +6,8 @@
  * 不应直接暴露到公网。
  */
 
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { loadConfig } from './config.ts';
 import { createApp } from './app.ts';
 import { openDatabase } from './db/index.ts';
@@ -14,6 +16,10 @@ import { isMain } from './runtime.ts';
 
 export async function start(): Promise<void> {
   const config = loadConfig();
+  // 静态目录读不到时，所有页面都会静默变成 401 JSON，启动时说清楚。
+  if (!existsSync(join(config.webRoot, 'index.html'))) {
+    console.warn(`警告: ${config.webRoot} 下没有 index.html，首页将返回 401。检查 COLLAB_WEB_ROOT。`);
+  }
   const db = openDatabase(config.database);
   const app = await createApp(db, {
     identity: {
