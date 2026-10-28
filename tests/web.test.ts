@@ -15,7 +15,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { generateIdentity, type AnpIdentity } from '../src/anp/identity.ts';
 import { signRequest } from '../src/anp/signature.ts';
-import { ADMIN_TOKEN, startHarness, type Harness } from './helpers/harness.ts';
+import { ADMIN_ID, ADMIN_TOKEN, startHarness, type Harness } from './helpers/harness.ts';
 import { DomElement, DomNode, DomDocument } from './helpers/dom.ts';
 
 const WEB_ROOT = new URL('../src/web/', import.meta.url);
@@ -370,6 +370,52 @@ test('用钱包插件登录：领取挑战、签名、换令牌、按角色生�
     const settings = text(element(mounted.document, 'view'));
     assert.ok(settings.includes(identity.did.slice(0, 24)), '设置页没有显示已绑定的 DID');
     assert.ok(settings.includes('browser'), '会话列表缺少来源');
+  } finally {
+    await sleep(80);
+    mounted.dispose();
+    await harness.close();
+  }
+});
+
+test('设置页用钱包补绑 DID：令牌登录的账号也能挂上 ANP 身份', async () => {
+  const harness = await startHarness();
+  const identity = generateIdentity({ handle: 'binder' });
+  const mounted = await mount({ url: harness.url, wallet: fakeWallet(identity) });
+  try {
+    element(mounted.document, 'token').value = ADMIN_TOKEN;
+    await element(mounted.document, 'login-form').fire('submit');
+    await waitFor(
+      () => element(mounted.document, 'shell').hidden === false,
+      `令牌登录未完成：${text(element(mounted.document, 'login-error'))}`,
+    );
+
+    await visit(mounted.document, '设置');
+    assert.ok(text(element(mounted.document, 'view')).includes('绑定我的 DID'), '设置页缺少绑定入口');
+    assert.ok(text(element(mounted.document, 'view')).includes('已检测到钱包插件'), '应提示检测到钱包插件');
+
+    await buttonByText(mounted.document, '用钱包绑定 DID').fire('click');
+    await waitFor(
+      () => text(element(mounted.document, 'view')).includes(identity.did.slice(-24)),
+      `绑定后列表没有出现这条 DID：${text(element(mounted.document, 'toast'))}`,
+    );
+
+    // 服务端确实把这条 DID 挂到了 admin 主体上，并设为主身份。
+    const me = (await (
+      await realFetch(`${harness.url}/v1/me`, { headers: { authorization: `Bearer ${ADMIN_TOKEN}` } })
+    ).json()) as { id: string; did: string | null };
+    assert.equal(me.id, ADMIN_ID);
+    assert.equal(me.did, identity.did);
+
+    // 再点一次不该报错，也不该多出一条。
+    await buttonByText(mounted.document, '用钱包绑定 DID').fire('click');
+    await waitFor(
+      () => text(element(mounted.document, 'toast')).includes('已经绑定'),
+      `重复绑定没有给出提示：${text(element(mounted.document, 'toast'))}`,
+    );
+    const identities = (await (
+      await realFetch(`${harness.url}/v1/me/identities`, { headers: { authorization: `Bearer ${ADMIN_TOKEN}` } })
+    ).json()) as unknown[];
+    assert.equal(identities.length, 1);
   } finally {
     await sleep(80);
     mounted.dispose();

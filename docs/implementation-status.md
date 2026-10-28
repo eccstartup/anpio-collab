@@ -2,9 +2,23 @@
 
 对照 [plan.md](../plan.md)、[第二轮计划](plan-v2.md) 与 [第三轮计划](plan-v3.md)，说明本仓库现在做到了什么、哪些只是本机验证、哪些还没开始。
 
-> 结论先行：**阶段 1（本地协作闭环）、阶段 3（知识闭环）已实现；第二轮的身份、协作、监管三块已实现；第三轮的租户、两种登录与 Agent 授权已实现。阶段 4/5 未开始。** 通过本机测试不等于企业环境验收。
+> 结论先行：**阶段 1（本地协作闭环）、阶段 3（知识闭环）已实现；第二轮的身份、协作、监管三块已实现；第三轮的租户、两种登录与 Agent 授权已实现；第四轮补上"登录后补绑 DID"。阶段 4/5 未开始。** 通过本机测试不等于企业环境验收。
 
-## 第三轮新增（本轮）
+## 第四轮新增（本轮）
+
+| 能力 | 实现位置 | 验证方式 |
+| --- | --- | --- |
+| 已登录后补绑 DID：挑战 → 钱包签名 → 挂到当前主体 | `services/identity.ts`、`http/routes.ts`、`http/server.ts` | `tests/identity-bind.test.ts` |
+| 双条件校验：会话令牌 + DID 私钥签名，缺一不可 | `identity.ts#bindDid` | 同上（无会话 401、篡改 401） |
+| 补绑挑战用途隔离（`purpose=bind`），一次性、不可挪用 | `identity.ts#consumeNonce` | 同上（登录挑战 401） |
+| 归属冲突显式拒绝：同组织他人 409、他账号 409，不静默改写 | `identity.ts#bindDid` | 同上 |
+| 主体无主 DID 时补绑即设为主身份，并回写 handle | `identity.ts`、`routes.ts` | 同上 + `/v1/me` 断言 |
+| 设置页「绑定我的 DID」：钱包探测、置忙、重复绑定提示 | `src/web/app.js` | `tests/web.test.ts` |
+| 路由上下文提供 `headers` / `rawBody` / `origin`，签名类接口不必再回落到 `/auth/*` | `http/router.ts`、`http/server.ts` | 上述两组用例 |
+
+测试合计 81 项（新增 8 项补绑用例 + 1 项设置页前端用例）。SQLite 与 PostgreSQL 跑同一套用例。
+
+## 第三轮新增
 
 | 能力 | 实现位置 | 验证方式 |
 | --- | --- | --- |
@@ -22,7 +36,7 @@
 | 成员页、我的智能体页、组织切换器 | `src/web/app.js`、`app.css` | `tests/web.test.ts` + 手工 |
 | 撤销后可重新授权（同一 DID 复用主体）、智能体不能升管理员 | `services/agentAuth.ts`、`tenants.ts` | `tests/tenant-auth.test.ts` |
 
-测试合计 72 项（新增 10 项租户/登录/授权 + 1 项说明页）。SQLite 与 PostgreSQL 跑同一套用例。
+测试合计 72 项（新增 10 项租户/登录/授权 + 1 项说明页）。SQLite 与 PostgreSQL 跑同一套用例。（第三轮结束时的数量；当前 81 项。）
 
 ## 第二轮新增（本轮）
 

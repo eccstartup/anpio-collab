@@ -129,6 +129,31 @@ WWW-Authenticate: ANP nonce="<新 nonce>"
 - `POST /v1/me/logout` 只撤销当前这一个会话；`/v1/me/sessions` 列出全部，可逐个撤销。
 - 已停用的主体：令牌立即失效；`/v1/me/identities/:id/revoke` 解绑 DID 时同时撤销它的会话。
 
+### 补绑 DID（已登录）
+
+登录之后想把另一条 DID 挂到当前主体，不用登出重来：
+
+```
+GET  /v1/me/identities/challenge          → { nonce, expiresAt, purpose: "bind", audience }
+POST /v1/me/identities/bind   (签名请求)   → { id, did, keyid, fingerprint, primary, existing }
+```
+
+请求体是 `{ nonce, did, didDocument, keyid? }`，签名头与登录完全一样（`Signature-Input` / `Signature` / `Content-Digest`），**同时带上 `Authorization: Bearer <会话令牌>`**：
+
+| 缺什么 | 后果 |
+| --- | --- |
+| 缺签名 | 谁都能把别人的 DID 挂到自己账号上 |
+| 缺会话 | 谁都能把自己的 DID 塞进别人的账号 |
+
+所以两者都要，服务端先按 `did` + `didDocument` 验签，再核对会话对应的主体。
+
+- 挑战用途单独记为 `bind`：拿登录挑战来补绑会被拒（`401`），补绑挑战也换不到会话。
+- 挑战一次性；重放（哪怕换了 `Idempotency-Key`）返回 `401`。
+- 主体原本没有主 `did` 时，本次绑定会补上主身份并回填 `handle`；已有主身份则只登记归属。
+- 冲突一律显式拒绝，不静默改写：同一租户内已属于另一主体 `409`，已属于另一个账号 `409`。
+- 新登记的身份 `login_count = 0`——绑定不等于登录过一次。
+- 解绑后这条 DID 再来登录会作为新主体重新登记，不会回到原账号。
+
 ## 邮箱登录、租户与 Agent 授权
 
 ### 三层身份
@@ -270,6 +295,13 @@ accepted ──outcome-unknown──> outcome_unknown
 | GET | `/v1/me` | 当前主体、角色、租户角色、账号、Agent 授权范围 |
 | GET | `/v1/me/tenants` | 我所属的全部租户（跨租户） |
 | POST | `/v1/me/switch` | 切换租户并换发会话 |
+| GET | `/v1/me/identities` | 当前主体绑定的 DID |
+| GET | `/v1/me/identities/challenge` | 领取补绑 DID 的挑战（`purpose=bind`） |
+| POST | `/v1/me/identities/bind` | 用 DID 签名补绑到当前主体（同时要 Bearer 令牌） |
+| POST | `/v1/me/identities/invite` | 签发绑定码，给另一台设备/智能体登录时用 |
+| POST | `/v1/me/identities/:id/revoke` | 解绑一条 DID 并撤销它的会话 |
+| GET | `/v1/me/sessions` | 当前主体的会话列表 |
+| POST | `/v1/me/sessions/:id/revoke` | 撤销指定会话 |
 | GET | `/v1/principals?capability=` | 主体目录，可按能力过滤 |
 | POST | `/v1/principals` | 登记主体 `{id, roles, token, displayName?, capabilities?, did?}`；令牌只在响应中出现一次 |
 | POST | `/v1/principals/:id/profile` | 更新显示名、描述、能力声明 |

@@ -33,6 +33,30 @@
 
 两种方式产出的会话完全一样，后续授权只看主体，不看登录方式。
 
+### 2.3 已登录之后补绑 DID
+
+先用邮箱（或令牌）进来了，但手上还有一条 ANP 身份？不用登出再登一次：
+
+1. 打开「设置 → 绑定我的 DID」，确认状态是「已检测到钱包插件」（装的是 `anpio-extension`）。
+2. 点「用钱包绑定 DID」。页面向服务端要一个**补绑专用**的挑战。
+3. 钱包弹出确认，你签一次名。私钥不出插件，页面只拿到签名头。
+4. 服务端验签通过后，把这条 DID 登记到当前主体名下；如果这个主体本来没有主 DID，顺手设成主身份。
+
+为什么这样设计：
+
+| 只做签名 | 只带会话 |
+| --- | --- |
+| 任何人都能把自己的 DID 挂到别人的账号上，只要你猜到对方的账号 | 任何人只要登录了，就能把**别人的** DID 挂到自己名下，冒充它做事 |
+
+所以补绑要求两件事同时成立：会话证明"这是我的账号"，签名证明"这条 DID 的私钥在我手上"。绑定只登记归属——它不给你新角色，也不会把别人已有的权限带进这个账号。
+
+几条边界：
+
+- 挑战一次性，用途单独标记 `bind`：登录挑战不能拿去补绑，补绑挑战也换不来会话。
+- 一条 DID 在一个组织里只属于一个主体；已属于别人时返回 409，不会静默改写归属。
+- 解绑后这条 DID 再来登录，会作为新主体重新登记，不会回到原账号（见第 7 节）。
+- 绑定码仍然保留：它给的是"另一台设备 / 智能体在登录时填进来"的路，不需要那台设备先登录。
+
 ## 3. 你收到的邮件
 
 | 邮件 | 触发 | 点开发生什么 | 有效期 |
@@ -156,6 +180,10 @@ POST /auth/email/choose   { selectionToken, tenantId }→ 200 { token, tenant, p
 
 POST /auth/agent/request  { did, name, capabilities } → 201 { deviceCode, userCode, expiresIn }
 POST /auth/agent/token    { deviceCode }              → 202 pending | 200 { token, scopes }
+
+GET  /v1/me/identities/challenge                      → { nonce, expiresAt }（需登录）
+POST /v1/me/identities/bind (ANP 签名请求)            → { did, primary, existing, loginCount }
+POST /v1/me/identities/:id/revoke                     → 解绑一条 DID
 
 GET  /v1/me/tenants                                   → 我所属的租户
 POST /v1/me/switch        { tenantId }                → 换发会话

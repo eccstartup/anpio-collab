@@ -149,6 +149,27 @@ export const routes: Route[] = [
     read: async ({ app, principal }) => app.identity.listIdentities(principal),
   },
   {
+    method: 'GET',
+    path: '/v1/me/identities/challenge',
+    description: '签发一次补绑 DID 的挑战（已登录后把钱包身份挂到本账号）',
+    read: async ({ app, principal, origin }) => app.identity.issueBindChallenge(origin),
+  },
+  {
+    method: 'POST',
+    path: '/v1/me/identities/bind',
+    description: '用钱包对挑战签名，把该 DID 补绑到当前主体（签名请求）',
+    write: {
+      execute: async ({ app, principal, path, origin, headers, rawBody }) =>
+        app.identity.bindDid(principal, {
+          method: 'POST',
+          // 签名覆盖 `@target-uri`，必须与客户端实际请求的地址逐字一致。
+          url: `${origin}${path}`,
+          headers,
+          rawBody,
+        }),
+    },
+  },
+  {
     method: 'POST',
     path: '/v1/me/identities/invite',
     description: '签发绑定码：让另一个 DID（通常是智能体）登进同一账号',

@@ -471,6 +471,55 @@ const wallet = {
     if (!payload?.token) throw new Error('服务端没有返回访问令牌');
     return payload;
   },
+
+  /**
+   * 把钱包里的 DID 补绑到**当前已登录的账号**。
+   *
+   * 与登录共用同一套签名（挑战 → 钱包签名 → 提交），只是换了个端点：
+   * 登录回答"我是谁"，补绑回答"这条 DID 也属于这个账号"。因此这里既带
+   * Bearer 令牌（证明账号），又带 DID 签名（证明私钥）——两个都要。
+   */
+  async bindDid() {
+    if (!wallet.available()) {
+      throw new Error('没有检测到 ANP 钱包插件。装上 anpio-extension 并解锁后刷新本页。');
+    }
+    const identity = await window.anp.getIdentity();
+    if (!identity || !identity.did) throw new Error('钱包里没有可用身份，请先在插件中创建或导入钱包');
+
+    const challenge = await api('me/identities/challenge');
+    if (!challenge?.nonce) throw new Error('服务端没有下发挑战，可能是版本不匹配');
+
+    const url = `${location.origin}${API_ROOT}/me/identities/bind`;
+    const body = JSON.stringify({
+      nonce: challenge.nonce,
+      did: identity.did,
+      didDocument: identity.didDocument,
+      client: 'browser',
+    });
+    let signed;
+    try {
+      signed = await window.anp.signAnpLogin({ url, method: 'POST', body, nonce: challenge.nonce });
+    } catch (error) {
+      throw new Error(`钱包签名未完成：${error.message}`);
+    }
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${state.token}`,
+        'content-type': 'application/json',
+        'idempotency-key': crypto.randomUUID(),
+        ...(signed.headers ?? {}),
+      },
+      // 必须发签名覆盖的那份字节，否则 content-digest 对不上。
+      body: signed.body ?? body,
+    });
+    const payload = await readPayload(response);
+    if (!response.ok) {
+      throw new Error(payload?.error?.message ?? `绑定失败（HTTP ${response.status}）`);
+    }
+    return payload;
+  },
 };
 
 // ---------------------------------------------------------------- 会话
@@ -593,10 +642,12 @@ async function signOut(message) {
   }
 }
 
+/** DID 太长，前缀对辨认没用：留 did:wba 与结尾的指纹段。 */
+const shortDid = (did) => (did ? `did:wba:…${String(did).slice(-14)}` : '');
+
 function renderIdentity() {
   const box = document.getElementById('identity');
-  // DID 太长，前缀对辨认没用：留 did:wba 与结尾的指纹段。
-  const did = state.me.did ? `did:wba:…${state.me.did.slice(-14)}` : '未绑定 DID';
+  const did = shortDid(state.me.did) || '未绑定 DID';
   box.replaceChildren(
     el('strong', {}, state.me.displayName || state.me.id),
     el('span', {}, `${state.me.id} · ${KIND_LABEL[state.me.kind] ?? state.me.kind ?? '主体'}`),
@@ -2054,6 +2105,7 @@ function alertRow(alert) {
 
 function renderSettings() {
   const me = state.me;
+  const walletReady = wallet.available();
   const identityRows = state.identities.map((item) =>
     el('div', { class: 'list-item static' },
       el('div', { class: 'row spread top' },
@@ -2085,6 +2137,11 @@ function renderSettings() {
         }, '撤销')
         : '—')));
 
+  // 绑定按钮要先建出来，才能把"自己"交给点击处理去置忙——渲染函数里没有事件对象可用。
+  const bindButton = el('button', { class: 'accent', type: 'button' }, '用钱包绑定 DID');
+  if (walletReady) bindButton.addEventListener('click', () => bindWalletIdentity(bindButton));
+  else bindButton.disabled = true;
+
   return frag(
     el('div', { class: 'card' },
       el('div', { class: 'card-head' }, el('h3', {}, '我的身份')),
@@ -2102,9 +2159,25 @@ function renderSettings() {
         el('button', { type: 'button', onclick: () => signOut() }, '退出登录'))),
     el('div', { class: 'card' },
       el('div', { class: 'card-head' },
+        el('h3', {}, '绑定我的 DID'),
+        toneBadge(walletReady ? 'ok' : 'muted', walletReady ? '已检测到钱包插件' : '未检测到钱包插件')),
+      el('p', { class: 'hint tight' },
+        '用浏览器里的 ANP 钱包（anpio-extension）签一次名，证明这条 DID 归你，就能把它挂到当前账号下：' +
+        '以后用这条 DID 登录会直接进这个账号，人和智能体的记录留在同一处。' +
+        '绑定只登记归属——它不会给你新的角色，也不会把别人的权限带进来。'),
+      el('div', { class: 'row', style: 'margin-top:12px' },
+        bindButton,
+        el('span', { class: 'muted small' },
+          walletReady
+            ? '点击后钱包会弹出确认，私钥不离开插件。'
+            : '装上 anpio-extension，在 chrome://extensions 加载 dist/ 后刷新本页；用邮箱登录不需要插件。'))),
+    el('div', { class: 'card' },
+      el('div', { class: 'card-head' },
         el('h3', {}, '绑定的 DID'),
         el('span', { class: 'muted' }, `${state.identities.length} 条`)),
-      state.identities.length ? el('div', { class: 'list' }, identityRows) : el('div', { class: 'empty' }, '还没有绑定 DID，当前用访问令牌登录。')),
+      state.identities.length
+        ? el('div', { class: 'list' }, identityRows)
+        : el('div', { class: 'empty' }, '还没有绑定 DID。用上面的「用钱包绑定 DID」把 ANP 身份挂到这个账号上。')),
     el('div', { class: 'card' },
       el('div', { class: 'card-head' },
         el('h3', {}, '会话'),
@@ -2116,6 +2189,27 @@ function renderSettings() {
           el('tbody', {}, sessionRows)))
         : el('div', { class: 'empty' }, '没有 DID 会话。')),
   );
+}
+
+/** 点击「用钱包绑定 DID」：签名 → 提交 → 刷新身份与列表。 */
+async function bindWalletIdentity(button) {
+  const label = button.textContent;
+  button.disabled = true;
+  button.textContent = '等待钱包确认…';
+  try {
+    const result = await wallet.bindDid();
+    // 主身份可能刚被设上，侧栏与「我的身份」都要跟着变。
+    state.me = await api('me');
+    renderIdentity();
+    await refresh();
+    if (result.existing) toast('这条 DID 已经绑定在本账号上了');
+    else toast(`已绑定 ${shortDid(result.did)}${result.primary ? '，并设为主身份' : ''}`);
+  } catch (error) {
+    toast(error.message, 'error');
+  } finally {
+    button.disabled = false;
+    button.textContent = label;
+  }
 }
 
 function openInvite() {

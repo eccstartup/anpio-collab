@@ -17,6 +17,12 @@ export type RequestContext = {
   params: Record<string, string>;
   query: URLSearchParams;
   path: string;
+  /** 请求头的原样副本（键小写）。ANP 验签要重建签名基，必须逐字拿到。 */
+  headers: Record<string, string>;
+  /** 请求体原始字节：content-digest 覆盖的是字节，不能用重新序列化的 JSON。 */
+  rawBody: string;
+  /** 外部可见的源，例如 `http://127.0.0.1:8790`；签名里的 `@target-uri` 用它拼。 */
+  origin: string;
 };
 
 export type ReadContext = RequestContext;

@@ -490,7 +490,20 @@ export function createServer(options: ServerOptions): http.Server {
       const match = router.match(req.method ?? 'GET', url.pathname);
       if (!match) throw notFound('接口不存在');
 
-      const body = req.method === 'POST' ? await readBody(req, bodyLimit) : undefined;
+      // 原始字节与请求头要原样交给路由：ANP 验签要重建签名基，
+      // 先 JSON.parse 再 JSON.stringify 已经不是同一份字节了。
+      const rawBody = req.method === 'POST' ? await readRawBody(req, bodyLimit) : '';
+      let body: unknown;
+      if (req.method === 'POST') {
+        if (!rawBody) body = {};
+        else {
+          try {
+            body = JSON.parse(rawBody);
+          } catch {
+            throw invalid('请求体不是合法 JSON');
+          }
+        }
+      }
       const context = {
         app,
         principal,
@@ -499,6 +512,9 @@ export function createServer(options: ServerOptions): http.Server {
         query: url.searchParams,
         path: url.pathname,
         body,
+        headers: headerMap(req),
+        rawBody,
+        origin: absoluteUrl(req, '') ?? '',
       };
 
       let result: unknown;

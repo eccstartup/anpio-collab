@@ -75,6 +75,24 @@ export type LoginResult = {
   enrollment: 'auto' | 'bound' | 'existing';
 };
 
+export type IdentityView = {
+  id: string;
+  did: string;
+  keyid: string;
+  fingerprint: string | null;
+  client: string;
+  createdAt: string;
+  lastLoginAt: string | null;
+  loginCount: number;
+};
+
+export type BindResult = IdentityView & {
+  /** true 表示这条 DID 本来就在本账号下，本次没有新增。 */
+  existing: boolean;
+  /** true 表示同时被设成了主体的主 DID（之前没有主 DID）。 */
+  primary: boolean;
+};
+
 export class IdentityService {
   private readonly ctx: Context;
   private readonly options: IdentityOptions;
@@ -105,19 +123,21 @@ export class IdentityService {
   }
 
   /**
-   * 消费 nonce。返回 false 表示没消费成功——不存在、过期或已用过。
+   * 消费 nonce。返回 false 表示没消费成功——不存在、过期、已用过，
+   * 或者用途对不上（登录的挑战不能拿去绑定 DID，反之亦然）。
    *
    * 单次使用是这里唯一的防重放手段，因此"查"和"改"必须在同一个事务里，
    * 否则两个并发请求会同时看到未消费状态。
    */
-  private async consumeNonce(nonce: string): Promise<boolean> {
+  private async consumeNonce(nonce: string, purpose = 'login'): Promise<boolean> {
     const now = this.ctx.now();
     return this.ctx.db.transaction(async tx => {
-      const row = await tx.one<{ consumed_at: string | null; expires_at: string }>(
-        'SELECT consumed_at, expires_at FROM anp_nonces WHERE nonce = :nonce',
+      const row = await tx.one<{ consumed_at: string | null; expires_at: string; purpose: string }>(
+        'SELECT consumed_at, expires_at, purpose FROM anp_nonces WHERE nonce = :nonce',
         { nonce },
       );
       if (!row || row.consumed_at !== null || String(row.expires_at) < now) return false;
+      if (String(row.purpose) !== purpose) return false;
       await tx.run('UPDATE anp_nonces SET consumed_at = :at WHERE nonce = :nonce', { at: now, nonce });
       return true;
     });
@@ -165,7 +185,7 @@ export class IdentityService {
       const issued = await this.issueNonce();
       throw new ChallengeRequiredError(issued.nonce, issued.expiresAt);
     }
-    if (!(await this.consumeNonce(nonce))) {
+    if (!(await this.consumeNonce(nonce, 'login'))) {
       const issued = await this.issueNonce();
       throw new ChallengeRequiredError(issued.nonce, issued.expiresAt, 'nonce 无效、已使用或已过期');
     }
@@ -352,14 +372,22 @@ export class IdentityService {
     return toPrincipal(row!);
   }
 
+  /**
+   * 登记一条 DID。
+   *
+   * `countsAsLogin` 区分两种来路：登录时顺手登记（计数 1），还是已登录之后
+   * 补绑（这条 DID 还没登录过，记 0 才和界面上的"登录 N 次"对得上）。
+   */
   private async insertIdentity(
     tx: Queryable,
     input: { did: string; fingerprint: string; client: 'browser' | 'agent' },
     principalId: string,
+    countsAsLogin = true,
   ): Promise<void> {
+    const at = this.ctx.now();
     await tx.run(
       `INSERT INTO identities(id, workspace, did, principal_id, fingerprint, client, created_at, last_login_at, login_count)
-       VALUES(:id, :workspace, :did, :principal, :fingerprint, :client, :at, :at, 1)`,
+       VALUES(:id, :workspace, :did, :principal, :fingerprint, :client, :at, :lastLoginAt, :loginCount)`,
       {
         id: randomUUID(),
         workspace: this.options.workspace,
@@ -367,7 +395,9 @@ export class IdentityService {
         principal: principalId,
         fingerprint: input.fingerprint,
         client: input.client,
-        at: this.ctx.now(),
+        at,
+        lastLoginAt: countsAsLogin ? at : null,
+        loginCount: countsAsLogin ? 1 : 0,
       },
     );
   }
@@ -500,16 +530,7 @@ export class IdentityService {
        ORDER BY i.created_at`,
       { workspace: actor.workspace, principal: actor.id },
     );
-    return rows.map(row => ({
-      id: String(row.id),
-      did: String(row.did),
-      keyid: `${String(row.did)}#key-1`,
-      fingerprint: row.fingerprint === null ? null : String(row.fingerprint),
-      client: String(row.client),
-      createdAt: String(row.created_at),
-      lastLoginAt: row.last_login_at === null ? null : String(row.last_login_at),
-      loginCount: Number(row.login_count),
-    }));
+    return rows.map(row => toIdentityView(row));
   }
 
   async revokeIdentity(actor: Principal, identityId: string) {
@@ -533,8 +554,161 @@ export class IdentityService {
     });
     return { id: identityId, revoked: true };
   }
+
+  // ---------------------------------------------------------------- 补绑 DID
+
+  /**
+   * 给已登录的主体签发一次"补绑 DID"的挑战。
+   *
+   * 用途单独记为 `bind`：登录挑战不能拿去补绑，补绑挑战也不能拿去换会话。
+   */
+  async issueBindChallenge(origin = '') {
+    const issued = await this.issueNonce('bind');
+    return {
+      nonce: issued.nonce,
+      expiresAt: issued.expiresAt,
+      purpose: issued.purpose,
+      audience: origin ? `${origin}/v1/me/identities/bind` : null,
+    };
+  }
+
+  /**
+   * 把一条 DID 补绑到**当前已登录主体**上。
+   *
+   * 两个条件必须同时成立，缺一不可：
+   *  - 会话令牌有效——否则任何人都能把自己的 DID 挂到别人的账号上；
+   *  - 请求被该 DID 的私钥签过——否则把自己的账号挂到一条不属于自己的 DID 上。
+   *
+   * 绑定只增加"这条 DID 登进来会落到这个主体"，不改变任何角色：
+   * 它既不是提权通道，也不能借此让别的账号继承现有权限。
+   */
+  async bindDid(
+    actor: Principal,
+    request: { method: string; url: string; headers: Record<string, string>; rawBody: string },
+  ): Promise<BindResult> {
+    const payload = this.parseBody(request.rawBody);
+    const did = payload.did;
+    if (!isDid(did)) throw invalid('did 必须是 did:wba 标识');
+
+    let resolved;
+    try {
+      resolved = resolveVerificationKey(did, String(payload.keyid ?? '#key-1'), payload.didDocument);
+    } catch (error) {
+      throw unauthenticated(`DID 文档不可用：${messageOf(error)}`);
+    }
+
+    let verified;
+    try {
+      verified = verifySignature(
+        { method: request.method, url: request.url, headers: request.headers, body: request.rawBody },
+        resolved.key,
+        resolved.keyid,
+        did,
+      );
+    } catch (error) {
+      throw unauthenticated(`签名校验失败：${messageOf(error)}`);
+    }
+
+    const bodyNonce = typeof payload.nonce === 'string' ? payload.nonce : '';
+    if (verified.nonce && bodyNonce && verified.nonce !== bodyNonce) {
+      throw unauthenticated('请求体 nonce 与签名参数不一致');
+    }
+    const nonce = verified.nonce || bodyNonce;
+    if (!nonce) throw invalid('补绑 DID 必须带上服务端签发的挑战');
+    if (!(await this.consumeNonce(nonce, 'bind'))) {
+      throw unauthenticated('挑战无效、已使用、已过期或用途不符，请重新获取');
+    }
+
+    const client = payload.client === 'agent' ? 'agent' : 'browser';
+
+    // 账号级凭证是全局唯一的：这条 DID 若已属于别的账号，绑进来也会在下次
+    // 登录时把会话发到那个账号，界面显示与实际行为不一致，不如当场说清楚。
+    if (this.accounts) {
+      const owner = await this.accounts.findByLink('did', did);
+      if (owner && owner.id !== actor.accountId) {
+        throw conflict('这条 DID 已属于另一个账号，请先用它登录后解绑，或换一条 DID');
+      }
+    }
+
+    const outcome = await this.ctx.db.transaction(async tx => {
+      const bound = await tx.one<{ id: string; principal_id: string }>(
+        'SELECT id, principal_id FROM identities WHERE workspace = :workspace AND did = :did',
+        { workspace: actor.workspace, did },
+      );
+      if (bound && String(bound.principal_id) !== actor.id) {
+        // 一条 DID 在一个组织里只能属于一个主体；否则"谁签的"就没有唯一答案。
+        throw conflict('这条 DID 已绑定到本组织的另一个主体，请先用它登录并解绑');
+      }
+
+      const primary = await tx.one<{ id: string }>(
+        'SELECT id FROM principals WHERE workspace = :workspace AND did = :did',
+        { workspace: actor.workspace, did },
+      );
+      if (primary && String(primary.id) !== actor.id) {
+        throw conflict('这条 DID 已经是本组织另一个主体的主身份');
+      }
+
+      // 已经有这条绑定：不重复插入，按幂等成功返回，但不动 login_count。
+      if (bound) {
+        const row = await tx.one('SELECT * FROM identities WHERE id = :id', { id: bound.id });
+        return { identity: toIdentityView(row!), existing: true, primary: false };
+      }
+
+      await this.insertIdentity(tx, { did, fingerprint: resolved.fingerprint, client }, actor.id, false);
+
+      // 主体还没有主 DID 时，把这条设为主身份：侧栏、/v1/me 与目录里都认得出来。
+      let becamePrimary = false;
+      if (!actor.did) {
+        await tx.run('UPDATE principals SET did = :did WHERE id = :id AND workspace = :workspace', {
+          did,
+          id: actor.id,
+          workspace: actor.workspace,
+        });
+        if (!actor.handle) {
+          const handle = handleFromDid(did);
+          if (handle) {
+            await tx.run('UPDATE principals SET handle = :handle WHERE id = :id AND workspace = :workspace', {
+              handle,
+              id: actor.id,
+              workspace: actor.workspace,
+            });
+          }
+        }
+        becamePrimary = true;
+      }
+
+      // 账号级凭证：让这条 DID 以后登录时落到同一个账号，而不是新建一个。
+      if (actor.accountId) await this.accounts?.attach(tx, actor.accountId, 'did', did);
+
+      const row = await tx.one(
+        `SELECT * FROM identities WHERE workspace = :workspace AND did = :did`,
+        { workspace: actor.workspace, did },
+      );
+      return { identity: toIdentityView(row!), existing: false, primary: becamePrimary };
+    });
+
+    return {
+      ...outcome.identity,
+      existing: outcome.existing,
+      primary: outcome.primary,
+    };
+  }
 }
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function toIdentityView(row: Record<string, unknown>): IdentityView {
+  return {
+    id: String(row.id),
+    did: String(row.did),
+    // 目前只支持 e1 的单钥身份；回显时补全成完整引用，方便别的实现照着验。
+    keyid: `${String(row.did)}#key-1`,
+    fingerprint: row.fingerprint === null || row.fingerprint === undefined ? null : String(row.fingerprint),
+    client: String(row.client),
+    createdAt: String(row.created_at),
+    lastLoginAt: row.last_login_at === null || row.last_login_at === undefined ? null : String(row.last_login_at),
+    loginCount: Number(row.login_count ?? 0),
+  };
 }

@@ -40,11 +40,16 @@ COLLAB_URL=http://127.0.0.1:8787 COLLAB_TOKEN="$COLLAB_BOOTSTRAP_TOKEN" npm run 
 GET  /auth/anp/challenge            → { nonce, expiresAt }
 POST /auth/anp/login  (签名请求)     → { token, did, principal, sessionExpiresAt }
                                     + Authentication-Info: access_token="..."
+
+GET  /v1/me/identities/challenge    → { nonce, expiresAt }（需登录）
+POST /v1/me/identities/bind (签名请求) → { did, primary, existing }（需登录）
 ```
 
 - 签名基覆盖 `@method @target-uri @authority content-digest`，参数带 `created/expires/nonce/keyid`；`nonce` 一次性，验签失败不消耗。
 - 首次登录自动登记：人 → `kind: human` + `owner`，智能体 → `kind: agent` + `agent`。`COLLAB_ANP_ENROLL=pending` 时先落为待批准，管理员在「参与者」里批准后才能读任何任务。
 - **同一个账号**：人先签发绑定码（设置 → 签发绑定码），智能体登录时带上 `bindCode`，两条 DID 就挂同一个主体，共享任务、评论与验收记录。绑定码一次性，填错不会悄悄给新账号。
+- **补绑 DID（设置里直接做）**：已经登录的人不用登出再登入——「设置 → 绑定我的 DID」让钱包对一次性挑战签一次名，这条 DID 就挂到当前账号；主体原本没有主 DID 时会顺手设成主身份。绑定码留给智能体、另一台设备或不在电脑前的场景。
+- 绑定必须同时具备**有效会话**和**该 DID 的签名**：只有签名能挂到任意账号上，只有会话能把别人的 DID 抢过来。二者都满足才登记，且只增加归属，不给角色。
 - 会话是 32 字节随机令牌，只存 SHA-256；可在「设置 → 会话」里逐个撤销，退出登录只撤销当前这一个。
 
 ## 登录、租户与智能体授权
@@ -95,7 +100,7 @@ Agent  POST /auth/agent/token { deviceCode } → { token, scopes, expiresAt }
 | 我的智能体 | 批准码批准（选独立主体或共用账号、勾选范围与期限）、授权列表、撤销 |
 | 参与者 | 人与智能体的目录、类型、角色、能力声明、登记、批准、改角色、停用 |
 | 监管 | 告警（按严重程度）、风险任务、智能体在线表、待批准主体；可一键重新扫描 |
-| 设置 | 我的身份、当前组织、绑定的 DID、签发绑定码、会话列表与撤销 |
+| 设置 | 我的身份、当前组织、用钱包绑定 DID、绑定的 DID、签发绑定码、会话列表与撤销 |
 | 审计 | 写操作、幂等重放、被拒绝的请求与敏感读取；普通轮询式读取不记录 |
 
 界面是无框架的原生 JS：没有构建步骤，只用 DOM 节点拼装（不用 `innerHTML` 渲染服务端内容），并在 CSP 下运行。
