@@ -27,10 +27,13 @@ export type Harness = {
   db: Database;
   url: string;
   directory: string;
+  databasePath: string;
   server: http.Server;
   admin: CollabClient;
   token(prefix?: string): string;
   client(token: string): CollabClient;
+  /** 关闭服务与数据库但保留目录，用于重启与备份测试。 */
+  stop(): Promise<void>;
   close(): Promise<void>;
 };
 
@@ -41,7 +44,8 @@ async function resetPostgres(db: Database): Promise<void> {
 export async function startHarness(options: { workspace?: string } = {}): Promise<Harness> {
   const directory = mkdtempSync(join(tmpdir(), 'collab-test-'));
   const postgres = process.env.COLLAB_TEST_DATABASE;
-  const db = openDatabase(postgres ?? join(directory, 'collab.sqlite3'));
+  const databasePath = postgres ?? join(directory, 'collab.sqlite3');
+  const db = openDatabase(databasePath);
   if (postgres) await resetPostgres(db);
 
   const app = await createApp(db);
@@ -66,10 +70,15 @@ export async function startHarness(options: { workspace?: string } = {}): Promis
     db,
     url,
     directory,
+    databasePath,
     server,
     admin: new CollabClient(url, ADMIN_TOKEN),
     token: (prefix = 'agent') => `${prefix}-${randomBytes(16).toString('hex')}`,
     client: token => new CollabClient(url, token),
+    stop: async () => {
+      await new Promise<void>(resolve => server.close(() => resolve()));
+      await db.close();
+    },
     close: async () => {
       await new Promise<void>(resolve => server.close(() => resolve()));
       await db.close();

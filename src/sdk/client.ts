@@ -8,6 +8,38 @@
  *  - 只依赖 fetch，任何语言都可以照此实现协议，Node 客户端只是参考实现。
  */
 
+import type {
+  AuditEntry,
+  Evidence,
+  InboxItem,
+  KnowledgeSearch,
+  KnowledgeSummary,
+  NotificationView,
+  PrincipalView,
+  StatusChange,
+  SubtaskRef,
+  TaskContext,
+  TaskDetail,
+  TaskListItem,
+  TaskRef,
+} from './types.ts';
+
+export type {
+  AuditEntry,
+  Evidence,
+  InboxItem,
+  KnowledgeSearch,
+  KnowledgeSummary,
+  NotificationView,
+  PrincipalView,
+  StatusChange,
+  SubtaskRef,
+  TaskContext,
+  TaskDetail,
+  TaskListItem,
+  TaskRef,
+};
+
 export class CollabError extends Error {
   readonly status: number;
   readonly code: string;
@@ -100,19 +132,24 @@ export class CollabClient {
 
   // ------------------------------------------------------------ 身份与目录
   me() {
-    return this.request<{ id: string; workspace: string; roles: string[]; displayName: string }>('me');
+    return this.request<{ id: string; workspace: string; roles: string[]; did: string | null; displayName: string; capabilities: string[] }>('me');
   }
 
   directory(capability?: string) {
-    return this.request<unknown[]>(`principals${capability ? `?capability=${encodeURIComponent(capability)}` : ''}`);
+    return this.request<PrincipalView[]>(
+      `principals${capability ? `?capability=${encodeURIComponent(capability)}` : ''}`,
+    );
   }
 
   registerPrincipal(input: { id: string; roles: string[]; token: string; displayName?: string; capabilities?: string[]; did?: string }, operationId: string) {
-    return this.request('principals', { body: input, operationId });
+    return this.request<PrincipalView>('principals', { body: input, operationId });
   }
 
   deactivatePrincipal(id: string, operationId: string) {
-    return this.request(`principals/${encodeURIComponent(id)}/deactivate`, { body: {}, operationId });
+    return this.request<{ id: string; active: false }>(`principals/${encodeURIComponent(id)}/deactivate`, {
+      body: {},
+      operationId,
+    });
   }
 
   // ------------------------------------------------------------ 任务
@@ -121,27 +158,29 @@ export class CollabClient {
     if (filters.status) params.set('status', filters.status);
     if (filters.q) params.set('q', filters.q);
     const suffix = params.size ? `?${params}` : '';
-    return this.request<unknown[]>(`tasks${suffix}`);
+    return this.request<TaskListItem[]>(`tasks${suffix}`);
   }
 
   tasksPage(limit = 20, offset = 0) {
-    return this.request<{ items: unknown[]; nextOffset: number | null }>(`tasks/page?limit=${limit}&offset=${offset}`);
+    return this.request<{ items: TaskListItem[]; nextOffset: number | null }>(
+      `tasks/page?limit=${limit}&offset=${offset}`,
+    );
   }
 
   task(id: string) {
-    return this.request(`tasks/${encodeURIComponent(id)}`);
+    return this.request<TaskDetail>(`tasks/${encodeURIComponent(id)}`);
   }
 
   context(id: string) {
-    return this.request(`tasks/${encodeURIComponent(id)}/context`);
+    return this.request<TaskContext>(`tasks/${encodeURIComponent(id)}/context`);
   }
 
   createTask(input: Record<string, unknown>, operationId: string) {
-    return this.request('tasks', { body: input, operationId });
+    return this.request<TaskRef>('tasks', { body: input, operationId });
   }
 
   delegate(taskId: string, principal: string, operationId: string, expectedVersion?: number) {
-    return this.request(`tasks/${encodeURIComponent(taskId)}/coordinators`, {
+    return this.request<{ principal: string }>(`tasks/${encodeURIComponent(taskId)}/coordinators`, {
       body: { principal },
       operationId,
       expectedVersion,
@@ -149,7 +188,7 @@ export class CollabClient {
   }
 
   undelegate(taskId: string, principal: string, operationId: string, expectedVersion?: number) {
-    return this.request(`tasks/${encodeURIComponent(taskId)}/remove-coordinator`, {
+    return this.request<{ principal: string; delegated: false }>(`tasks/${encodeURIComponent(taskId)}/remove-coordinator`, {
       body: { principal },
       operationId,
       expectedVersion,
@@ -157,11 +196,15 @@ export class CollabClient {
   }
 
   assign(taskId: string, input: { agent: string; kind: string; dependsOn?: string[]; dueAt?: string }, operationId: string, expectedVersion?: number) {
-    return this.request(`tasks/${encodeURIComponent(taskId)}/assign`, { body: input, operationId, expectedVersion });
+    return this.request<SubtaskRef>(`tasks/${encodeURIComponent(taskId)}/assign`, {
+      body: input,
+      operationId,
+      expectedVersion,
+    });
   }
 
   stageSummary(taskId: string, input: { text: string; pending: string }, operationId: string, expectedVersion?: number) {
-    return this.request(`tasks/${encodeURIComponent(taskId)}/stage-summaries`, {
+    return this.request<{ taskId: string; version: number; throughSeq: number }>(`tasks/${encodeURIComponent(taskId)}/stage-summaries`, {
       body: input,
       operationId,
       expectedVersion,
@@ -169,7 +212,7 @@ export class CollabClient {
   }
 
   summary(taskId: string, text: string, operationId: string, expectedVersion?: number) {
-    return this.request(`tasks/${encodeURIComponent(taskId)}/summary`, {
+    return this.request<StatusChange>(`tasks/${encodeURIComponent(taskId)}/summary`, {
       body: { text },
       operationId,
       expectedVersion,
@@ -177,7 +220,7 @@ export class CollabClient {
   }
 
   review(taskId: string, decision: 'accept' | 'return', note: string, operationId: string, expectedVersion?: number) {
-    return this.request(`tasks/${encodeURIComponent(taskId)}/review`, {
+    return this.request<StatusChange>(`tasks/${encodeURIComponent(taskId)}/review`, {
       body: { decision, note },
       operationId,
       expectedVersion,
@@ -185,16 +228,20 @@ export class CollabClient {
   }
 
   cancel(taskId: string, note: string, operationId: string, expectedVersion?: number) {
-    return this.request(`tasks/${encodeURIComponent(taskId)}/cancel`, { body: { note }, operationId, expectedVersion });
+    return this.request<StatusChange>(`tasks/${encodeURIComponent(taskId)}/cancel`, {
+      body: { note },
+      operationId,
+      expectedVersion,
+    });
   }
 
   // ------------------------------------------------------------ 子任务
   inbox() {
-    return this.request<unknown[]>('inbox');
+    return this.request<InboxItem[]>('inbox');
   }
 
   accept(subtaskId: string, operationId: string, expectedVersion?: number) {
-    return this.request(`subtasks/${encodeURIComponent(subtaskId)}/accept`, {
+    return this.request<SubtaskRef>(`subtasks/${encodeURIComponent(subtaskId)}/accept`, {
       body: {},
       operationId,
       expectedVersion,
@@ -202,7 +249,7 @@ export class CollabClient {
   }
 
   reject(subtaskId: string, reason: string, operationId: string, expectedVersion?: number) {
-    return this.request(`subtasks/${encodeURIComponent(subtaskId)}/reject`, {
+    return this.request<SubtaskRef>(`subtasks/${encodeURIComponent(subtaskId)}/reject`, {
       body: { reason },
       operationId,
       expectedVersion,
@@ -210,7 +257,7 @@ export class CollabClient {
   }
 
   submit(subtaskId: string, result: Record<string, unknown>, operationId: string, expectedVersion?: number) {
-    return this.request(`subtasks/${encodeURIComponent(subtaskId)}/submit`, {
+    return this.request<SubtaskRef>(`subtasks/${encodeURIComponent(subtaskId)}/submit`, {
       body: { result },
       operationId,
       expectedVersion,
@@ -218,7 +265,7 @@ export class CollabClient {
   }
 
   progress(subtaskId: string, text: string, operationId: string, expectedVersion?: number) {
-    return this.request(`subtasks/${encodeURIComponent(subtaskId)}/progress`, {
+    return this.request<SubtaskRef>(`subtasks/${encodeURIComponent(subtaskId)}/progress`, {
       body: { text },
       operationId,
       expectedVersion,
@@ -226,7 +273,7 @@ export class CollabClient {
   }
 
   outcomeUnknown(subtaskId: string, input: { reason: string; externalOperationId: string }, operationId: string, expectedVersion?: number) {
-    return this.request(`subtasks/${encodeURIComponent(subtaskId)}/outcome-unknown`, {
+    return this.request<SubtaskRef>(`subtasks/${encodeURIComponent(subtaskId)}/outcome-unknown`, {
       body: input,
       operationId,
       expectedVersion,
@@ -234,7 +281,7 @@ export class CollabClient {
   }
 
   timeoutSubtask(subtaskId: string, note: string, operationId: string, expectedVersion?: number) {
-    return this.request(`subtasks/${encodeURIComponent(subtaskId)}/timeout`, {
+    return this.request<SubtaskRef>(`subtasks/${encodeURIComponent(subtaskId)}/timeout`, {
       body: { note },
       operationId,
       expectedVersion,
@@ -242,7 +289,7 @@ export class CollabClient {
   }
 
   returnSubtask(subtaskId: string, note: string, operationId: string, expectedVersion?: number) {
-    return this.request(`subtasks/${encodeURIComponent(subtaskId)}/return`, {
+    return this.request<SubtaskRef>(`subtasks/${encodeURIComponent(subtaskId)}/return`, {
       body: { note },
       operationId,
       expectedVersion,
@@ -250,56 +297,80 @@ export class CollabClient {
   }
 
   notifications() {
-    return this.request<unknown[]>('notifications');
+    return this.request<NotificationView[]>('notifications');
   }
 
   acknowledge(notificationId: string, operationId: string) {
-    return this.request(`notifications/${encodeURIComponent(notificationId)}/ack`, { body: {}, operationId });
+    return this.request<{ id: string; acknowledged: true }>(
+      `notifications/${encodeURIComponent(notificationId)}/ack`,
+      { body: {}, operationId },
+    );
   }
 
   // ------------------------------------------------------------ 知识
   knowledge(query = '') {
-    return this.request<unknown[]>(`knowledge${query ? `?q=${encodeURIComponent(query)}` : ''}`);
+    return this.request<KnowledgeSummary[]>(
+      `knowledge${query ? `?q=${encodeURIComponent(query)}` : ''}`,
+    );
   }
 
   searchKnowledge(query: string, limit = 10, budget = 4000) {
-    return this.request(`knowledge/search?q=${encodeURIComponent(query)}&limit=${limit}&budget=${budget}`);
+    return this.request<KnowledgeSearch>(
+      `knowledge/search?q=${encodeURIComponent(query)}&limit=${limit}&budget=${budget}`,
+    );
   }
 
   knowledgeEvidence(id: string) {
-    return this.request(`knowledge/${encodeURIComponent(id)}/evidence`);
+    return this.request<Evidence>(`knowledge/${encodeURIComponent(id)}/evidence`);
   }
 
   candidates() {
-    return this.request<unknown[]>('knowledge/candidates');
+    return this.request<KnowledgeSummary[]>('knowledge/candidates');
   }
 
   versions(id: string) {
-    return this.request<unknown[]>(`knowledge/${encodeURIComponent(id)}/versions`);
+    return this.request<
+      { version: number; content: string; conditions: string; reviewerId: string; expiresAt: string; publishedAt: string }[]
+    >(`knowledge/${encodeURIComponent(id)}/versions`);
   }
 
   candidate(taskId: string, input: { content: string; conditions: string }, operationId: string) {
-    return this.request(`tasks/${encodeURIComponent(taskId)}/knowledge`, { body: input, operationId });
+    return this.request<{ id: string; state: string; version: number }>(
+      `tasks/${encodeURIComponent(taskId)}/knowledge`,
+      { body: input, operationId },
+    );
   }
 
   publish(id: string, input: { expiresAt: string; audience?: 'workspace' | string[] }, operationId: string, expectedVersion?: number) {
-    return this.request(`knowledge/${encodeURIComponent(id)}/publish`, { body: input, operationId, expectedVersion });
+    return this.request<{ id: string; state: string; version: number }>(
+      `knowledge/${encodeURIComponent(id)}/publish`,
+      { body: input, operationId, expectedVersion },
+    );
   }
 
   revoke(id: string, reason: string, operationId: string, expectedVersion?: number) {
-    return this.request(`knowledge/${encodeURIComponent(id)}/revoke`, { body: { reason }, operationId, expectedVersion });
+    return this.request<{ id: string; state: string; version: number }>(
+      `knowledge/${encodeURIComponent(id)}/revoke`,
+      { body: { reason }, operationId, expectedVersion },
+    );
   }
 
   revise(id: string, input: { content: string; conditions: string; reason: string }, operationId: string, expectedVersion?: number) {
-    return this.request(`knowledge/${encodeURIComponent(id)}/revise`, { body: input, operationId, expectedVersion });
+    return this.request<{ id: string; state: string; version: number }>(
+      `knowledge/${encodeURIComponent(id)}/revise`,
+      { body: input, operationId, expectedVersion },
+    );
   }
 
   setKnowledgeAccess(id: string, audience: 'workspace' | string[], operationId: string, expectedVersion?: number) {
-    return this.request(`knowledge/${encodeURIComponent(id)}/access`, { body: { audience }, operationId, expectedVersion });
+    return this.request<{ id: string; audience: string | string[] }>(
+      `knowledge/${encodeURIComponent(id)}/access`,
+      { body: { audience }, operationId, expectedVersion },
+    );
   }
 
   reference(taskId: string, knowledgeId: string, operationId: string, expectedVersion?: number) {
-    return this.request(`tasks/${encodeURIComponent(taskId)}/references`, {
+    return this.request<{ id: string; version: number }>(`tasks/${encodeURIComponent(taskId)}/references`, {
       body: { knowledgeId },
       operationId,
       expectedVersion,
@@ -307,7 +378,7 @@ export class CollabClient {
   }
 
   evidence(taskId: string, knowledgeId: string, version: number) {
-    return this.request(
+    return this.request<Evidence>(
       `tasks/${encodeURIComponent(taskId)}/evidence/${encodeURIComponent(knowledgeId)}/${version}`,
     );
   }
@@ -321,6 +392,6 @@ export class CollabClient {
   }
 
   audit() {
-    return this.request<unknown[]>('audit');
+    return this.request<AuditEntry[]>('audit');
   }
 }

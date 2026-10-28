@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Anpio Collab · 企业智能体协作</title>
+    <link rel="stylesheet" href="/app.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <section id="login" class="login">
+      <div class="login-card">
+        <p class="eyebrow">Anpio Collab</p>
+        <h1>企业智能体协作平台</h1>
+        <p class="lede">
+          任务、分工、验收与经验都在这里留下记录。用管理员分配给你的访问令牌进入当前工作空间。
+        </p>
+        <form id="login-form" class="stack">
+          <label class="field">
+            <span>访问令牌</span>
+            <input id="token" type="password" autocomplete="off" required placeholder="至少 24 个字符" />
+          </label>
+          <label class="checkbox">
+            <input id="remember" type="checkbox" checked />
+            <span>在这台设备上记住令牌（存于本标签页会话）</span>
+          </label>
+          <button class="primary" type="submit">连接工作空间</button>
+        </form>
+        <p id="login-error" class="error" role="alert"></p>
+        <p class="hint">
+          本地原型：服务只监听 127.0.0.1，令牌等同于本机共享密钥，不代表企业身份或 DID。
+        </p>
+      </div>
+    </section>
+
+    <div id="shell" class="shell" hidden>
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="brand-mark"></span>
+          <span class="brand-name">Anpio Collab</span>
+        </div>
+        <nav id="nav" class="nav"></nav>
+        <div class="sidebar-footer">
+          <div id="identity" class="identity"></div>
+          <button id="logout" class="link">退出</button>
+        </div>
+      </aside>
+      <main class="main">
+        <header id="topbar" class="topbar"></header>
+        <div id="view" class="view"></div>
+      </main>
+    </div>
+
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+    <dialog id="dialog" class="dialog"></dialog>
+  </body>
+</html>

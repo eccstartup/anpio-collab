@@ -1,0 +1,148 @@
+/**
+ * SDK 的返回视图。
+ *
+ * 这些类型描述平台实际返回的 JSON，供调用方直接使用；
+ * 它们仍不构成运行时保证——服务端已校验请求，但客户端不能假设
+ * 返回内容一定符合预期（例如版本升级后的旧服务端）。
+ */
+
+import type {
+  Knowledge,
+  Notification,
+  Principal,
+  Priority,
+  Subtask,
+  SubtaskStatus,
+  Task,
+  TaskEvent,
+  TaskStatus,
+} from '../protocol/types.ts';
+
+export type TaskRef = { id: string; status: TaskStatus; version: number };
+
+export type SubtaskRef = {
+  id: string;
+  taskId?: string;
+  agentId?: string;
+  kind?: string;
+  status: SubtaskStatus;
+  version: number;
+  dueAt?: string;
+  dependsOn?: string[];
+  result?: unknown;
+};
+
+export type StatusChange = { status: TaskStatus; version: number };
+
+export type TaskListItem = {
+  id: string;
+  title: string;
+  type: string;
+  status: TaskStatus;
+  priority: Priority;
+  ownerId: string;
+  ownerName: string;
+  dueAt: string;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+  subtaskCount: number;
+  subtaskDone: number;
+};
+
+export type KnowledgeRef = { knowledgeId: string; version: number };
+
+export type TaskDetail = {
+  task: Task;
+  subtasks: Subtask[];
+  coordinators: string[];
+  events: TaskEvent[];
+  knowledgeRefs: KnowledgeRef[];
+  /** 调用方是否能看到全部子任务与事件（负责人、协调者、管理员为 true）。 */
+  unrestricted: boolean;
+};
+
+export type StageSummary = {
+  version: number;
+  text: string;
+  pending: string;
+  throughSeq: number;
+  authorId: string;
+  createdAt: string;
+  stale: boolean;
+};
+
+export type TaskContext = {
+  task: Pick<Task, 'id' | 'title' | 'type' | 'status' | 'version' | 'acceptance' | 'dueAt'>;
+  subtasks: { id: string; kind: string; agentId: string; status: SubtaskStatus; version: number; dueAt: string }[];
+  pending: { id: string; status: SubtaskStatus; kind: string }[];
+  result: unknown;
+  references: KnowledgeRef[];
+  stageSummary: StageSummary | null;
+  events: TaskEvent[];
+  eventsTruncated: boolean;
+};
+
+export type InboxItem = {
+  id: string;
+  taskId: string;
+  kind: string;
+  status: SubtaskStatus;
+  version: number;
+  dueAt: string;
+  dependsOn: string[];
+  task: {
+    id: string;
+    title: string;
+    type: string;
+    priority: Priority;
+    acceptance: string;
+    dueAt: string;
+    input: Record<string, unknown>;
+  };
+};
+
+export type KnowledgeSummary = Pick<
+  Knowledge,
+  'id' | 'version' | 'content' | 'conditions' | 'state' | 'expiresAt' | 'sourceTaskId' | 'reviewerId'
+>;
+
+export type KnowledgeSearchItem = KnowledgeSummary & {
+  reference: string;
+  score: number;
+  contentTruncated: boolean;
+};
+
+export type KnowledgeSearch = {
+  items: KnowledgeSearchItem[];
+  truncated: boolean;
+  usedChars: number;
+  budgetChars: number;
+  budgetUnit: string;
+  retrieval: string;
+  note: string;
+};
+
+export type Evidence = {
+  id?: string;
+  knowledgeId?: string;
+  version: number;
+  content: string;
+  conditions: string;
+  reviewerId?: string | null;
+  expiresAt: string;
+  sourceTaskId: string;
+  reference?: string;
+  currentState?: string;
+  currentVersion?: number;
+};
+
+export type NotificationView = Notification;
+export type PrincipalView = Principal;
+export type AuditEntry = {
+  seq: number;
+  principalId: string;
+  action: string;
+  outcome: string;
+  recordedAt: string;
+};

@@ -111,12 +111,13 @@ export class TaskService {
     const taskInput = input.input === undefined ? {} : asTaskInput(input.input);
 
     const id = this.ctx.newId();
+    let createdVersion = 1;
     await this.ctx.db.transaction(async tx => {
       await tx.run(
         `INSERT INTO tasks(id, workspace, type, title, goal, acceptance, priority, due_at, owner_id,
                            status, input, result, version, created_at, updated_at)
          VALUES(:id, :workspace, :type, :title, :goal, :acceptance, :priority, :dueAt, :owner,
-                'pending', :input, NULL, 1, :at, :at)`,
+                'pending', :input, NULL, 0, :at, :at)`,
         {
           id,
           workspace: actor.workspace,
@@ -131,14 +132,16 @@ export class TaskService {
           at: now,
         },
       );
-      await appendEvent(this.ctx, tx, {
+      // 事件同时把 version 从 0 推到 1，返回值必须与实际存储一致。
+      const event = await appendEvent(this.ctx, tx, {
         taskId: id,
         actorId: actor.id,
         type: 'task_created',
         payload: { title, type, acceptance, dueAt },
       });
+      createdVersion = event.taskVersion;
     });
-    return { id, status: 'pending', version: 1 };
+    return { id, status: 'pending', version: createdVersion };
   }
 
   private buildListSql(actor: Principal, filters: TaskFilters): { sql: string; params: Record<string, unknown> } {
