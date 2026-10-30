@@ -17,6 +17,9 @@ export type AccountLinkKind = 'email' | 'did';
 export type Account = {
   id: string;
   displayName: string;
+  avatar: string;
+  title: string;
+  bio: string;
   status: string;
   createdAt: string;
 };
@@ -90,12 +93,16 @@ export class AccountService {
     const account: Account = {
       id: `acc_${randomUUID().replace(/-/g, '').slice(0, 20)}`,
       displayName: options.displayName ?? defaultDisplayName(kind, normalized),
+      avatar: '',
+      title: '',
+      bio: '',
       status: 'active',
       createdAt: now,
     };
     await this.ctx.db.transaction(async tx => {
       await tx.run(
-        'INSERT INTO accounts(id, display_name, status, created_at) VALUES(:id, :name, :status, :at)',
+        `INSERT INTO accounts(id, display_name, avatar, title, bio, status, created_at)
+         VALUES(:id, :name, '', '', '', :status, :at)`,
         { id: account.id, name: account.displayName, status: account.status, at: now },
       );
       await tx.run(
@@ -143,6 +150,9 @@ export class AccountService {
     return {
       id: String(row.id),
       displayName: String(row.display_name ?? ''),
+      avatar: String(row.avatar ?? ''),
+      title: String(row.title ?? ''),
+      bio: String(row.bio ?? ''),
       status: String(row.status ?? 'active'),
       createdAt: String(row.created_at),
     };

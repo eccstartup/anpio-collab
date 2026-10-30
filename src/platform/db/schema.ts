@@ -7,7 +7,9 @@
  *
  * 迁移：
  *  - v1 建表；
- *  - v2 新增身份、协作与监管结构，并给既有表补列。
+ *  - v2 新增身份、协作与监管结构，并给既有表补列；
+ *  - v3 账号、租户与 Agent 设备授权；
+ *  - v4 个人资料：姓名、头像、头衔、简介。
  *
  * 补列必须先于事务探测（只读连接看不到未提交的 DDL），
  * 因此 `ensureColumns` 在事务外查现有列，事务内只做 CREATE 与 ALTER。
@@ -35,6 +37,9 @@ function statements(dialect: 'sqlite' | 'postgres'): string[] {
       kind TEXT NOT NULL DEFAULT 'human',
       handle TEXT,
       display_name TEXT NOT NULL,
+      avatar TEXT NOT NULL DEFAULT '',
+      title TEXT NOT NULL DEFAULT '',
+      bio TEXT NOT NULL DEFAULT '',
       description TEXT NOT NULL,
       capabilities TEXT NOT NULL,
       active INTEGER NOT NULL DEFAULT 1,
@@ -330,6 +335,9 @@ function statements(dialect: 'sqlite' | 'postgres'): string[] {
     `CREATE TABLE IF NOT EXISTS accounts (
       id TEXT PRIMARY KEY,
       display_name TEXT NOT NULL DEFAULT '',
+      avatar TEXT NOT NULL DEFAULT '',
+      title TEXT NOT NULL DEFAULT '',
+      bio TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL DEFAULT 'active',
       created_at TEXT NOT NULL
     )`,
@@ -450,9 +458,16 @@ const ADDED_COLUMNS: { table: string; column: string; definition: string }[] = [
   { table: 'tasks', column: 'adopted_at', definition: 'TEXT' },
   { table: 'principals', column: 'account_id', definition: 'TEXT' },
   { table: 'principals', column: 'tenant_role', definition: "TEXT NOT NULL DEFAULT 'member'" },
+  // v4 个人资料。老主体保持空值，展示时回落到姓名首字或 DID handle。
+  { table: 'principals', column: 'avatar', definition: "TEXT NOT NULL DEFAULT ''" },
+  { table: 'principals', column: 'title', definition: "TEXT NOT NULL DEFAULT ''" },
+  { table: 'principals', column: 'bio', definition: "TEXT NOT NULL DEFAULT ''" },
+  { table: 'accounts', column: 'avatar', definition: "TEXT NOT NULL DEFAULT ''" },
+  { table: 'accounts', column: 'title', definition: "TEXT NOT NULL DEFAULT ''" },
+  { table: 'accounts', column: 'bio', definition: "TEXT NOT NULL DEFAULT ''" },
 ];
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 async function existingColumns(db: Database, table: string): Promise<Set<string> | null> {
   try {

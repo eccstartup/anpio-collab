@@ -139,8 +139,9 @@ export class TenantService {
       );
       await tx.run(
         `INSERT INTO principals(id, workspace, roles, token_hash, did, kind, handle, display_name,
-                                description, capabilities, active, created_at, account_id, tenant_role)
-         VALUES(:id, :workspace, :roles, :hash, NULL, 'human', NULL, :name, '', '[]', 1, :at, :account, 'owner')`,
+                                avatar, title, bio, description, capabilities, active, created_at, account_id, tenant_role)
+         VALUES(:id, :workspace, :roles, :hash, NULL, 'human', NULL, :name,
+                :avatar, :title, :bio, '', '[]', 1, :at, :account, 'owner')`,
         {
           id: principalId,
           workspace: id,
@@ -148,6 +149,9 @@ export class TenantService {
           // 邮箱登录的主体没有静态令牌：令牌通道对它永不成立。
           hash: hashToken(`email:${randomUUID()}:${randomBytes(16).toString('hex')}`),
           name: account.displayName,
+          avatar: account.avatar,
+          title: account.title,
+          bio: account.bio,
           at: now,
           account: account.id,
         },
@@ -164,6 +168,9 @@ export class TenantService {
       kind: 'human',
       handle: null,
       displayName: account.displayName,
+      avatar: account.avatar,
+      title: account.title,
+      bio: account.bio,
       description: '',
       capabilities: [],
       active: true,
@@ -189,11 +196,17 @@ export class TenantService {
     const role = options.role ?? 'member';
     const kind = options.kind ?? 'human';
     const id = `p_${randomUUID().replace(/-/g, '').slice(0, 16)}`;
+    // 人的资料跟着账号走；智能体是独立身份，不继承主人的头像与头衔。
+    const profile =
+      kind === 'human'
+        ? { avatar: account.avatar, title: account.title, bio: account.bio }
+        : { avatar: '', title: '', bio: '' };
     await this.ctx.db.transaction(async tx => {
       await tx.run(
         `INSERT INTO principals(id, workspace, roles, token_hash, did, kind, handle, display_name,
-                                description, capabilities, active, created_at, account_id, tenant_role)
-         VALUES(:id, :tenant, :roles, :hash, NULL, :kind, NULL, :name, '', '[]', 1, :at, :account, :role)`,
+                                avatar, title, bio, description, capabilities, active, created_at, account_id, tenant_role)
+         VALUES(:id, :tenant, :roles, :hash, NULL, :kind, NULL, :name,
+                :avatar, :title, :bio, '', '[]', 1, :at, :account, :role)`,
         {
           id,
           tenant: tenantId,
@@ -201,6 +214,9 @@ export class TenantService {
           hash: hashToken(`email:${randomUUID()}:${randomBytes(16).toString('hex')}`),
           kind,
           name: options.displayName ?? account.displayName,
+          avatar: profile.avatar,
+          title: profile.title,
+          bio: profile.bio,
           at: this.ctx.now(),
           account: account.id,
           role,
@@ -233,6 +249,8 @@ export class TenantService {
     return rows.map(row => ({
       principalId: String(row.id),
       displayName: String(row.display_name),
+      avatar: String(row.avatar ?? ''),
+      title: String(row.title ?? ''),
       kind: String(row.kind) as PrincipalKind,
       tenantRole: (row.tenant_role ?? 'member') as TenantRole,
       roles: JSON.parse(String(row.roles ?? '[]')) as Role[],

@@ -575,14 +575,41 @@ async function signOut(message) {
 /** DID 太长，前缀对辨认没用：留 did:wba 与结尾的指纹段。 */
 const shortDid = (did) => (did ? `did:wba:…${String(did).slice(-14)}` : '');
 
+/** 没有头像时用姓名首字；色相由名字决定，同一个人在哪一页都是同一种颜色。 */
+const avatarHue = (name) => {
+  let hue = 0;
+  for (const character of String(name || '')) hue = (hue * 31 + character.codePointAt(0)) % 360;
+  return hue;
+};
+const initialOf = (name) => {
+  const text = String(name || '').trim();
+  return text ? Array.from(text)[0].toUpperCase() : '?';
+};
+
+function avatarNode(name, url, size = 'md') {
+  if (url) {
+    return el('img', { class: `avatar avatar-${size}`, src: url, alt: name || '头像', loading: 'lazy' });
+  }
+  return el(
+    'span',
+    { class: `avatar avatar-${size} avatar-fallback`, style: `--hue:${avatarHue(name)}`, 'aria-hidden': 'true' },
+    initialOf(name),
+  );
+}
+
 function renderIdentity() {
   const box = document.getElementById('identity');
   const did = shortDid(state.me.did) || '未绑定 DID';
+  const name = state.me.displayName || state.me.id;
   box.replaceChildren(
-    el('strong', {}, state.me.displayName || state.me.id),
-    el('span', {}, `${state.me.id} · ${KIND_LABEL[state.me.kind] ?? state.me.kind ?? '主体'}`),
-    el('span', {}, roleText(state.me.roles)),
-    el('span', { class: 'mono', title: state.me.did ?? '' }, did),
+    el('div', { class: 'identity-main' },
+      avatarNode(name, state.me.avatar, 'md'),
+      el('div', { class: 'identity-text' },
+        el('strong', {}, name),
+        state.me.title ? el('span', { class: 'identity-title' }, state.me.title) : null,
+        el('span', {}, `${state.me.id} · ${KIND_LABEL[state.me.kind] ?? state.me.kind ?? '主体'}`),
+        el('span', {}, roleText(state.me.roles)),
+        el('span', { class: 'mono', title: state.me.did ?? '' }, did))),
   );
   renderTenantSwitch();
 }
@@ -1289,7 +1316,9 @@ function renderComments(task) {
   const rows = state.taskComments.slice(-30).map((comment) =>
     el('div', { class: 'comment' },
       el('div', { class: 'comment-head' },
-        el('span', { class: 'comment-author' }, comment.authorName || comment.authorId),
+        el('span', { class: 'comment-person' },
+          avatarNode(comment.authorName || comment.authorId, comment.authorAvatar, 'sm'),
+          el('span', { class: 'comment-author' }, comment.authorName || comment.authorId)),
         toneBadge(comment.authorKind === 'human' ? 'muted' : 'active', KIND_LABEL[comment.authorKind] ?? comment.authorKind),
         comment.mentions?.length ? el('span', { class: 'muted small' }, `→ ${comment.mentions.join('、')}`) : null,
         el('span', { class: 'when' }, formatTime(comment.createdAt))),
@@ -1767,12 +1796,16 @@ function renderDirectory() {
     const isAgent = member.kind === 'agent';
     return el('tr', {},
       el('td', {},
-        el('div', { class: 'row', style: 'gap:8px;align-items:baseline' },
-          el('strong', {}, member.displayName || member.principalId),
-          self ? el('span', { class: 'badge', dataset: { tone: 'muted' } }, '你') : null,
-          member.active ? null : el('span', { class: 'badge', dataset: { tone: 'danger' } }, '已停用')),
-        el('div', { class: 'muted small mono' },
-          member.email ?? (member.did ? `did:wba:…${member.did.slice(-12)}` : member.principalId))),
+        el('div', { class: 'person' },
+          avatarNode(member.displayName || member.principalId, member.avatar, 'sm'),
+          el('div', {},
+            el('div', { class: 'row', style: 'gap:8px;align-items:baseline' },
+              el('strong', {}, member.displayName || member.principalId),
+              self ? el('span', { class: 'badge', dataset: { tone: 'muted' } }, '你') : null,
+              member.active ? null : el('span', { class: 'badge', dataset: { tone: 'danger' } }, '已停用')),
+            member.title ? el('div', { class: 'muted small' }, member.title) : null,
+            el('div', { class: 'muted small mono' },
+              member.email ?? (member.did ? `did:wba:…${member.did.slice(-12)}` : member.principalId))))),
       el('td', {}, KIND_LABEL[member.kind] ?? member.kind),
       el('td', {}, toneBadge(owner ? 'active' : member.tenantRole === 'admin' ? 'ok' : 'muted',
         TENANT_ROLE_LABEL[member.tenantRole] ?? member.tenantRole)),
@@ -2199,12 +2232,26 @@ function renderSettings() {
   return frag(
     el('div', { class: 'card' },
       el('div', { class: 'card-head' },
-        el('h3', {}, '我的身份'),
-        toneBadge('muted', KIND_LABEL[me.kind] ?? me.kind ?? '主体')),
-      el('dl', { class: 'kv' },
-        el('dt', {}, '主体'), el('dd', {}, `${me.displayName || me.id}（${me.id}）`),
+        el('h3', {}, '个人资料'),
+        el('div', { class: 'row' },
+          toneBadge('muted', KIND_LABEL[me.kind] ?? me.kind ?? '主体'),
+          el('button', { class: 'ghost small', type: 'button', onclick: openProfileEditor }, '编辑资料'))),
+      el('div', { class: 'profile-head' },
+        avatarNode(me.displayName || me.id, me.avatar, 'lg'),
+        el('div', { class: 'profile-text' },
+          el('strong', { class: 'profile-name' }, me.displayName || me.id),
+          me.title
+            ? el('div', { class: 'profile-title' }, me.title)
+            : el('div', { class: 'muted small' }, '还没有头衔'),
+          me.bio
+            ? el('p', { class: 'profile-bio' }, me.bio)
+            : el('p', { class: 'muted small' }, '写一句介绍，让别人知道你在做什么。'))),
+      el('dl', { class: 'kv', style: 'margin-top:18px' },
         el('dt', {}, '角色'), el('dd', {}, roleText(me.roles)),
-        el('dt', {}, 'DID'), el('dd', {}, el('span', { class: 'mono' }, me.did || '未绑定'))),
+        el('dt', {}, 'DID'), el('dd', {}, el('span', { class: 'mono' }, me.did || '未绑定')),
+        el('dt', {}, '主体'), el('dd', {}, el('span', { class: 'mono' }, me.id))),
+      el('div', { class: 'row', style: 'margin-top:12px' },
+        el('button', { type: 'button', onclick: openProfileEditor }, '编辑资料')),
       el('div', { class: 'card-head', style: 'margin-top:20px' },
         el('h4', {}, '登录方式'),
         el('span', { class: 'muted' }, `${emailLinks.length + state.identities.length} 种`)),
@@ -2232,6 +2279,161 @@ function renderSettings() {
           el('tbody', {}, sessionRows)))
         : el('div', { class: 'empty' }, '没有进行中的会话。')),
   );
+}
+
+/** 把选中的图片裁成正方形并压到请求体允许的大小内；返回 data URL。 */
+function resizeAvatar(file) {
+  return new Promise((resolve, reject) => {
+    if (!file.type || !file.type.startsWith('image/')) return reject(new Error('请选择图片文件'));
+    if (file.size > 8 * 1024 * 1024) return reject(new Error('图片太大，请选择 8MB 以内的图片'));
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('读取图片失败'));
+    reader.onload = () => {
+      const image = new Image();
+      image.onerror = () => reject(new Error('这张图片无法解析'));
+      image.onload = () => {
+        if (!image.width || !image.height) return reject(new Error('图片尺寸无效'));
+        const canvas = document.createElement('canvas');
+        canvas.width = 256;
+        canvas.height = 256;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return reject(new Error('浏览器无法处理这张图片'));
+        const side = Math.min(image.width, image.height);
+        ctx.drawImage(
+          image,
+          (image.width - side) / 2,
+          (image.height - side) / 2,
+          side,
+          side,
+          0,
+          0,
+          256,
+          256,
+        );
+        let data = canvas.toDataURL('image/webp', 0.82);
+        if (data.length > 48000) data = canvas.toDataURL('image/webp', 0.6);
+        if (data.length > 48000) return reject(new Error('图片太复杂，请换一张更简单的小图'));
+        resolve(data);
+      };
+      image.src = String(reader.result);
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function openProfileEditor() {
+  const dialog = document.getElementById('dialog');
+  const me = state.me;
+  const nameInput = el('input', {
+    id: 'profile-name',
+    type: 'text',
+    maxlength: '40',
+    value: me.displayName || '',
+    placeholder: '你的姓名或昵称',
+  });
+  const titleInput = el('input', {
+    id: 'profile-title',
+    type: 'text',
+    maxlength: '60',
+    value: me.title || '',
+    placeholder: '例如：履约负责人',
+  });
+  const bioInput = el('textarea', {
+    id: 'profile-bio',
+    maxlength: '280',
+    placeholder: '一两句话介绍你的职责或擅长的事',
+  });
+  bioInput.value = me.bio || '';
+  const urlInput = el('input', {
+    id: 'profile-avatar-url',
+    type: 'url',
+    value: me.avatar && /^https?:/i.test(me.avatar) ? me.avatar : '',
+    placeholder: 'https://…（可选）',
+  });
+  const fileInput = el('input', {
+    id: 'profile-avatar-file',
+    type: 'file',
+    accept: 'image/png,image/jpeg,image/webp,image/gif',
+  });
+  let uploaded = '';
+
+  const preview = el('div', { class: 'avatar-preview' });
+  const paint = () => {
+    preview.replaceChildren(
+      avatarNode(nameInput.value.trim() || me.displayName || me.id, uploaded || urlInput.value.trim(), 'lg'),
+    );
+  };
+  paint();
+
+  fileInput.addEventListener('change', async () => {
+    const file = fileInput.files?.[0];
+    if (!file) return;
+    try {
+      uploaded = await resizeAvatar(file);
+      urlInput.value = '';
+      paint();
+    } catch (error) {
+      fileInput.value = '';
+      toast(error.message, 'error');
+    }
+  });
+  urlInput.addEventListener('input', () => {
+    if (urlInput.value.trim()) uploaded = '';
+    paint();
+  });
+  nameInput.addEventListener('input', paint);
+
+  const form = el(
+    'form',
+    { method: 'dialog' },
+    el('h3', {}, '编辑个人资料'),
+    el('p', { class: 'muted' },
+      '姓名、头像、头衔和简介会显示在侧栏、成员列表与评论里；同一账号加入的团队会一起更新。'),
+    el('div', { class: 'profile-avatar-edit' },
+      preview,
+      el('div', { class: 'stack' },
+        el('label', { class: 'field' }, el('span', {}, '上传图片'), fileInput),
+        el('label', { class: 'field' }, el('span', {}, '或用图片地址'), urlInput),
+        el('button', {
+          class: 'link danger',
+          type: 'button',
+          onclick: () => {
+            uploaded = '';
+            urlInput.value = '';
+            fileInput.value = '';
+            paint();
+          },
+        }, '移除头像'))),
+    el('label', { class: 'field', for: 'profile-name' }, el('span', {}, '姓名'), nameInput),
+    el('label', { class: 'field', for: 'profile-title' }, el('span', {}, '头衔'), titleInput),
+    el('label', { class: 'field', for: 'profile-bio' }, el('span', {}, '简介'), bioInput),
+    el('div', { class: 'dialog-actions' },
+      el('button', { type: 'button', class: 'ghost', onclick: () => dialog.close() }, '取消'),
+      el('button', { type: 'submit', class: 'primary' }, '保存')),
+  );
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (!nameInput.value.trim()) {
+      toast('姓名不能为空', 'error');
+      return;
+    }
+    const body = {
+      displayName: nameInput.value.trim(),
+      avatar: uploaded || urlInput.value.trim(),
+      title: titleInput.value.trim(),
+      bio: bioInput.value.trim(),
+    };
+    dialog.close();
+    await act(async () => {
+      await api('me/profile', { body });
+      state.me = await api('me');
+      renderIdentity();
+    }, '资料已更新');
+  });
+
+  dialog.replaceChildren(form);
+  dialog.showModal();
 }
 
 /** 已登录后补绑邮箱：发确认链接，点开才算证明这个地址是你的。 */

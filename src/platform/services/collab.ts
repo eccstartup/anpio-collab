@@ -36,6 +36,7 @@ function toComment(row: Record<string, unknown>): TaskComment {
     taskId: String(row.task_id),
     authorId: String(row.author_id),
     authorName: String(row.author_name ?? row.author_id),
+    authorAvatar: String(row.author_avatar ?? ''),
     authorKind: kind,
     body: String(row.body),
     mentions,
@@ -139,6 +140,7 @@ export class CollabService {
       taskId: task.id,
       authorId: actor.id,
       authorName: actor.displayName,
+      authorAvatar: actor.avatar,
       authorKind: actor.kind,
       body: text,
       mentions: recipients.map(item => item.id),
@@ -149,7 +151,7 @@ export class CollabService {
   async listComments(actor: Principal, taskId: string): Promise<TaskComment[]> {
     const task = await readTask(this.ctx, actor, taskId);
     const rows = await this.ctx.db.read.all(
-      `SELECT c.*, p.display_name AS author_name, p.kind AS author_kind
+      `SELECT c.*, p.display_name AS author_name, p.avatar AS author_avatar, p.kind AS author_kind
        FROM task_comments c JOIN principals p ON p.id = c.author_id
        WHERE c.task_id = :taskId ORDER BY c.created_at, c.id LIMIT 500`,
       { taskId: task.id },
@@ -160,8 +162,8 @@ export class CollabService {
   /** 我被提及但还没读的评论。 */
   async mentions(actor: Principal): Promise<TaskComment[]> {
     const rows = await this.ctx.db.read.all(
-      `SELECT c.*, m.id AS mention_id, p.display_name AS author_name, p.kind AS author_kind,
-              t.title AS task_title
+      `SELECT c.*, m.id AS mention_id, p.display_name AS author_name, p.avatar AS author_avatar,
+              p.kind AS author_kind, t.title AS task_title
        FROM task_mentions m
        JOIN task_comments c ON c.id = m.comment_id
        JOIN tasks t ON t.id = m.task_id

@@ -39,6 +39,12 @@ export type Principal = {
   /** 注册服务器上的短名，例如 alice.awiki.ai。 */
   handle: string | null;
   displayName: string;
+  /** 头像：https 图片地址，或上传后压缩成的小尺寸 data URL；空表示用姓名首字。 */
+  avatar: string;
+  /** 一句话头衔，例如「履约负责人」。 */
+  title: string;
+  /** 个人简介，仅本人填写与展示。 */
+  bio: string;
   description: string;
   capabilities: string[];
   active: boolean;
@@ -59,6 +65,8 @@ export type Tenant = {
 export type TenantMember = {
   principalId: string;
   displayName: string;
+  avatar: string;
+  title: string;
   kind: PrincipalKind;
   tenantRole: TenantRole;
   roles: Role[];
@@ -272,6 +280,7 @@ export type TaskComment = {
   taskId: string;
   authorId: string;
   authorName: string;
+  authorAvatar: string;
   authorKind: PrincipalKind;
   body: string;
   mentions: string[];

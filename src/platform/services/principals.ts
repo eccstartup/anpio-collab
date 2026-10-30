@@ -7,7 +7,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { conflict, forbidden, notFound, unauthenticated } from '../../protocol/errors.ts';
+import { conflict, forbidden, invalid, notFound, unauthenticated } from '../../protocol/errors.ts';
 import { asEnum, asId, asObject, asString, asStringArray } from '../../protocol/parse.ts';
 import { PRINCIPAL_KINDS, ROLES } from '../../protocol/types.ts';
 import type { Principal, PrincipalKind, Role, TenantRole } from '../../protocol/types.ts';
@@ -18,7 +18,46 @@ import { hasAnyRole } from './access.ts';
 const MIN_TOKEN_LENGTH = 24;
 const DID_PATTERN = /^did:[a-z0-9]+:[A-Za-z0-9._:%-]+$/;
 
+const NAME_MAX = 40;
+const TITLE_MAX = 60;
+const BIO_MAX = 280;
+// 请求体上限默认 64KB，头像 base64 留在 48KB 以内给 JSON 其他字段留余量。
+const AVATAR_MAX = 48_000;
+const AVATAR_URL = /^https?:\/\/[^\s"'<>]{1,480}$/i;
+const AVATAR_DATA = /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/]+={0,2}$/;
+
 export const hashToken = (token: string): string => createHash('sha256').update(token).digest('hex');
+
+/** 只允许 https 图片地址或上传压缩后的 data URL；其他协议一律拒绝，避免把 javascript: 塞进 img。 */
+export function normalizeAvatar(value: unknown): string {
+  if (typeof value !== 'string') throw invalid('头像必须是字符串');
+  const text = value.trim();
+  if (!text) return '';
+  if (AVATAR_DATA.test(text)) {
+    if (text.length > AVATAR_MAX) throw invalid('头像图片过大，请压缩到 36KB 以内');
+    return text;
+  }
+  if (AVATAR_URL.test(text)) return text;
+  throw invalid('头像只能是 https 图片地址或上传的图片');
+}
+
+function profileLine(value: unknown, name: string, max: number, min: number): string {
+  if (typeof value !== 'string') throw invalid(`${name} 必须是字符串`);
+  const text = value.trim();
+  if (text.length < min) throw invalid(`${name} 不能为空`);
+  if (text.length > max) throw invalid(`${name} 最多 ${max} 个字符`);
+  if (/[\u0000-\u001f\u007f]/.test(text)) throw invalid(`${name} 不能包含换行或控制字符`);
+  return text;
+}
+
+function profileBio(value: unknown): string {
+  if (typeof value !== 'string') throw invalid('简介必须是字符串');
+  const text = value.trim();
+  if (text.length > BIO_MAX) throw invalid(`简介最多 ${BIO_MAX} 个字符`);
+  // 允许换行，其余控制字符仍然拒绝。
+  if (/[\u0000-\u0009\u000b-\u001f\u007f]/.test(text)) throw invalid('简介包含不支持的控制字符');
+  return text;
+}
 
 export type CreatePrincipalInput = {
   id: string;
@@ -28,6 +67,9 @@ export type CreatePrincipalInput = {
   kind?: PrincipalKind;
   handle?: string | null;
   displayName?: string;
+  avatar?: string;
+  title?: string;
+  bio?: string;
   description?: string;
   capabilities?: string[];
   accountId?: string | null;
@@ -132,6 +174,9 @@ export class PrincipalService {
           ? null
           : asString(input.handle, 'handle', { max: 200, min: 0 }),
       displayName: input.displayName === undefined ? asId(input.id, 'id') : asString(input.displayName, 'displayName', { max: 120 }),
+      avatar: input.avatar === undefined ? '' : normalizeAvatar(input.avatar),
+      title: input.title === undefined ? '' : profileLine(input.title, '头衔', TITLE_MAX, 0),
+      bio: input.bio === undefined ? '' : profileBio(input.bio),
       description:
         input.description === undefined
           ? ''
@@ -173,14 +218,19 @@ export class PrincipalService {
       kind: input.kind ?? 'human',
       handle: input.handle ?? null,
       displayName: input.displayName ?? input.id,
+      avatar: input.avatar ?? '',
+      title: input.title ?? '',
+      bio: input.bio ?? '',
       description: input.description ?? '',
       capabilities: input.capabilities ?? [],
       active: true,
     };
     await this.ctx.db.transaction(async tx => {
       await tx.run(
-        `INSERT INTO principals(id, workspace, roles, token_hash, did, kind, handle, display_name, description, capabilities, active, created_at, account_id, tenant_role)
-         VALUES(:id, :workspace, :roles, :hash, :did, :kind, :handle, :displayName, :description, :capabilities, 1, :at, :accountId, :tenantRole)`,
+        `INSERT INTO principals(id, workspace, roles, token_hash, did, kind, handle, display_name, avatar, title, bio,
+                                description, capabilities, active, created_at, account_id, tenant_role)
+         VALUES(:id, :workspace, :roles, :hash, :did, :kind, :handle, :displayName, :avatar, :title, :bio,
+                :description, :capabilities, 1, :at, :accountId, :tenantRole)`,
         {
           id: principal.id,
           workspace: principal.workspace,
@@ -190,6 +240,9 @@ export class PrincipalService {
           kind: principal.kind,
           handle: principal.handle,
           displayName: principal.displayName,
+          avatar: principal.avatar,
+          title: principal.title,
+          bio: principal.bio,
           description: principal.description,
           capabilities: JSON.stringify(principal.capabilities),
           at: this.ctx.now(),
@@ -217,22 +270,68 @@ export class PrincipalService {
     const displayName =
       input.displayName === undefined
         ? current.displayName
-        : asString(input.displayName, 'displayName', { max: 120 });
+        : profileLine(input.displayName, '姓名', NAME_MAX, 1);
+    const avatar = input.avatar === undefined ? current.avatar : normalizeAvatar(input.avatar);
+    const title = input.title === undefined ? current.title : profileLine(input.title, '头衔', TITLE_MAX, 0);
+    const bio = input.bio === undefined ? current.bio : profileBio(input.bio);
     await this.ctx.db.transaction(async tx => {
       await tx.run(
         `UPDATE principals
-         SET capabilities = :capabilities, description = :description, display_name = :displayName
+         SET capabilities = :capabilities, description = :description, display_name = :displayName,
+             avatar = :avatar, title = :title, bio = :bio
          WHERE id = :id AND workspace = :workspace`,
         {
           capabilities: JSON.stringify(capabilities),
           description,
           displayName,
+          avatar,
+          title,
+          bio,
           id: current.id,
           workspace: actor.workspace,
         },
       );
     });
-    return { ...current, capabilities, description, displayName };
+    return { ...current, capabilities, description, displayName, avatar, title, bio };
+  }
+
+  /**
+   * 本人修改自己的资料。
+   *
+   * 姓名、头像、头衔、简介属于人，不属于"他在某个租户里的职位"，所以
+   * 同一账号下的人类主体一起更新，账号表也更新（下次加入新组织时直接带上）。
+   * 智能体只改自己那一条：它与主人共用账号，但不该顶着主人的名字和头像。
+   */
+  async updateMyProfile(actor: Principal, body: unknown): Promise<Principal> {
+    const input = asObject(body);
+    const displayName =
+      input.displayName === undefined
+        ? actor.displayName
+        : profileLine(input.displayName, '姓名', NAME_MAX, 1);
+    const avatar = input.avatar === undefined ? actor.avatar : normalizeAvatar(input.avatar);
+    const title = input.title === undefined ? actor.title : profileLine(input.title, '头衔', TITLE_MAX, 0);
+    const bio = input.bio === undefined ? actor.bio : profileBio(input.bio);
+
+    await this.ctx.db.transaction(async tx => {
+      await tx.run(
+        `UPDATE principals SET display_name = :displayName, avatar = :avatar, title = :title, bio = :bio
+         WHERE id = :id AND workspace = :workspace`,
+        { displayName, avatar, title, bio, id: actor.id, workspace: actor.workspace },
+      );
+      if (actor.accountId && actor.kind === 'human') {
+        await tx.run(
+          `UPDATE principals SET display_name = :displayName, avatar = :avatar, title = :title, bio = :bio
+           WHERE account_id = :account AND kind = 'human'`,
+          { displayName, avatar, title, bio, account: actor.accountId },
+        );
+        await tx.run(
+          `UPDATE accounts SET display_name = :displayName, avatar = :avatar, title = :title, bio = :bio
+           WHERE id = :account`,
+          { displayName, avatar, title, bio, account: actor.accountId },
+        );
+      }
+    });
+    return { ...actor, displayName, avatar, title, bio };
   }
 
   async rotateToken(actor: Principal, id: string, body: unknown): Promise<{ id: string; rotated: true }> {

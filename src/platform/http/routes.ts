@@ -88,10 +88,21 @@ export const routes: Route[] = [
         kind: principal.kind,
         handle: principal.handle,
         displayName: principal.displayName,
+        avatar: principal.avatar,
+        title: principal.title,
+        bio: principal.bio,
         capabilities: principal.capabilities,
         scopes: active ? (JSON.parse(String(grant.scopes)) as string[]) : null,
         grantExpiresAt: active ? (grant.expires_at === null ? null : String(grant.expires_at)) : null,
       };
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/me/profile',
+    description: '更新我的个人资料：姓名、头像、头衔与简介',
+    write: {
+      execute: async ({ app, principal, body }) => app.principals.updateMyProfile(principal, body),
     },
   },
   {
