@@ -329,16 +329,13 @@ test('登录说明页：无需登录即可访问，两种登录方式都在', as
   }
 });
 
-test('智能体 skill 是一个 md 文件：下载即用，地址随当前服务生成', async () => {
+test('智能体 skill 是一个 md 文件：浏览器打开就是正文，地址随当前服务生成', async () => {
   const harness = await startHarness();
   try {
     const response = await realFetch(`${harness.url}/auth/agent/skill.md`);
     assert.equal(response.status, 200);
     assert.match(response.headers.get('content-type') ?? '', /^text\/markdown/);
-    assert.match(
-      response.headers.get('content-disposition') ?? '',
-      /^attachment; filename="anpio-collab-SKILL\.md"$/,
-    );
+    assert.equal(response.headers.get('content-disposition'), null, '不能是附件，点开要在浏览器里显示');
     const skill = await response.text();
     assert.match(skill, /^---\nname: anpio-collab\n/, 'skill 要有 frontmatter');
     assert.ok(skill.includes(`Base URL: ${harness.url}`), 'skill 里的地址应指向当前服务');
@@ -348,11 +345,10 @@ test('智能体 skill 是一个 md 文件：下载即用，地址随当前服务
     assert.ok(skill.includes('邀请码'), 'skill 要告诉智能体邀请码这条路');
     assert.ok(skill.includes('agents/approve'), 'skill 应告诉智能体去哪里批准');
 
-    // 不带 .md 的地址直接给正文：智能体可以直接按地址读。
-    const inline = await realFetch(`${harness.url}/auth/agent/skill`);
-    assert.equal(inline.status, 200);
-    assert.equal(inline.headers.get('content-disposition'), null);
-    assert.equal(await inline.text(), skill);
+    // 不带 .md 的旧地址仍然可用，内容相同。
+    const legacy = await realFetch(`${harness.url}/auth/agent/skill`);
+    assert.equal(legacy.status, 200);
+    assert.equal(await legacy.text(), skill);
   } finally {
     await harness.close();
   }

@@ -2501,7 +2501,7 @@ function skillHandoff() {
   return el('div', { class: 'handoff' },
     el('p', { class: 'handoff-line' },
       '把这个链接发给智能体，它会照着里面的步骤自己接入：',
-      el('a', { href: url }, url)),
+      el('a', { href: url, target: '_blank', rel: 'noopener' }, url)),
     el('button', {
       class: 'ghost small',
       type: 'button',

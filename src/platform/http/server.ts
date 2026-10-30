@@ -216,13 +216,11 @@ function sendText(
   status: number,
   body: string,
   contentType: string,
-  headers: Record<string, string> = {},
 ): void {
   res.writeHead(status, {
     ...SECURITY_HEADERS,
     'Content-Type': contentType,
     'Content-Length': Buffer.byteLength(body),
-    ...headers,
   });
   res.end(body);
 }
@@ -243,14 +241,10 @@ async function handlePublicAuth(
   const path = url.pathname;
 
   // ------------------------------------------------------------ 智能体 skill
-  // 一个 md 文件：人下载下来发给智能体，智能体也可以直接按地址读。
+  // 一个 md 文件：浏览器直接打开就是正文，发给智能体也能按地址读。
   if ((path === '/auth/agent/skill' || path === '/auth/agent/skill.md') && req.method === 'GET') {
     const base = (absoluteUrl(req, '') ?? '').replace(/\/+$/, '');
-    const skill = await renderAgentSkill(base);
-    const download = path.endsWith('.md');
-    sendText(res, 200, skill, 'text/markdown; charset=utf-8', download
-      ? { 'Content-Disposition': 'attachment; filename="anpio-collab-SKILL.md"' }
-      : {});
+    sendText(res, 200, await renderAgentSkill(base), 'text/markdown; charset=utf-8');
     return true;
   }
 
