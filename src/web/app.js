@@ -572,9 +572,6 @@ async function signOut(message) {
   }
 }
 
-/** DID 太长，前缀对辨认没用：留 did:wba 与结尾的指纹段。 */
-const shortDid = (did) => (did ? `did:wba:…${String(did).slice(-14)}` : '');
-
 /** 没有头像时用姓名首字；色相由名字决定，同一个人在哪一页都是同一种颜色。 */
 const avatarHue = (name) => {
   let hue = 0;
@@ -599,17 +596,27 @@ function avatarNode(name, url, size = 'md') {
 
 function renderIdentity() {
   const box = document.getElementById('identity');
-  const did = shortDid(state.me.did) || '未绑定 DID';
   const name = state.me.displayName || state.me.id;
+  const roles = roleText(state.me.roles);
+  // 侧栏只留一眼要认得出的：头衔优先，没有头衔就用业务角色。
+  const secondary = state.me.title || (roles === '—' ? '' : roles);
   box.replaceChildren(
-    el('div', { class: 'identity-main' },
+    el('button', {
+      type: 'button',
+      class: 'identity-main',
+      title: '查看个人资料',
+      onclick: () => {
+        state.view = 'settings';
+        state.taskId = null;
+        renderNav();
+        refresh();
+      },
+    },
       avatarNode(name, state.me.avatar, 'md'),
       el('div', { class: 'identity-text' },
-        el('strong', {}, name),
-        state.me.title ? el('span', { class: 'identity-title' }, state.me.title) : null,
-        el('span', {}, `${state.me.id} · ${KIND_LABEL[state.me.kind] ?? state.me.kind ?? '主体'}`),
-        el('span', {}, roleText(state.me.roles)),
-        el('span', { class: 'mono', title: state.me.did ?? '' }, did))),
+        el('strong', { title: name }, name),
+        secondary ? el('span', { class: 'identity-title', title: secondary }, secondary) : null),
+    ),
   );
   renderTenantSwitch();
 }
@@ -621,8 +628,9 @@ function renderTenantSwitch() {
   const role = TENANT_ROLE_LABEL[state.tenant?.role ?? state.me.tenantRole] ?? '成员';
   if (state.tenants.length <= 1) {
     box.replaceChildren(
-      el('span', { class: 'tenant-name', title: name }, name),
-      el('span', { class: 'tenant-role' }, role),
+      el('div', { class: 'tenant-line' },
+        el('span', { class: 'tenant-name', title: name }, name),
+        el('span', { class: 'tenant-role' }, role)),
     );
     return;
   }

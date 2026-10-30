@@ -401,6 +401,12 @@ test('用钱包插件登录：领取挑战、签名、换令牌、按角色生�
     // 纯负责人没有监管与审计，导航必须如实反映权限。
     assert.deepEqual(navLabels(mounted.document), ['工作台', '任务', '提醒', '我的智能体', '团队', '设置']);
 
+    // 侧栏只留姓名与角色：主体 ID 与 DID 的细节在设置页，不在左下角堆五行。
+    const who = text(element(mounted.document, 'identity'));
+    assert.ok(who.includes('负责人'), `侧栏缺少角色：${who}`);
+    assert.ok(!who.includes('did:wba'), `侧栏不该显示 DID：${who}`);
+    assert.ok(!/p_[0-9a-f]{8}/.test(who), `侧栏不该显示主体 ID：${who}`);
+
     for (const label of ['工作台', '任务', '提醒', '我的智能体', '团队', '设置']) {
       await visit(mounted.document, label);
       assert.ok(text(element(mounted.document, 'view')).trim().length > 0, `「${label}」渲染为空`);
