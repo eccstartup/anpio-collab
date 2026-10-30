@@ -211,8 +211,7 @@ label.checkbox input {
   border-top: 0;
 }
 
-.login-slot h2,
-.agent-slot h2 {
+.login-slot h2 {
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.12em;
@@ -235,15 +234,39 @@ label.checkbox input {
   flex: none;
 }
 
-/* 智能体不是登录，是交付：一行可复制的话，加一份按需展开的完整说明。 */
-.agent-slot {
-  margin: 2px 0 18px;
-  padding: 18px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--paper);
+/* 智能体不是登录，是交付：一个文本框装那句话，复制在框外。 */
+.agent-handoff {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
+.agent-handoff button {
+  flex: none;
+}
+
+/* 和上面的输入框同一副样子，只是内容是只读的一句话。 */
+.handoff-line {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: 9px 12px;
+  background: #fff;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--ink);
+}
+
+.handoff-line a {
+  color: var(--ink);
+  text-decoration-color: var(--line-strong);
+  text-underline-offset: 3px;
+  overflow-wrap: anywhere;
+}
+
+/* 邀请码面板：码和复制挤在一行里，跟上面那句不是一回事。 */
 .handoff {
   display: flex;
   align-items: center;
@@ -268,37 +291,6 @@ label.checkbox input {
 
 .handoff button {
   flex: none;
-}
-
-/* 智能体入口：话装在一个框里，复制在框外，跟标题同一层。 */
-.agent-handoff {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.agent-handoff button {
-  flex: none;
-}
-
-.handoff-line {
-  flex: 1;
-  min-width: 0;
-  margin: 0;
-  padding: 10px 12px;
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  font-size: 12.5px;
-  line-height: 1.7;
-  color: var(--ink-soft);
-}
-
-.handoff-line a {
-  color: var(--ink-soft);
-  text-decoration-color: var(--line-strong);
-  text-underline-offset: 3px;
-  overflow-wrap: anywhere;
 }
 
 /* 只在有内容时出现：发信结果、开发模式链接，没消息就不占位。 */
