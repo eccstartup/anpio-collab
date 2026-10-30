@@ -778,6 +778,8 @@ async function refresh() {
 // ---------------------------------------------------------------- 渲染入口
 
 function render() {
+  // 401 会先 signOut 再抛出；这时仍在路上的刷新已经无关紧要，别往登录页里渲染。
+  if (!state.me) return;
   const view = document.getElementById('view');
   const topbar = document.getElementById('topbar');
   const [title, subtitle] = TITLES[state.view] ?? ['工作台', ''];

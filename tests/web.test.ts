@@ -222,6 +222,9 @@ async function waitFor(predicate: () => boolean, message: string, timeoutMs = 30
 async function visit(document: DomDocument, label: string): Promise<void> {
   const button = childElements(element(document, 'nav')).find(child => child.textContent.trim() === label);
   assert.ok(button, `导航里没有「${label}」：${navLabels(document).join(' / ')}`);
+  // 同一个视图连点两次时标题不会变，先清空才能等到这一次 refresh() 真正渲染完；
+  // 否则它会拖到测试结束之后，通过全局 document/fetch 污染下一条测试。
+  element(document, 'topbar').replaceChildren();
   await button.fire('click');
   await waitFor(
     () => text(document.getElementById('topbar')).includes(label),
