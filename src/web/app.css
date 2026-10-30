@@ -248,14 +248,13 @@ label.checkbox input {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 8px 8px 12px;
+  padding: 10px 10px 10px 12px;
   background: var(--card);
   border: 1px solid var(--line);
   border-radius: 12px;
 }
 
 .handoff code {
-  flex: 1;
   min-width: 0;
   font-family: var(--mono);
   font-size: 12px;
@@ -263,36 +262,55 @@ label.checkbox input {
   overflow-wrap: anywhere;
 }
 
+.handoff > code {
+  flex: 1;
+}
+
 .handoff button {
   flex: none;
 }
 
-.skill-details {
-  margin-top: 10px;
+.handoff-text {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 2px;
 }
 
-.skill-details summary {
-  font-size: 12px;
+.handoff-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+/* 文件标记：一眼看出这是要发出去的那个文件，而不是一段提示。 */
+.file-mark {
+  flex: none;
+  padding: 5px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--paper);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
   color: var(--muted);
-  cursor: pointer;
-  list-style: none;
 }
 
-.skill-details summary::before {
-  content: "＋";
-  display: inline-block;
-  width: 16px;
-  color: var(--muted);
+.handoff a.file-link {
+  padding: 5px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  color: var(--ink-soft);
+  font-size: 12.5px;
+  text-decoration: none;
+  white-space: nowrap;
 }
 
-.skill-details[open] summary::before {
-  content: "－";
-}
-
-.skill-details .snippet {
-  margin: 10px 0;
-  max-height: 300px;
-  overflow: auto;
+.handoff a.file-link:hover {
+  border-color: var(--ink-soft);
+  color: var(--ink);
 }
 
 /* 只在有内容时出现：发信结果、开发模式链接，没消息就不占位。 */

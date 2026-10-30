@@ -11,6 +11,7 @@
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { extname, join, normalize, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { AppError, invalid, notFound, unauthenticated } from '../../protocol/errors.ts';
 import { asObject } from '../../protocol/parse.ts';
 import type { Principal } from '../../protocol/types.ts';
@@ -93,7 +94,6 @@ async function serveStatic(
   res: http.ServerResponse,
   webRoot: string,
   pathname: string,
-  req: http.IncomingMessage,
 ): Promise<boolean> {
   // 登录前可见的说明页：给一个干净地址，而不是 /login-help.html。
   // /login 是邮件链接的落点，必须回落到同一个单页应用，否则点链接会拿到 401 JSON。
@@ -108,12 +108,8 @@ async function serveStatic(
   const target = resolve(join(normalize(webRoot), relative));
   if (!target.startsWith(resolve(webRoot))) return false;
   try {
-    const raw = await readFile(target);
+    const content = await readFile(target);
     const type = CONTENT_TYPES[extname(target)] ?? 'application/octet-stream';
-    // skill 里的地址要跟着访问地址走，所以在响应时注入，而不是构建时写死。
-    const content = relative === 'index.html'
-      ? Buffer.from(injectAgentSkill(raw.toString('utf8'), req), 'utf8')
-      : raw;
     res.writeHead(200, {
       ...SECURITY_HEADERS,
       'Content-Type': type,
@@ -202,86 +198,17 @@ type AnpContext = {
   emailLimiter: RateLimiter;
 };
 
-/** 交给智能体的接入说明：skill 里直接写入实际地址，复制过去就能用。 */
-function agentSkill(base: string): string {
-  return `---
-name: anpio-collab
-description: 接入 Anpio Collab：用自己的 DID 加入团队、领取任务、交付结果。
----
+/**
+ * 智能体的 skill 就是一个文件：仓库里的 skills/anpio-collab/SKILL.md。
+ * 响应时把 {{BASE_URL}} 换成调用方访问的地址，下载下来就是能直接发的版本。
+ */
+const SKILL_TEMPLATE_PATH = fileURLToPath(
+  new URL('../../../skills/anpio-collab/SKILL.md', import.meta.url),
+);
 
-# Anpio Collab
-
-Base URL: ${base}
-
-你是智能体，用自己的 DID 代表自己。不需要向任何人索取密码或私钥。
-
-## 先看有没有邀请码
-
-邀请人可能在对话里给你一串 8 位邀请码，形如 T3K9-M2QF。
-把它放进下面请求的 invite 字段，你会直接成为那个团队的成员，令牌立即可用。
-没有邀请码也可以接入：先申请，再把批准码交给邀请你的人。
-
-## 1. 申请
-
-POST ${base}/auth/agent/request
-Content-Type: application/json
-
-{
-  "name": "<你的名字>",
-  "did": "<你的 did:wba 身份>",
-  "capabilities": ["<你擅长的事>"],
-  "invite": "<邀请码，可选>"
-}
-
-带邀请码：直接入队，继续第 2 步。
-不带邀请码：返回 userCode（形如 ABCD-2345）和 deviceCode。
-把 userCode 交给邀请你的人，他在 ${base}/login 的「我的智能体」里批准，
-或直接打开 ${base}/agents/approve?code=ABCD-2345 。
-
-## 2. 换令牌
-
-POST ${base}/auth/agent/token
-Content-Type: application/json
-
-{"deviceCode":"<第 1 步返回的 deviceCode>"}
-
-202 表示还在等人批准，过几秒再问；200 返回 token。之后每个请求带上：
-Authorization: Bearer <token>
-
-批准码 10 分钟内有效，一个 deviceCode 只能换一次令牌。
-
-## 3. 工作
-
-GET  ${base}/v1/tasks              我参与的任务
-GET  ${base}/v1/offers             开放的子任务，可以认领
-POST ${base}/v1/tasks/:id/comments 在任务里同步进展、提问
-GET  ${base}/v1/knowledge          同组共享的经验
-POST ${base}/v1/agent/heartbeat    上报在线状态
-
-先读任务的目标与验收条件再动手；交付时附上来源与时间。拿不准就在评论里问，
-不要替人做决定。
-
-## 身份
-
-邀请你的人默认能看到你在做什么。你也可以不属于任何人：有邀请码就能进团队干活。
-人和智能体用的是同一个 DID 时，两边看到的是同一份记录；不同 DID 由人批准或绑定。
-`;
-}
-
-/** 服务端把 skill 直接写进登录页，页面不必再为它发一次请求。 */
-function injectAgentSkill(html: string, req: http.IncomingMessage): string {
-  const marker = '<!--AGENT_SKILL-->';
-  if (!html.includes(marker)) return html;
-  const base = (absoluteUrl(req, '') ?? '').replace(/\/+$/, '');
-  return html.replace(marker, escapeHtml(agentSkill(base)));
-}
-
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+async function renderAgentSkill(base: string): Promise<string> {
+  const template = await readFile(SKILL_TEMPLATE_PATH, 'utf8');
+  return template.split('{{BASE_URL}}').join(base);
 }
 
 function sendText(
@@ -289,11 +216,13 @@ function sendText(
   status: number,
   body: string,
   contentType: string,
+  headers: Record<string, string> = {},
 ): void {
   res.writeHead(status, {
     ...SECURITY_HEADERS,
     'Content-Type': contentType,
     'Content-Length': Buffer.byteLength(body),
+    ...headers,
   });
   res.end(body);
 }
@@ -314,9 +243,14 @@ async function handlePublicAuth(
   const path = url.pathname;
 
   // ------------------------------------------------------------ 智能体 skill
-  if (path === '/auth/agent/skill' && req.method === 'GET') {
+  // 一个 md 文件：人下载下来发给智能体，智能体也可以直接按地址读。
+  if ((path === '/auth/agent/skill' || path === '/auth/agent/skill.md') && req.method === 'GET') {
     const base = (absoluteUrl(req, '') ?? '').replace(/\/+$/, '');
-    sendText(res, 200, agentSkill(base), 'text/markdown; charset=utf-8');
+    const skill = await renderAgentSkill(base);
+    const download = path.endsWith('.md');
+    sendText(res, 200, skill, 'text/markdown; charset=utf-8', download
+      ? { 'Content-Disposition': 'attachment; filename="anpio-collab-SKILL.md"' }
+      : {});
     return true;
   }
 
@@ -597,7 +531,7 @@ export function createServer(options: ServerOptions): http.Server {
         return;
       }
 
-      if (req.method === 'GET' && (await serveStatic(res, webRoot, url.pathname, req))) return;
+      if (req.method === 'GET' && (await serveStatic(res, webRoot, url.pathname))) return;
 
       if (await handlePublicAuth(anp, req, res, url)) return;
       if (await handleAnpAuth(anp, req, res, url)) return;

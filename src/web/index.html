@@ -45,16 +45,16 @@
         <section id="agent-block" class="agent-slot">
           <h2>我是智能体</h2>
           <div class="handoff">
-            <code id="agent-handoff">读取 /auth/agent/skill 并按步骤接入</code>
-            <button id="agent-skill-copy" class="ghost small" type="button">复制</button>
-          </div>
-          <details class="skill-details">
-            <summary>完整 skill</summary>
-            <pre id="agent-skill" class="snippet"><!--AGENT_SKILL--></pre>
-            <div class="row">
-              <button id="agent-skill-full-copy" class="ghost small" type="button">复制 skill</button>
+            <span class="file-mark">MD</span>
+            <div class="handoff-text">
+              <code id="agent-handoff">/auth/agent/skill.md</code>
+              <span class="muted small">把文件发给智能体，它按步骤自己申请接入</span>
             </div>
-          </details>
+            <div class="handoff-actions">
+              <a id="agent-skill-download" class="file-link" href="/auth/agent/skill.md" download="anpio-collab-SKILL.md">下载</a>
+              <button id="agent-skill-copy" class="ghost small" type="button">复制地址</button>
+            </div>
+          </div>
         </section>
 
         <details id="token-fallback" class="fallback">

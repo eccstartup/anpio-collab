@@ -43,12 +43,16 @@ function buildPage(document: DomDocument): void {
   walletForm.append(bindCode, walletSubmit);
   card.append(walletForm);
 
-  // 「我是智能体」：登录页直接给出可复制的 skill，不跳文档。
-  const agentSkill = document.createElement('pre');
-  agentSkill.setAttribute('id', 'agent-skill');
+  // 「我是智能体」：页面上只有一个文件入口，skill 正文在文件里。
+  const agentHandoff = document.createElement('code');
+  agentHandoff.setAttribute('id', 'agent-handoff');
+  const agentDownload = document.createElement('a');
+  agentDownload.setAttribute('id', 'agent-skill-download');
+  agentDownload.setAttribute('href', '/auth/agent/skill.md');
+  agentDownload.setAttribute('download', 'anpio-collab-SKILL.md');
   const agentCopy = document.createElement('button');
   agentCopy.setAttribute('id', 'agent-skill-copy');
-  card.append(agentSkill, agentCopy);
+  card.append(agentHandoff, agentDownload, agentCopy);
 
   const fallback = document.createElement('details');
   fallback.setAttribute('id', 'token-fallback');
@@ -289,7 +293,7 @@ test('index.html 与测试骨架的 id 保持一致', async () => {
   for (const id of [
     'login', 'email-form', 'email', 'email-submit', 'email-note',
     'wallet-form', 'bind-code', 'wallet-submit',
-    'agent-block', 'agent-skill', 'agent-skill-copy', 'token-fallback', 'login-form', 'token', 'login-error', 'shell', 'nav',
+    'agent-block', 'agent-handoff', 'agent-skill-download', 'agent-skill-copy', 'token-fallback', 'login-form', 'token', 'login-error', 'shell', 'nav',
     'tenant', 'identity', 'logout', 'topbar', 'view', 'toast', 'dialog',
   ]) {
     assert.ok(html.includes(`id="${id}"`), `index.html 缺少 #${id}`);
@@ -323,36 +327,48 @@ test('登录说明页：无需登录即可访问，两种登录方式都在', as
   }
 });
 
-test('登录页自带智能体 skill：服务端注入，脚本不跑也有内容', async () => {
+test('智能体 skill 是一个 md 文件：下载即用，地址随当前服务生成', async () => {
   const harness = await startHarness();
   try {
-    const html = await (await realFetch(`${harness.url}/`)).text();
-    const injected = /<pre id="agent-skill"[^>]*>([\s\S]*?)<\/pre>/.exec(html);
-    assert.ok(injected, 'index.html 里的 #agent-skill 没有被填入内容');
-    const skill = injected[1];
-    assert.ok(!html.includes('<!--AGENT_SKILL-->'), '占位符应被替换掉');
+    const response = await realFetch(`${harness.url}/auth/agent/skill.md`);
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get('content-type') ?? '', /^text\/markdown/);
+    assert.match(
+      response.headers.get('content-disposition') ?? '',
+      /^attachment; filename="anpio-collab-SKILL\.md"$/,
+    );
+    const skill = await response.text();
+    assert.match(skill, /^---\nname: anpio-collab\n/, 'skill 要有 frontmatter');
+    assert.ok(skill.includes(`Base URL: ${harness.url}`), 'skill 里的地址应指向当前服务');
+    assert.ok(!skill.includes('{{BASE_URL}}'), '占位符应被替换掉');
     assert.ok(skill.includes('/auth/agent/request'), 'skill 要写清怎么申请接入');
     assert.ok(skill.includes('/auth/agent/token'), 'skill 要写清怎么换令牌');
     assert.ok(skill.includes('邀请码'), 'skill 要告诉智能体邀请码这条路');
-    assert.ok(skill.includes(harness.url), 'skill 里的地址应指向当前服务');
+    assert.ok(skill.includes('agents/approve'), 'skill 应告诉智能体去哪里批准');
+
+    // 不带 .md 的地址直接给正文：智能体可以直接按地址读。
+    const inline = await realFetch(`${harness.url}/auth/agent/skill`);
+    assert.equal(inline.status, 200);
+    assert.equal(inline.headers.get('content-disposition'), null);
+    assert.equal(await inline.text(), skill);
   } finally {
     await harness.close();
   }
 });
 
-test('登录页直接给出智能体 skill：地址随当前服务生成，复制即可交给智能体', async () => {
+test('登录页只给文件入口：地址随当前服务生成，正文不铺在页面上', async () => {
   const harness = await startHarness();
   const mounted = await mount({ url: harness.url });
   try {
-    const preview = element(mounted.document, 'agent-skill');
+    const handoff = element(mounted.document, 'agent-handoff');
     await waitFor(
-      () => text(preview).includes('/auth/agent/request'),
-      `skill 没有加载到登录页：${text(preview)}`,
+      () => text(handoff) === `${harness.url}/auth/agent/skill.md`,
+      `登录页没给出 skill 地址：${text(handoff)}`,
     );
-    const skill = text(preview);
-    assert.ok(skill.includes(harness.url), 'skill 里的地址应指向当前服务');
-    assert.ok(skill.includes('agents/approve'), 'skill 应告诉智能体去哪里批准');
-    assert.ok(!text(element(mounted.document, 'login')).includes('输入批准码'), '智能体这一步不应出现登录表单');
+    const download = element(mounted.document, 'agent-skill-download');
+    assert.equal(download.getAttribute('href'), '/auth/agent/skill.md');
+    assert.equal(download.getAttribute('download'), 'anpio-collab-SKILL.md');
+    assert.ok(!text(element(mounted.document, 'login')).includes('/auth/agent/request'), '页面不该铺 skill 正文');
   } finally {
     await sleep(80);
     mounted.dispose();

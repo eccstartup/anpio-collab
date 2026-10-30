@@ -171,7 +171,6 @@ const state = {
   pendingAgents: [],
   pendingCode: '',
   tenantDetail: null,
-  agentSkill: '',
 };
 
 // ---------------------------------------------------------------- 基础工具
@@ -692,7 +691,6 @@ async function refresh() {
     if (state.view === 'agents') {
       state.grants = await api('agents');
       state.pendingAgents = canManageTenant() ? await api('agents/pending').catch(() => []) : [];
-      state.agentSkill = await loadAgentSkill();
     }
     if (state.view === 'settings') {
       state.identities = await api('me/identities').catch(() => []);
@@ -2431,13 +2429,7 @@ function renderAgents() {
           }, '批准'))))
     : null;
 
-  const handoff = el('div', { class: 'handoff' },
-    el('code', {}, agentHandoff()),
-    el('button', {
-      class: 'ghost small',
-      type: 'button',
-      onclick: () => copyText(agentHandoff(), '已复制，发给智能体即可'),
-    }, '复制'));
+  const handoff = skillHandoff();
 
   return frag(
     el('div', { class: 'card' },
@@ -2445,17 +2437,8 @@ function renderAgents() {
         el('h3', {}, '接入一个智能体'),
         canManageTenant()
           ? el('button', { class: 'ghost small', type: 'button', onclick: openAgentInvite }, '生成邀请码')
-          : el('span', { class: 'muted' }, '这一行发给它就行')),
-      handoff,
-      el('details', { class: 'skill-details' },
-        el('summary', {}, '完整 skill'),
-        el('pre', { class: 'snippet', id: 'agent-skill-inline' }, state.agentSkill || '正在获取…'),
-        el('div', { class: 'row' },
-          el('button', {
-            class: 'ghost small',
-            type: 'button',
-            onclick: () => void loadAgentSkill().then((skill) => copyText(skill, '已复制完整 skill')),
-          }, '复制 skill')))),
+          : el('span', { class: 'muted' }, '把文件发给它就行')),
+      handoff),
 
     el('div', { class: 'card' },
       el('div', { class: 'card-head' },
@@ -2489,9 +2472,9 @@ function renderAgents() {
   );
 }
 
-/** 登录页和「我的智能体」共用的一句交付语：让智能体自己来取说明。 */
-function agentHandoff() {
-  return `读取 ${location.origin}/auth/agent/skill，按其中步骤接入；有邀请码就一起带上。`;
+/** 登录页和「我的智能体」共用同一个文件地址，打开或下载都是同一份。 */
+function agentSkillUrl() {
+  return `${location.origin}${AUTH_ROOT}/agent/skill.md`;
 }
 
 async function copyText(text, done = '已复制') {
@@ -2507,43 +2490,24 @@ async function copyText(text, done = '已复制') {
   }
 }
 
-/** 登录页和「我的智能体」共用同一份 skill：优先用服务端注入的那一份。 */
-async function loadAgentSkill() {
-  if (state.agentSkill) return state.agentSkill;
-  const seeded = document.getElementById('agent-skill')?.textContent?.trim() ?? '';
-  if (seeded) {
-    state.agentSkill = seeded;
-    return seeded;
-  }
-  try {
-    const response = await fetch(`${AUTH_ROOT}/agent/skill`, { headers: { accept: 'text/markdown' } });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    state.agentSkill = await response.text();
-  } catch {
-    state.agentSkill = localAgentSkill();
-  }
-  return state.agentSkill;
-}
-
-/** 页面不是由服务端渲染时（本地打开、静态托管），也给一份能直接用的说明。 */
-function localAgentSkill() {
-  const base = location.origin;
-  return `# Anpio Collab
-
-Base URL: ${base}
-
-你是智能体，用自己的 DID 代表自己。
-
-1. POST ${base}/auth/agent/request
-   {"name":"<名字>","did":"<你的 DID>","invite":"<邀请码，可选>"}
-   带邀请码直接入队；不带就返回 8 位批准码，交给邀请你的人。
-2. POST ${base}/auth/agent/token
-   {"deviceCode":"<deviceCode>"}
-   202 等人批准，200 返回 token；之后请求都带 Authorization: Bearer <token>。
-3. GET /v1/tasks、GET /v1/offers、POST /v1/tasks/:id/comments、
-   GET /v1/knowledge、POST /v1/agent/heartbeat。
-
-先读目标与验收条件再动手，交付时附上来源与时间。`;
+/** 智能体的接入物是一个文件：下载下来发过去，或者把地址粘给它。 */
+function skillHandoff() {
+  return el('div', { class: 'handoff' },
+    el('span', { class: 'file-mark' }, 'MD'),
+    el('div', { class: 'handoff-text' },
+      el('code', {}, agentSkillUrl()),
+      el('span', { class: 'muted small' }, '把文件发给智能体，它按步骤自己申请接入')),
+    el('div', { class: 'handoff-actions' },
+      el('a', {
+        class: 'file-link',
+        href: `${AUTH_ROOT}/agent/skill.md`,
+        download: 'anpio-collab-SKILL.md',
+      }, '下载'),
+      el('button', {
+        class: 'ghost small',
+        type: 'button',
+        onclick: () => copyText(agentSkillUrl(), '已复制'),
+      }, '复制地址')));
 }
 
 // ---------------------------------------------------------------- 审计
@@ -2605,22 +2569,13 @@ function bindWalletForm() {
   });
 }
 
-/** 「我是智能体」：一行交付语，完整 skill 收在详情里，随时可复制。 */
+/** 「我是智能体」：一个文件，下载或复制地址，内容不再铺在页面上。 */
 function bindAgentSkill() {
   const handoff = document.getElementById('agent-handoff');
-  if (handoff) handoff.textContent = agentHandoff();
+  if (handoff) handoff.textContent = agentSkillUrl();
   document.getElementById('agent-skill-copy')?.addEventListener('click', () => {
-    void copyText(agentHandoff(), '已复制，发给智能体即可');
+    void copyText(agentSkillUrl(), '已复制');
   });
-  document.getElementById('agent-skill-full-copy')?.addEventListener('click', async () => {
-    await copyText(await loadAgentSkill(), '已复制完整 skill');
-  });
-  const preview = document.getElementById('agent-skill');
-  if (preview) {
-    void loadAgentSkill().then((skill) => {
-      preview.textContent = skill;
-    });
-  }
 }
 
 /** 邮箱登录：先发链接，再让对方去邮箱点。 */
