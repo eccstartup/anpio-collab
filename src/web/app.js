@@ -399,16 +399,6 @@ function showPanel(title, description, body) {
 const wallet = {
   available: () => Boolean(window.anp && window.anp.isAnpWallet),
 
-  /** 分步状态：让用户知道卡在哪一环，而不是转圈等。 */
-  mark(step, status) {
-    const node = document.querySelector(`#wallet-steps li[data-step="${step}"]`);
-    if (node) node.dataset.state = status;
-  },
-
-  reset() {
-    for (const node of document.querySelectorAll('#wallet-steps li')) node.dataset.state = 'idle';
-  },
-
   /**
    * 走完一次 ANP-02 登录：取身份 → 领 nonce → 签名 → 换令牌。
    * 私钥不出插件，页面只拿到 RFC 9421 签名头。
@@ -417,19 +407,13 @@ const wallet = {
     if (!wallet.available()) {
       throw new Error('没有检测到 ANP 钱包插件。请安装并解锁 ANP Wallet 后刷新本页。');
     }
-    wallet.reset();
 
-    wallet.mark('identity', 'run');
     const identity = await window.anp.getIdentity();
     if (!identity || !identity.did) throw new Error('钱包里没有可用身份，请先在插件中创建或导入钱包');
-    wallet.mark('identity', 'done');
 
-    wallet.mark('challenge', 'run');
     const challenge = await readPayload(await fetch(`${AUTH_ROOT}/anp/challenge`, { headers: { accept: 'application/json' } }));
     if (!challenge?.nonce) throw new Error('服务端没有下发挑战，可能是版本不匹配');
-    wallet.mark('challenge', 'done');
 
-    wallet.mark('sign', 'run');
     const body = JSON.stringify({
       nonce: challenge.nonce,
       did: identity.did,
@@ -443,12 +427,9 @@ const wallet = {
     try {
       signed = await window.anp.signAnpLogin({ url: target, method: 'POST', body, nonce: challenge.nonce });
     } catch (error) {
-      wallet.mark('sign', 'fail');
       throw new Error(`钱包签名未完成：${error.message}`);
     }
-    wallet.mark('sign', 'done');
 
-    wallet.mark('session', 'run');
     const response = await fetch(target, {
       method: 'POST',
       // 插件返回的头大小写不固定，原样透传；body 必须用签名覆盖的那份字节。
@@ -457,17 +438,15 @@ const wallet = {
     });
     const payload = await readPayload(response);
     if (!response.ok) {
-      wallet.mark('session', 'fail');
       const code = payload?.error?.code;
       if (code === 'enrollment_pending') {
-        throw new Error(`这条 DID 已登记为「${payload.principalId}」，但还没被批准。请让管理员在「参与者」里批准后再登录。`);
+        throw new Error(`这条 DID 已登记为「${payload.principalId}」，但还没被批准。请让管理员在「团队」里批准后再登录。`);
       }
       if (code === 'challenge_required') {
         throw new Error('挑战已过期或被用过，请重新点一次登录（每次登录都要新的 nonce）');
       }
       throw new Error(payload?.error?.message ?? `登录失败（HTTP ${response.status}）`);
     }
-    wallet.mark('session', 'done');
     if (!payload?.token) throw new Error('服务端没有返回访问令牌');
     return payload;
   },
@@ -585,7 +564,6 @@ async function signOut(message) {
   document.getElementById('shell').hidden = true;
   document.getElementById('login').hidden = false;
   document.getElementById('login-error').textContent = message ?? '';
-  wallet.reset();
   // 会话可能已在服务端失效，撤销失败不需要打扰人。
   if (token) {
     await fetch(`${API_ROOT}/me/logout`, {
@@ -2495,16 +2473,8 @@ function renderAudit() {
 // ---------------------------------------------------------------- 启动
 
 function bindWalletForm() {
-  const note = document.getElementById('wallet-note');
   const submit = document.getElementById('wallet-submit');
   const error = document.getElementById('login-error');
-
-  if (!wallet.available()) {
-    note.textContent = '未检测到 ANP 钱包插件。安装并解锁后刷新本页；用邮箱登录则不需要插件。';
-    submit.disabled = true;
-  } else {
-    note.textContent = '已检测到 ANP 钱包插件：登录时插件会弹出确认，私钥不会离开插件。';
-  }
 
   document.getElementById('wallet-form').addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -2517,7 +2487,7 @@ function bindWalletForm() {
     } catch (problem) {
       error.textContent = problem.message;
     } finally {
-      submit.disabled = !wallet.available();
+      submit.disabled = false;
       submit.textContent = '用钱包登录';
     }
   });
@@ -2629,22 +2599,6 @@ function boot() {
   bindEmailForm();
   bindWalletForm();
   bindAgentSkill();
-
-  // 钱包插件是异步注入的，晚一点再探测一次，免得刷新即可用的提示骗人。
-  if (!wallet.available()) {
-    let attempts = 0;
-    const timer = setInterval(() => {
-      attempts += 1;
-      if (wallet.available()) {
-        clearInterval(timer);
-        document.getElementById('wallet-note').textContent =
-          '已检测到 ANP 钱包插件：登录时插件会弹出确认，私钥不会离开插件。';
-        document.getElementById('wallet-submit').disabled = false;
-      } else if (attempts >= 6) {
-        clearInterval(timer);
-      }
-    }, 500);
-  }
 
   // 邮件链接优先于已有会话：点邀请就该按邀请处理，不能因为浏览器里还留着
   // 上一个账号的令牌就把它悄悄忽略掉。

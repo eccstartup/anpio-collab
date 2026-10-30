@@ -242,15 +242,6 @@ label.checkbox input {
   overflow-wrap: anywhere;
 }
 
-.steps.tight {
-  margin: 14px 0 0;
-  gap: 8px;
-}
-
-.steps.tight li em {
-  display: none;
-}
-
 .lede {
   color: var(--muted);
   margin-bottom: 26px;

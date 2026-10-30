@@ -22,7 +22,7 @@ const WEB_ROOT = new URL('../src/web/', import.meta.url);
 const realFetch = globalThis.fetch;
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-/** 复刻 index.html 的骨架：id 与 data-step 必须与 HTML 一致。 */
+/** 复刻 index.html 的骨架：id 必须与 HTML 一致。 */
 function buildPage(document: DomDocument): void {
   const root = document.root;
 
@@ -33,17 +33,6 @@ function buildPage(document: DomDocument): void {
   const card = document.createElement('div');
   login.append(card);
 
-  const steps = document.createElement('ol');
-  steps.setAttribute('id', 'wallet-steps');
-  for (const step of ['identity', 'challenge', 'sign', 'session']) {
-    const item = document.createElement('li');
-    item.setAttribute('data-step', step);
-    item.dataset.step = step;
-    item.append(document.createElement('span'));
-    steps.append(item);
-  }
-  card.append(steps);
-
   const walletForm = document.createElement('form');
   walletForm.setAttribute('id', 'wallet-form');
   const bindCode = document.createElement('input');
@@ -53,10 +42,6 @@ function buildPage(document: DomDocument): void {
   walletSubmit.setAttribute('type', 'submit');
   walletForm.append(bindCode, walletSubmit);
   card.append(walletForm);
-
-  const walletNote = document.createElement('p');
-  walletNote.setAttribute('id', 'wallet-note');
-  card.append(walletNote);
 
   // 「我是智能体」：登录页直接给出可复制的 skill，不跳文档。
   const agentSkill = document.createElement('pre');
@@ -303,14 +288,11 @@ test('index.html 与测试骨架的 id 保持一致', async () => {
   const html = await readFile(new URL('index.html', WEB_ROOT), 'utf8');
   for (const id of [
     'login', 'email-form', 'email', 'email-submit', 'email-note',
-    'wallet-steps', 'wallet-form', 'bind-code', 'wallet-submit', 'wallet-note',
+    'wallet-form', 'bind-code', 'wallet-submit',
     'agent-block', 'agent-skill', 'agent-skill-copy', 'token-fallback', 'login-form', 'token', 'login-error', 'shell', 'nav',
     'tenant', 'identity', 'logout', 'topbar', 'view', 'toast', 'dialog',
   ]) {
     assert.ok(html.includes(`id="${id}"`), `index.html 缺少 #${id}`);
-  }
-  for (const step of ['identity', 'challenge', 'sign', 'session']) {
-    assert.ok(html.includes(`data-step="${step}"`), `index.html 缺少分步 ${step}`);
   }
   // CSP 只允许同源脚本，页面不能依赖内联事件。
   assert.ok(!/on(click|submit)=/.test(html), 'index.html 不应有内联事件处理器');
@@ -368,16 +350,12 @@ test('用钱包插件登录：领取挑战、签名、换令牌、按角色生�
   try {
     const login = element(mounted.document, 'login');
     assert.equal(login.hidden, false, '未登录时应显示登录卡');
-    assert.ok(text(element(mounted.document, 'wallet-note')).includes('已检测到'), '应提示检测到钱包插件');
+    assert.ok(!text(login).includes('读取钱包身份'), '登录页不应再展开钱包分步说明');
     assert.deepEqual(navLabels(mounted.document), [], '未登录不应有导航');
 
     await element(mounted.document, 'wallet-form').fire('submit');
 
     await waitFor(() => element(mounted.document, 'shell').hidden === false, `登录未完成：${text(element(mounted.document, 'login-error'))}`);
-
-    // 四步都应标记完成——用户能从界面看出走到哪一步。
-    const steps = mounted.document.querySelectorAll('#wallet-steps li');
-    assert.deepEqual(steps.map(step => step.dataset.state), ['done', 'done', 'done', 'done']);
 
     // 服务端真的把这条 DID 绑到了主体上：用会话令牌回查一次。
     const token = await (globalThis as unknown as { sessionStorage: { getItem(k: string): string | null } }).sessionStorage.getItem('collab.token');
@@ -412,7 +390,12 @@ test('智能体用访问令牌登录：只看到自己的事，没有全局看�
   const { agentToken, taskId } = await seed(harness);
   const mounted = await mount({ url: harness.url });
   try {
-    assert.ok(text(element(mounted.document, 'wallet-note')).includes('未检测到'), '无插件时应提示未检测到');
+    // 没有插件时按钮照样可点，错误落在登录错误区里，不再常驻一整段说明。
+    await element(mounted.document, 'wallet-form').fire('submit');
+    await waitFor(
+      () => text(element(mounted.document, 'login-error')).includes('没有检测到'),
+      `无插件时应给出提示：${text(element(mounted.document, 'login-error'))}`,
+    );
     element(mounted.document, 'token').value = agentToken;
     await element(mounted.document, 'login-form').fire('submit');
     await waitFor(() => element(mounted.document, 'shell').hidden === false, `令牌登录未完成：${text(element(mounted.document, 'login-error'))}`);
