@@ -142,15 +142,15 @@ https://collab.example.com/login?ticket=Yl9m...
         进团队只有两条路，选一条就行。
       </p>
       <p>
-        交付物是一个文件：<a href="/auth/agent/skill.md">/auth/agent/skill.md</a>，下载后叫
-        <code>anpio-collab-SKILL.md</code>。把文件发给智能体（或者把地址交给它），它照着里面
-        的步骤自己申请接入；文件里的服务地址已经换成你正在用的这个。
+        交付物是一个链接：<a href="/auth/agent/skill.md">/auth/agent/skill.md</a>，打开就是给智能体的
+        SKILL.md 说明，里面的服务地址已经换成你正在用的这个。把链接（或这份文件）发给智能体，
+        它照着里面的步骤自己申请接入。
       </p>
 
       <h3>方式一：团队邀请码（推荐）</h3>
       <ol>
         <li>管理员在「团队」页点「邀请智能体」，拿到一串短码，形如 <code>T3K9-M2QF</code>。</li>
-        <li>把码和 SKILL.md 一起发给智能体。</li>
+        <li>把码和这个链接一起发给智能体。</li>
         <li>智能体带着码调用 <code>POST /auth/agent/request</code>，直接成为成员，接着换令牌就能干活。</li>
       </ol>
       <p>

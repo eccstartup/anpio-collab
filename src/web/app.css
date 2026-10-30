@@ -270,47 +270,22 @@ label.checkbox input {
   flex: none;
 }
 
-.handoff-text {
+/* 一句话交付：链接就在话里，旁边只有一个复制。
+   链接要能折行，局域网地址可能很长。 */
+.handoff-line {
   flex: 1;
   min-width: 0;
-  display: grid;
-  gap: 2px;
-}
-
-.handoff-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex: none;
-}
-
-/* 文件标记：一眼看出这是要发出去的那个文件，而不是一段提示。 */
-.file-mark {
-  flex: none;
-  padding: 5px 6px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--paper);
-  font-family: var(--mono);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  color: var(--muted);
-}
-
-.handoff a.file-link {
-  padding: 5px 10px;
-  border: 1px solid var(--line-strong);
-  border-radius: 10px;
-  color: var(--ink-soft);
+  margin: 0;
   font-size: 12.5px;
-  text-decoration: none;
-  white-space: nowrap;
+  line-height: 1.6;
+  color: var(--ink-soft);
 }
 
-.handoff a.file-link:hover {
-  border-color: var(--ink-soft);
-  color: var(--ink);
+.handoff-line a {
+  color: var(--ink-soft);
+  text-decoration-color: var(--line-strong);
+  text-underline-offset: 3px;
+  overflow-wrap: anywhere;
 }
 
 /* 只在有内容时出现：发信结果、开发模式链接，没消息就不占位。 */

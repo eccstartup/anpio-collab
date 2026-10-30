@@ -43,16 +43,18 @@ function buildPage(document: DomDocument): void {
   walletForm.append(bindCode, walletSubmit);
   card.append(walletForm);
 
-  // 「我是智能体」：页面上只有一个文件入口，skill 正文在文件里。
-  const agentHandoff = document.createElement('code');
+  // 「我是智能体」：页面上只有一句话，链接写在话里，旁边一个复制。
+  const agentHandoff = document.createElement('p');
   agentHandoff.setAttribute('id', 'agent-handoff');
-  const agentDownload = document.createElement('a');
-  agentDownload.setAttribute('id', 'agent-skill-download');
-  agentDownload.setAttribute('href', '/auth/agent/skill.md');
-  agentDownload.setAttribute('download', 'anpio-collab-SKILL.md');
+  const agentLink = document.createElement('a');
+  agentLink.setAttribute('id', 'agent-skill-link');
+  agentHandoff.append(
+    document.createTextNode('把这个链接发给智能体，它会照着里面的步骤自己接入：'),
+    agentLink,
+  );
   const agentCopy = document.createElement('button');
   agentCopy.setAttribute('id', 'agent-skill-copy');
-  card.append(agentHandoff, agentDownload, agentCopy);
+  card.append(agentHandoff, agentCopy);
 
   const fallback = document.createElement('details');
   fallback.setAttribute('id', 'token-fallback');
@@ -293,7 +295,7 @@ test('index.html 与测试骨架的 id 保持一致', async () => {
   for (const id of [
     'login', 'email-form', 'email', 'email-submit', 'email-note',
     'wallet-form', 'bind-code', 'wallet-submit',
-    'agent-block', 'agent-handoff', 'agent-skill-download', 'agent-skill-copy', 'token-fallback', 'login-form', 'token', 'login-error', 'shell', 'nav',
+    'agent-block', 'agent-handoff', 'agent-skill-link', 'agent-skill-copy', 'token-fallback', 'login-form', 'token', 'login-error', 'shell', 'nav',
     'tenant', 'identity', 'logout', 'topbar', 'view', 'toast', 'dialog',
   ]) {
     assert.ok(html.includes(`id="${id}"`), `index.html 缺少 #${id}`);
@@ -356,18 +358,20 @@ test('智能体 skill 是一个 md 文件：下载即用，地址随当前服务
   }
 });
 
-test('登录页只给文件入口：地址随当前服务生成，正文不铺在页面上', async () => {
+test('登录页只给一句话：链接随当前服务生成，正文不铺在页面上', async () => {
   const harness = await startHarness();
   const mounted = await mount({ url: harness.url });
   try {
+    const url = `${harness.url}/auth/agent/skill.md`;
     const handoff = element(mounted.document, 'agent-handoff');
     await waitFor(
-      () => text(handoff) === `${harness.url}/auth/agent/skill.md`,
-      `登录页没给出 skill 地址：${text(handoff)}`,
+      () => text(handoff).includes(url),
+      `登录页没给出 skill 链接：${text(handoff)}`,
     );
-    const download = element(mounted.document, 'agent-skill-download');
-    assert.equal(download.getAttribute('href'), '/auth/agent/skill.md');
-    assert.equal(download.getAttribute('download'), 'anpio-collab-SKILL.md');
+    assert.ok(text(handoff).startsWith('把这个链接发给智能体'), `交付语不对：${text(handoff)}`);
+    const link = element(mounted.document, 'agent-skill-link');
+    assert.equal(text(link), url);
+    assert.equal(link.getAttribute('href'), url);
     assert.ok(!text(element(mounted.document, 'login')).includes('/auth/agent/request'), '页面不该铺 skill 正文');
   } finally {
     await sleep(80);

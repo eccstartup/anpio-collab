@@ -2437,7 +2437,7 @@ function renderAgents() {
         el('h3', {}, '接入一个智能体'),
         canManageTenant()
           ? el('button', { class: 'ghost small', type: 'button', onclick: openAgentInvite }, '生成邀请码')
-          : el('span', { class: 'muted' }, '把文件发给它就行')),
+          : el('span', { class: 'muted' }, '把这句话发给它就行')),
       handoff),
 
     el('div', { class: 'card' },
@@ -2477,6 +2477,11 @@ function agentSkillUrl() {
   return `${location.origin}${AUTH_ROOT}/agent/skill.md`;
 }
 
+/** 交付给别人（或智能体）的就是这一句，链接已经写成绝对地址。 */
+function agentHandoffText() {
+  return `把这个链接发给智能体，它会照着里面的步骤自己接入：${agentSkillUrl()}`;
+}
+
 async function copyText(text, done = '已复制') {
   if (!text) {
     toast('还没有内容可复制', 'error');
@@ -2490,24 +2495,18 @@ async function copyText(text, done = '已复制') {
   }
 }
 
-/** 智能体的接入物是一个文件：下载下来发过去，或者把地址粘给它。 */
+/** 智能体的接入物是一个文件：给他一句话，链接写在话里。 */
 function skillHandoff() {
+  const url = agentSkillUrl();
   return el('div', { class: 'handoff' },
-    el('span', { class: 'file-mark' }, 'MD'),
-    el('div', { class: 'handoff-text' },
-      el('code', {}, agentSkillUrl()),
-      el('span', { class: 'muted small' }, '把文件发给智能体，它按步骤自己申请接入')),
-    el('div', { class: 'handoff-actions' },
-      el('a', {
-        class: 'file-link',
-        href: `${AUTH_ROOT}/agent/skill.md`,
-        download: 'anpio-collab-SKILL.md',
-      }, '下载'),
-      el('button', {
-        class: 'ghost small',
-        type: 'button',
-        onclick: () => copyText(agentSkillUrl(), '已复制'),
-      }, '复制地址')));
+    el('p', { class: 'handoff-line' },
+      '把这个链接发给智能体，它会照着里面的步骤自己接入：',
+      el('a', { href: url }, url)),
+    el('button', {
+      class: 'ghost small',
+      type: 'button',
+      onclick: () => copyText(agentHandoffText(), '已复制，发给智能体即可'),
+    }, '复制'));
 }
 
 // ---------------------------------------------------------------- 审计
@@ -2569,12 +2568,15 @@ function bindWalletForm() {
   });
 }
 
-/** 「我是智能体」：一个文件，下载或复制地址，内容不再铺在页面上。 */
+/** 「我是智能体」：一句话里的链接换成当前服务地址，复制给智能体即可。 */
 function bindAgentSkill() {
-  const handoff = document.getElementById('agent-handoff');
-  if (handoff) handoff.textContent = agentSkillUrl();
+  const link = document.getElementById('agent-skill-link');
+  if (link) {
+    link.textContent = agentSkillUrl();
+    link.setAttribute('href', agentSkillUrl());
+  }
   document.getElementById('agent-skill-copy')?.addEventListener('click', () => {
-    void copyText(agentSkillUrl(), '已复制');
+    void copyText(agentHandoffText(), '已复制，发给智能体即可');
   });
 }
 
