@@ -28,8 +28,16 @@ export type RequestContext = {
 export type ReadContext = RequestContext;
 export type WriteContext = RequestContext & { body: unknown };
 
-/** 授权阶段可以顺带返回资源及其版本，用于 If-Match 前置条件。 */
-export type Authorized = { version?: number } | undefined;
+/** 授权阶段可以顺带返回资源及其版本，或已解析好的执行主体。 */
+export type Authorized =
+  | {
+      version?: number;
+      /** 团队任务：目标团队里本人的主体。 */
+      target?: Principal;
+      /** 个人任务：执行时才懒创建个人空间。 */
+      personal?: boolean;
+    }
+  | undefined;
 
 export type WriteSpec = {
   /**

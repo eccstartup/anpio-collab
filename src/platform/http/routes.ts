@@ -110,6 +110,11 @@ export const routes: Route[] = [
     path: '/v1/me/tenants',
     description: '我所属的全部租户（跨租户，按账号）',
     read: async ({ app, principal }) => {
+      // 智能体的"我的团队"不等于主人的团队列表，只让它看到当前所在租户。
+      if (principal.kind !== 'human') {
+        const detail = await app.tenants.detail(principal);
+        return [{ id: detail.id, name: detail.name, personal: detail.personal, role: principal.tenantRole }];
+      }
       const tenants = await app.tenants.listFor(principal.accountId);
       // 遗留主体没有账号：至少让它看到自己当前所在的那一个。
       if (tenants.length === 0) {
@@ -125,9 +130,10 @@ export const routes: Route[] = [
     description: '切换到另一个租户，换发会话并作废当前会话',
     write: {
       execute: async ({ app, principal, body, token }) => {
+        if (principal.kind !== 'human') throw forbidden('智能体不能切换组织');
         const tenantId = asString(asObject(body).tenantId, 'tenantId', { max: 100, min: 1 });
         if (!principal.accountId) throw forbidden('当前主体未绑定账号，无法切换组织');
-        const memberships = await app.tenants.listFor(principal.accountId);
+        const memberships = await app.tenants.listFor(principal.accountId, 'human');
         if (!memberships.some(item => item.id === tenantId)) throw forbidden('你不属于这个组织');
         const account = await app.accounts.findById(principal.accountId);
         if (!account) throw forbidden('账号不存在');
@@ -148,6 +154,7 @@ export const routes: Route[] = [
     description: '新建团队：创建者成为所有者，并换发到这个团队的会话',
     write: {
       execute: async ({ app, principal, body, token }) => {
+        if (principal.kind !== 'human') throw forbidden('智能体不能新建团队');
         const name = asString(asObject(body).name, 'name', { max: 120, min: 1 });
         if (!principal.accountId) throw forbidden('当前主体未绑定账号，无法新建团队');
         const account = await app.accounts.findById(principal.accountId);
@@ -467,8 +474,20 @@ export const routes: Route[] = [
   {
     method: 'POST',
     path: '/v1/tasks',
-    description: '创建任务（负责人或管理员）',
-    write: { execute: async ({ app, principal, body }) => app.tasks.create(principal, body) },
+    description: '创建任务（负责人或管理员）；可指定个人空间或团队',
+    write: {
+      authorize: async ({ app, principal, body }) => app.tenants.resolveTaskOwner(principal, body),
+      execute: async ({ app, principal, body }, authorized) => {
+        let executor = authorized?.target ?? principal;
+        if (authorized?.personal) {
+          if (!principal.accountId) throw forbidden('当前主体未绑定账号，无法创建个人任务');
+          const account = await app.accounts.findById(principal.accountId);
+          if (!account) throw forbidden('账号不存在');
+          executor = await app.tenants.ensurePersonal(account);
+        }
+        return app.tasks.create(principal, body, executor);
+      },
+    },
   },
   {
     method: 'GET',
@@ -481,6 +500,19 @@ export const routes: Route[] = [
     path: '/v1/tasks/:id/context',
     description: '长任务恢复上下文：状态、未决事项、阶段摘要、最近事件',
     read: async ({ app, principal, params }) => app.tasks.context(principal, params.id ?? ''),
+  },
+  {
+    method: 'GET',
+    path: '/v1/tasks/:id/materials',
+    description: '任务材料目录；能读任务的人都能看',
+    read: async ({ app, principal, params }) => app.tasks.materials(principal, params.id ?? ''),
+  },
+  {
+    method: 'GET',
+    path: '/v1/tasks/:id/materials/:materialId',
+    description: '下载任务材料；返回 base64 内容',
+    read: async ({ app, principal, params }) =>
+      app.tasks.material(principal, params.id ?? '', params.materialId ?? ''),
   },
   {
     method: 'POST',
@@ -609,9 +641,12 @@ export const routes: Route[] = [
   {
     method: 'POST',
     path: '/v1/tasks/:id/knowledge',
-    description: '从已验收任务提取候选经验（负责人）',
+    description: '沉淀候选经验：负责人需已验收，受派智能体提交结果后即可',
     write: {
-      authorize: ctx => onTask(ctx, 'owner'),
+      authorize: async ctx => {
+        const task = await readTask(ctx.app.ctx, ctx.principal, ctx.params.id ?? '');
+        return { version: task.version };
+      },
       execute: async ({ app, principal, params, body }) =>
         app.knowledge.createCandidate(principal, params.id ?? '', body),
     },
@@ -799,6 +834,21 @@ export const routes: Route[] = [
     write: {
       execute: async ({ app, principal, params, body }) =>
         app.knowledge.changeAccess(principal, params.id ?? '', body),
+    },
+  },
+  {
+    method: 'GET',
+    path: '/v1/knowledge/:id/shares',
+    description: '个人经验分享到的团队（仅来源空间）',
+    read: async ({ app, principal, params }) => app.knowledge.shares(principal, params.id ?? ''),
+  },
+  {
+    method: 'POST',
+    path: '/v1/knowledge/:id/shares',
+    description: '把个人经验分享给一个或多个团队（整单替换）',
+    write: {
+      execute: async ({ app, principal, params, body }) =>
+        app.knowledge.setShares(principal, params.id ?? '', body),
     },
   },
 

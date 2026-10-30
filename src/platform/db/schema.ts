@@ -74,6 +74,20 @@ function statements(dialect: 'sqlite' | 'postgres'): string[] {
     `CREATE INDEX IF NOT EXISTS tasks_workspace_created ON tasks(workspace, created_at DESC, id)`,
     `CREATE INDEX IF NOT EXISTS tasks_owner ON tasks(owner_id, status)`,
 
+    // 任务材料：用户上传的原始文件，随任务一起隔离。内容以 base64 存在 TEXT 里，
+    // SQLite 与 PostgreSQL 都能原样备份，不依赖外部对象存储。
+    `CREATE TABLE IF NOT EXISTS task_materials (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL REFERENCES tasks(id),
+      name TEXT NOT NULL,
+      mime TEXT NOT NULL,
+      size INTEGER NOT NULL,
+      data TEXT NOT NULL,
+      uploaded_by TEXT NOT NULL REFERENCES principals(id),
+      created_at TEXT NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS task_materials_task ON task_materials(task_id, created_at, id)`,
+
     `CREATE TABLE IF NOT EXISTS subtasks (
       id TEXT PRIMARY KEY,
       task_id TEXT NOT NULL REFERENCES tasks(id),
@@ -361,6 +375,20 @@ function statements(dialect: 'sqlite' | 'postgres'): string[] {
       created_by TEXT,
       created_at TEXT NOT NULL
     )`,
+    // 一个账号只能有一个个人空间；老库若已有重复数据，迁移会在这里失败而不是静默合并。
+    `CREATE UNIQUE INDEX IF NOT EXISTS tenants_one_personal
+       ON tenants(created_by) WHERE personal = 1 AND created_by IS NOT NULL`,
+
+    // 个人经验分享给团队：只给目标团队读权限，管理权仍在来源空间。
+    `CREATE TABLE IF NOT EXISTS knowledge_shares (
+      knowledge_id TEXT NOT NULL REFERENCES knowledge(id),
+      team_workspace TEXT NOT NULL REFERENCES tenants(id),
+      shared_by TEXT NOT NULL REFERENCES principals(id),
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (knowledge_id, team_workspace)
+    )`,
+    `CREATE INDEX IF NOT EXISTS knowledge_shares_team
+       ON knowledge_shares(team_workspace, knowledge_id)`,
 
     `CREATE TABLE IF NOT EXISTS tenant_invites (
       id TEXT PRIMARY KEY,
@@ -467,7 +495,7 @@ const ADDED_COLUMNS: { table: string; column: string; definition: string }[] = [
   { table: 'accounts', column: 'bio', definition: "TEXT NOT NULL DEFAULT ''" },
 ];
 
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 6;
 
 async function existingColumns(db: Database, table: string): Promise<Set<string> | null> {
   try {

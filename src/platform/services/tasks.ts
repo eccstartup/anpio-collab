@@ -23,7 +23,8 @@ import {
   requireRole,
 } from './access.ts';
 import { appendEvent, latestSeq } from './events.ts';
-import { canViewKnowledge, KnowledgeService } from './knowledge.ts';
+import { KnowledgeService } from './knowledge.ts';
+import { insertMaterials, listMaterials, parseMaterialUploads, requireMaterial } from './materials.ts';
 import { NotificationService } from './notifications.ts';
 
 const DEFAULT_DUE_DAYS = 7;
@@ -124,9 +125,13 @@ export class TaskService {
    * 才算真正进入协作流程——这样"智能体自己发现的问题"能进系统，
    * 又不会因为一个误判就变成别人必须处理的正式任务。
    */
-  async create(actor: Principal, body: unknown): Promise<{ id: string; status: TaskStatus; version: number }> {
-    requireRole(actor, 'owner', 'admin', 'agent');
-    const byAgent = hasAnyRole(actor, 'agent') && !hasAnyRole(actor, 'owner', 'admin');
+  async create(
+    actor: Principal,
+    body: unknown,
+    executor: Principal = actor,
+  ): Promise<{ id: string; status: TaskStatus; version: number; workspace: string }> {
+    requireRole(executor, 'owner', 'admin', 'agent');
+    const byAgent = hasAnyRole(executor, 'agent') && !hasAnyRole(executor, 'owner', 'admin');
     const input = asObject(body);
     const now = this.ctx.now();
     const title = asString(input.title, 'title', { max: 200 });
@@ -137,6 +142,7 @@ export class TaskService {
     const dueAt = input.dueAt === undefined ? addDays(now, DEFAULT_DUE_DAYS) : asTimestamp(input.dueAt, 'dueAt');
     if (Date.parse(dueAt) <= Date.parse(now)) throw invalid('dueAt 必须晚于当前时间');
     const taskInput = input.input === undefined ? {} : asTaskInput(input.input);
+    const materials = parseMaterialUploads(input.materials);
 
     const id = this.ctx.newId();
     let createdVersion = 1;
@@ -149,30 +155,31 @@ export class TaskService {
                 'pending', :input, NULL, 0, :origin, :originPrincipal, NULL, :at, :at)`,
         {
           id,
-          workspace: actor.workspace,
+          workspace: executor.workspace,
           type,
           title,
           goal,
           acceptance,
           priority,
           dueAt,
-          owner: actor.id,
+          owner: executor.id,
           input: encode(taskInput),
           origin: byAgent ? 'agent' : 'human',
-          originPrincipal: byAgent ? actor.id : null,
+          originPrincipal: byAgent ? executor.id : null,
           at: now,
         },
       );
+      await insertMaterials(tx, id, executor.id, materials, now, () => this.ctx.newId());
       // 事件同时把 version 从 0 推到 1，返回值必须与实际存储一致。
       const event = await appendEvent(this.ctx, tx, {
         taskId: id,
-        actorId: actor.id,
+        actorId: executor.id,
         type: 'task_created',
         payload: { title, type, acceptance, dueAt, origin: byAgent ? 'agent' : 'human' },
       });
       createdVersion = event.taskVersion;
     });
-    return { id, status: 'pending', version: createdVersion };
+    return { id, status: 'pending', version: createdVersion, workspace: executor.workspace };
   }
 
   /**
@@ -370,15 +377,27 @@ export class TaskService {
       coordinators,
       events,
       knowledgeRefs: references,
+      materials: await listMaterials(this.ctx.db.read, taskId),
       unrestricted,
     };
+  }
+
+  /** 任务材料目录：能读任务的人都能看。 */
+  async materials(actor: Principal, taskId: string) {
+    await readTask(this.ctx, actor, taskId);
+    return listMaterials(this.ctx.db.read, taskId);
+  }
+
+  /** 材料正文：下载与智能体取用共用。 */
+  async material(actor: Principal, taskId: string, materialId: string) {
+    await readTask(this.ctx, actor, taskId);
+    return requireMaterial(this.ctx.db.read, taskId, materialId);
   }
 
   private async visibleKnowledgeIds(actor: Principal, ids: Set<string>): Promise<Set<string>> {
     const visible = new Set<string>();
     for (const id of ids) {
-      const item = await this.knowledge.load(actor.workspace, id);
-      if (item && (await canViewKnowledge(this.ctx, actor, item))) visible.add(id);
+      if (await this.knowledge.loadReadable(actor, id)) visible.add(id);
     }
     return visible;
   }

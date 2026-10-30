@@ -18,7 +18,7 @@ import type {
   TaskStatus,
 } from '../protocol/types.ts';
 
-export type TaskRef = { id: string; status: TaskStatus; version: number };
+export type TaskRef = { id: string; status: TaskStatus; version: number; workspace?: string };
 
 export type SubtaskRef = {
   id: string;
@@ -69,6 +69,18 @@ export type KnowledgeRef = {
   conditions: string | null;
 };
 
+/** 任务材料：创建任务时随任务提交的文件，可见性跟随任务。 */
+export type MaterialMeta = {
+  id: string;
+  name: string;
+  mime: string;
+  size: number;
+  uploadedBy: string;
+  createdAt: string;
+};
+
+export type MaterialContent = MaterialMeta & { data: string };
+
 export type TaskDetail = {
   /** 任务本体，附带负责人显示名，省去调用方再查目录。 */
   task: Task & { ownerName: string };
@@ -76,6 +88,7 @@ export type TaskDetail = {
   coordinators: string[];
   events: TaskEvent[];
   knowledgeRefs: KnowledgeRef[];
+  materials: MaterialMeta[];
   /** 调用方是否能看到全部子任务与事件（负责人、协调者、管理员为 true）。 */
   unrestricted: boolean;
 };
@@ -122,7 +135,20 @@ export type InboxItem = {
 
 export type KnowledgeSummary = Pick<
   Knowledge,
-  'id' | 'version' | 'content' | 'conditions' | 'state' | 'expiresAt' | 'sourceTaskId' | 'reviewerId'
+  | 'id'
+  | 'workspace'
+  | 'version'
+  | 'content'
+  | 'conditions'
+  | 'state'
+  | 'expiresAt'
+  | 'sourceTaskId'
+  | 'reviewerId'
+  | 'authorId'
+  | 'authorName'
+  | 'sourceName'
+  | 'sourcePersonal'
+  | 'sharedTeams'
 >;
 
 export type KnowledgeSearchItem = KnowledgeSummary & {

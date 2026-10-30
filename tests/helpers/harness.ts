@@ -17,7 +17,7 @@ import { openDatabase } from '../../src/platform/db/index.ts';
 import { createServer } from '../../src/platform/http/server.ts';
 import { CollabClient } from '../../src/sdk/client.ts';
 import { generateIdentity, type AnpIdentity } from '../../src/anp/identity.ts';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { CollabError } from '../../src/sdk/client.ts';
 
@@ -160,6 +160,36 @@ export async function startHarness(
       await did.close();
       rmSync(directory, { recursive: true, force: true });
     },
+  };
+}
+
+/** 邮箱登录：开发模式直接从返回链接取票据，再换会话。 */
+export async function emailLogin(
+  harness: Harness,
+  email: string,
+): Promise<{
+  token: string;
+  tenant: { id: string; name: string; role: string };
+  principal: { id: string };
+}> {
+  const post = (path: string, body: unknown) =>
+    fetch(`${harness.url}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'idempotency-key': randomUUID() },
+      body: JSON.stringify(body),
+    });
+  const started = await post('/auth/email/start', { email });
+  assert.equal(started.status, 202, await started.clone().text());
+  const { devLink } = (await started.json()) as { devLink: string };
+  assert.ok(devLink, '开发模式应返回登录链接');
+  const ticket = new URL(devLink).searchParams.get('ticket');
+  assert.ok(ticket, `链接里没有 ticket: ${devLink}`);
+  const verified = await post('/auth/email/verify', { ticket });
+  assert.equal(verified.status, 200, await verified.clone().text());
+  return (await verified.json()) as {
+    token: string;
+    tenant: { id: string; name: string; role: string };
+    principal: { id: string };
   };
 }
 

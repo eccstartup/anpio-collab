@@ -15,7 +15,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import type { AnpIdentity } from '../src/anp/identity.ts';
 import { signRequest } from '../src/anp/signature.ts';
-import { ADMIN_TOKEN, startHarness, type Harness } from './helpers/harness.ts';
+import { ADMIN_TOKEN, emailLogin, startHarness, type Harness } from './helpers/harness.ts';
 import { DomElement, DomNode, DomDocument } from './helpers/dom.ts';
 
 const WEB_ROOT = new URL('../src/web/', import.meta.url);
@@ -399,7 +399,7 @@ test('用钱包插件登录：领取挑战、签名、换令牌、按角色生�
     assert.deepEqual(me.roles, ['owner'], '人类钱包首次登录应按 owner 自动登记');
 
     // 纯负责人没有监管与审计，导航必须如实反映权限。
-    assert.deepEqual(navLabels(mounted.document), ['工作台', '任务', '提醒', '我的智能体', '团队', '设置']);
+    assert.deepEqual(navLabels(mounted.document), ['工作台', '任务', '提醒', '经验库', '我的智能体', '团队', '设置']);
 
     // 侧栏只留姓名与角色：主体 ID 与 DID 的细节在设置页，不在左下角堆五行。
     const who = text(element(mounted.document, 'identity'));
@@ -407,7 +407,7 @@ test('用钱包插件登录：领取挑战、签名、换令牌、按角色生�
     assert.ok(!who.includes('did:wba'), `侧栏不该显示 DID：${who}`);
     assert.ok(!/p_[0-9a-f]{8}/.test(who), `侧栏不该显示主体 ID：${who}`);
 
-    for (const label of ['工作台', '任务', '提醒', '我的智能体', '团队', '设置']) {
+    for (const label of ['工作台', '任务', '提醒', '经验库', '我的智能体', '团队', '设置']) {
       await visit(mounted.document, label);
       assert.ok(text(element(mounted.document, 'view')).trim().length > 0, `「${label}」渲染为空`);
     }
@@ -420,6 +420,98 @@ test('用钱包插件登录：领取挑战、签名、换令牌、按角色生�
   } finally {
     await sleep(80);
     mounted.dispose();
+    await harness.close();
+  }
+});
+
+test('新建任务对话框：默认执行归属是个人空间', async () => {
+  const harness = await startHarness();
+  const mounted = await mount({ url: harness.url, wallet: fakeWallet(harness.did.identity('owner-personal')) });
+  try {
+    await element(mounted.document, 'wallet-form').fire('submit');
+    await waitFor(
+      () => element(mounted.document, 'shell').hidden === false,
+      `登录未完成：${text(element(mounted.document, 'login-error'))}`,
+    );
+
+    await visit(mounted.document, '任务');
+    await buttonByText(mounted.document, '新建任务').fire('click');
+
+    const dialog = element(mounted.document, 'dialog');
+    const body = text(dialog);
+    assert.ok(body.includes('执行归属'), `对话框缺少执行归属：${body.slice(0, 300)}`);
+    assert.ok(body.includes('个人空间（只属于你）'), '执行归属缺少个人空间选项');
+    const personal = dialog.querySelector('#field-ownership option[value="personal"]');
+    assert.ok(personal, '默认归属不是个人空间');
+    assert.equal(personal.selected, true, '默认应选中个人空间');
+    assert.ok(body.includes('材料（可选'), `对话框缺少材料上传：${body.slice(0, 400)}`);
+    assert.ok(dialog.querySelector('input[type="file"]'), '材料字段不是文件选择框');
+    assert.equal(
+      dialog.querySelector('#field-type')?.value,
+      'general',
+      '任务类型默认值应改成通用标识',
+    );
+    assert.ok(!body.includes('物料编号'), '任务创建不应再固定成缺料分析字段');
+  } finally {
+    await sleep(80);
+    mounted.dispose();
+    await harness.close();
+  }
+});
+
+test('新建任务对话框：只列自己拥有或管理的团队，成员团队不出现', async () => {
+  const harness = await startHarness();
+  try {
+    const alice = await emailLogin(harness, 'alice@example.com');
+    const bob = await emailLogin(harness, 'bob@example.com');
+    const created = await fetch(`${harness.url}/v1/tenants`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'idempotency-key': 'create-member-team',
+        authorization: `Bearer ${bob.token}`,
+      },
+      body: JSON.stringify({ name: '只让 alice 当成员' }),
+    });
+    assert.equal(created.status, 200, await created.clone().text());
+    const team = (await created.json()) as { tenant: { id: string } };
+
+    // alice 在这个团队里只是普通成员：可以进去做事，但不能以团队名义建任务。
+    const me = await (await fetch(`${harness.url}/v1/me`, {
+      headers: { authorization: `Bearer ${alice.token}` },
+    })).json() as { accountId: string };
+    const principalId = `p_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
+    await harness.db.run(
+      `INSERT INTO principals(id, workspace, roles, token_hash, did, kind, handle, display_name,
+                              avatar, title, bio, description, capabilities, active, created_at, account_id, tenant_role)
+       VALUES(:id, :workspace, '["member"]', :hash, NULL, 'human', NULL, 'alice',
+              '', '', '', '', '[]', 1, :at, :account, 'member')`,
+      {
+        id: principalId,
+        workspace: team.tenant.id,
+        hash: 'unused',
+        at: new Date().toISOString(),
+        account: me.accountId,
+      },
+    );
+
+    const mounted = await mount({ url: harness.url });
+    try {
+      element(mounted.document, 'token').value = alice.token;
+      await element(mounted.document, 'login-form').fire('submit');
+      await waitFor(() => element(mounted.document, 'shell').hidden === false, '令牌登录未完成');
+      await visit(mounted.document, '任务');
+      await buttonByText(mounted.document, '新建任务').fire('click');
+
+      const dialog = element(mounted.document, 'dialog');
+      const values = Array.from(dialog.querySelectorAll('#field-ownership option')).map((node) => node.value);
+      assert.deepEqual(values, ['personal'], '成员团队不应出现在执行归属里');
+      assert.ok(!text(dialog).includes('只让 alice 当成员'));
+    } finally {
+      await sleep(80);
+      mounted.dispose();
+    }
+  } finally {
     await harness.close();
   }
 });

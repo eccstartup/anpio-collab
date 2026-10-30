@@ -229,6 +229,12 @@ export type Knowledge = {
   accessMode: AccessMode;
   createdAt: string;
   updatedAt: string;
+  /** 列表补充的展示信息：作者姓名与来源空间。 */
+  authorName?: string;
+  sourceName?: string;
+  sourcePersonal?: boolean;
+  /** 仅来源空间条目携带：已分享到的团队。 */
+  sharedTeams?: { id: string; name: string }[];
 };
 
 export type Notification = {
@@ -267,6 +273,7 @@ export type EventType =
   | 'knowledge_revised'
   | 'knowledge_access_changed'
   | 'knowledge_referenced'
+  | 'knowledge_shared'
   | 'comment_added'
   | 'offer_published'
   | 'offer_claimed'

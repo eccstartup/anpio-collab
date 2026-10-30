@@ -6,7 +6,7 @@
 - 认证：`Authorization: Bearer <token>`；`/health` 与静态资源除外
 - 内容类型：请求与响应均为 `application/json; charset=utf-8`
 - 时间：UTC ISO-8601，如 `2026-10-28T09:14:20.539Z`
-- 请求体上限：`COLLAB_BODY_LIMIT`，默认 64 KiB
+- 请求体上限：`COLLAB_BODY_LIMIT`，默认 4 MiB（任务材料随创建请求以 base64 提交）
 
 ## 请求约定
 
@@ -226,6 +226,16 @@ POST /v1/members/:id/remove
 
 租户角色：`owner`（唯一，可转让）/ `admin` / `member` / `guest`。业务角色由它派生，但 Agent 永远是 `agent`，不继承主人的管理权。所有者与管理员不能改自己的角色，管理员不能动所有者，也不能邀请第二个所有者。
 
+### 个人空间与任务归属
+
+每个有账号的人可有一个 `personal = 1` 的个人空间（邮箱登录会自动创建，DID 首次建个人任务时按需创建）。任务创建时可指定归属：
+
+- `ownership: "personal"`：落在调用者的个人空间，团队看不到；
+- `ownership: "team"` + `teamId`：要求是目标团队内 active 的 human `owner` / `admin` / `member`；任务落在团队；
+- 两者都不传：保持旧语义，落在当前令牌的 workspace。Agent / service 不能指定归属。
+
+创建响应带 `workspace`，调用方据此判断是否切换视野。个人任务的经验归个人，可分享给团队；团队经验只在团队内。
+
 ## 状态机
 
 ### 任务
@@ -240,7 +250,7 @@ pending ──(首个 assign)──> running ──(summary，且子任务全部
 - `pending`：已创建，还没有子任务
 - `running`：至少分派了一个子任务
 - `review`：负责人已提交汇总，等待验收
-- `completed`：验收通过；此后才能沉淀经验
+- `completed`：验收通过；负责人此时才能沉淀经验。受派智能体提交结果（`submitted` / `verified`）后也可以提交**候选**经验，同样需要人审核发布
 - `cancelled`：未核验的子任务会一并取消，并给对应智能体发通知
 
 ### 子任务
@@ -270,7 +280,8 @@ accepted ──outcome-unknown──> outcome_unknown
 | --- | --- |
 | 读任务 | 管理员、监管者、负责人、委派协调者、受派智能体（后者只见自己的子任务） |
 | 创建任务 / 委派协调者 / 分派 / 汇总 / 阶段摘要 | `owner` 或 `admin`，或该任务的协调者 |
-| 验收 / 退回 / 取消 / 引用经验 / 沉淀候选 | 负责人或管理员 |
+| 验收 / 退回 / 取消 / 引用经验 | 负责人或管理员 |
+| 沉淀候选经验 | 负责人（任务已验收）或已提交结果的受派智能体（任务未取消）；候选一律由审核人发布 |
 | 接管智能体提案 | 负责人、监管者或管理员（且提案未接管、任务未终结） |
 | 挂开放池 / 撤回开放子任务 | 负责人、该任务协调者或管理员 |
 | 认领开放子任务 | `agent` 且能力声明包含该子任务要求的能力 |
@@ -333,9 +344,11 @@ accepted ──outcome-unknown──> outcome_unknown
 | --- | --- | --- |
 | GET | `/v1/tasks?status=&q=` | 可见任务（最多 500 条），按创建时间倒序 |
 | GET | `/v1/tasks/page?limit=&offset=` | 分页 `{items, nextOffset}`，limit 1–100 |
-| POST | `/v1/tasks` | 创建 `{title, type?, goal?, acceptance, priority?, dueAt?, input?}` |
-| GET | `/v1/tasks/:id` | 任务详情：任务、子任务、协调者、事件、知识引用、`unrestricted` |
+| POST | `/v1/tasks` | 创建 `{title, type?, goal?, acceptance, priority?, dueAt?, input?, ownership?, teamId?, materials?}` |
+| GET | `/v1/tasks/:id` | 任务详情：任务、子任务、协调者、事件、知识引用、材料目录、`unrestricted` |
 | GET | `/v1/tasks/:id/context` | 智能体视角的恢复上下文（见下） |
+| GET | `/v1/tasks/:id/materials` | 材料目录 `[{id, name, mime, size, uploadedBy, createdAt}]` |
+| GET | `/v1/tasks/:id/materials/:materialId` | 材料正文，多一个 `data`（base64） |
 | POST | `/v1/tasks/:id/coordinators` | 委派协调者 `{principal}` |
 | POST | `/v1/tasks/:id/remove-coordinator` | 撤销委派 `{principal}` |
 | POST | `/v1/tasks/:id/assign` | 分派子任务 `{agent, kind, dependsOn?, dueAt?}` |
@@ -343,7 +356,7 @@ accepted ──outcome-unknown──> outcome_unknown
 | POST | `/v1/tasks/:id/summary` | 提交汇总 `{text}`；要求所有子任务已 `submitted` |
 | POST | `/v1/tasks/:id/review` | 验收 `{decision: "accept"｜"return", note}` |
 | POST | `/v1/tasks/:id/cancel` | 取消 `{note}` |
-| POST | `/v1/tasks/:id/knowledge` | 从已验收任务沉淀候选 `{content, conditions}` |
+| POST | `/v1/tasks/:id/knowledge` | 沉淀候选 `{content, conditions}`；负责人要求任务已验收，受派智能体要求结果已提交 |
 | POST | `/v1/tasks/:id/references` | 引用有效经验 `{knowledgeId}`（固定到当前版本） |
 | GET | `/v1/tasks/:id/evidence/:knowledgeId/:version` | 该任务引用过的历史版本及其当前状态 |
 
@@ -377,8 +390,16 @@ accepted ──outcome-unknown──> outcome_unknown
 | POST | `/v1/knowledge/:id/revise` | 修订 → 新版本候选 `{content, conditions, reason}` |
 | POST | `/v1/knowledge/:id/access` | 调整范围 `{audience}` |
 | POST | `/v1/knowledge/:id/revoke` | 撤销 `{reason}` |
+| GET | `/v1/knowledge/:id/shares` | 来源空间可读：当前分享目标团队 |
+| POST | `/v1/knowledge/:id/shares` | 整体替换分享集合 `{teamIds}`；只有个人经验可分享 |
 
 `audience` 是 `"workspace"` 或主体 ID 数组。范围变更立即影响后续读取与引用，**无法收回已经被读走或复制的内容**。
+
+分享只适用于**个人空间发布**的经验：目标团队能列表、检索、读当前证据和引用，但发布 / 修订 / 撤销 / 版本 / 分享设置仍只属于来源空间，目标团队管理员拿到 404。团队经验调用分享接口返回 403。
+
+### 任务材料
+
+`materials` 是数组，每项 `{name, mime, data}`，`data` 为 base64。限制：最多 5 个、单个 1 MiB、合计 2 MiB；名字最长 200 字符。材料正文存库，可见性跟随任务（能读任务的人就能读材料）。请求体上限默认 4 MiB，留出 base64 与 JSON 开销。
 
 ### 运维
 

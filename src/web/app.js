@@ -115,8 +115,8 @@ const NAV = [
   { id: 'tasks', label: '任务', show: () => true },
   { id: 'pool', label: '开放池', show: () => hasRole('agent') },
   { id: 'mentions', label: '提醒', show: () => true },
-  // 经验库只对同组智能体与团队管理员开放，不是每个人的资料库。
-  { id: 'knowledge', label: '经验库', show: () => isAgentSide() || canManageTenant() },
+  // 经验库对所有人开放：普通成员要能看到团队经验，也才能看到分享进来的个人经验。
+  { id: 'knowledge', label: '经验库', show: () => isAgentSide() || !isGuest() },
   { id: 'agents', label: '我的智能体', show: () => !isAgentOnly() },
   { id: 'directory', label: '团队', show: () => !isAgentOnly() },
   { id: 'oversight', label: '监管', show: () => canSupervise() },
@@ -129,7 +129,7 @@ const TITLES = {
   tasks: ['任务', '目标、分工、验收与证据'],
   pool: ['开放池', '能力匹配就可以认领，认领即加入'],
   mentions: ['提醒', '有人在评论里提到了你'],
-  knowledge: ['经验库', '同组智能体共享的经验'],
+  knowledge: ['经验库', '个人经验可分享给团队；团队经验只在团队内'],
   agents: ['我的智能体', '你请进来的智能体，和它们正在做的事'],
   directory: ['团队', '你和谁一起工作'],
   oversight: ['监管', '哪里不对：卡住、失联、积压与被反复拒绝'],
@@ -245,6 +245,9 @@ const canSupervise = () => hasRole('supervisor', 'admin');
 /** 纯智能体账号：没有人的职责，所以不给它全局看板。 */
 const isAgentOnly = () => Boolean(state.me && state.me.kind === 'agent' && !hasRole('owner', 'admin', 'supervisor', 'reviewer'));
 const isAgentSide = () => Boolean(state.me && (state.me.kind === 'agent' || state.me.kind === 'service'));
+const isGuest = () => Boolean(state.me && state.me.tenantRole === 'guest' && !isAgentSide());
+/** 个人空间沿用租户存储名，界面上只显示「个人空间」。 */
+const tenantLabel = (tenant) => (tenant ? (tenant.personal ? '个人空间' : tenant.name) : '组织');
 
 function toast(message, tone = 'info') {
   const node = document.getElementById('toast');
@@ -334,6 +337,9 @@ function openDialog({ title, description, fields = [], submitLabel = '确认', o
     if (field.type === 'textarea') {
       input = el('textarea', { id, placeholder: field.placeholder ?? '' });
       input.value = field.value ?? '';
+    } else if (field.type === 'files') {
+      input = el('input', { id, type: 'file', multiple: true });
+      if (field.accept) input.accept = field.accept;
     } else if (field.type === 'select') {
       input = el('select', { id });
       for (const option of field.options) {
@@ -367,6 +373,8 @@ function openDialog({ title, description, fields = [], submitLabel = '确认', o
         values[field.name] = field.options
           .map((option) => option.value)
           .filter((value) => inputs.get(`${field.name}:${value}`)?.checked);
+      } else if (field.type === 'files') {
+        values[field.name] = Array.from(inputs.get(field.name).files ?? []);
       } else {
         values[field.name] = inputs.get(field.name).value;
       }
@@ -466,12 +474,26 @@ async function signInWithToken(token, method = 'token') {
 /** 邮箱链接与钱包登录最终都走这里：拿到的是同一种令牌。 */
 async function signInWithSession(payload, method) {
   await signInWithToken(payload.token, method);
-  toast(`已进入「${state.tenant?.name ?? '组织'}」`, 'info');
+  toast(`已进入「${tenantLabel(state.tenant)}」`, 'info');
 }
 
 async function loadTenants() {
   state.tenants = await api('me/tenants').catch(() => []);
   state.tenant = state.tenants.find((item) => item.id === state.me.workspace) ?? null;
+}
+
+function applySession(result) {
+  state.token = result.token;
+  sessionStorage.setItem('collab.token', result.token);
+}
+
+async function switchTenant(tenantId) {
+  const result = await api('me/switch', { body: { tenantId } });
+  applySession(result);
+  state.me = await api('me');
+  await loadTenants();
+  renderIdentity();
+  renderNav();
 }
 
 async function signInWithWallet(bindCode) {
@@ -520,7 +542,7 @@ function chooseTenant(payload) {
         value: payload.tenants[0]?.id,
         options: payload.tenants.map((tenant) => ({
           value: tenant.id,
-          label: `${tenant.name}（${TENANT_ROLE_LABEL[tenant.role] ?? tenant.role}）`,
+          label: `${tenantLabel(tenant)}（${TENANT_ROLE_LABEL[tenant.role] ?? tenant.role}）`,
         })),
       },
     ],
@@ -624,7 +646,7 @@ function renderIdentity() {
 function renderTenantSwitch() {
   const box = document.getElementById('tenant');
   if (!box) return;
-  const name = state.tenant?.name ?? state.me.workspace;
+  const name = tenantLabel(state.tenant ?? { name: state.me.workspace });
   const role = TENANT_ROLE_LABEL[state.tenant?.role ?? state.me.tenantRole] ?? '成员';
   if (state.tenants.length <= 1) {
     box.replaceChildren(
@@ -636,23 +658,14 @@ function renderTenantSwitch() {
   }
   const select = el('select', { class: 'tenant-select', 'aria-label': '切换组织' });
   for (const tenant of state.tenants) {
-    const option = el('option', { value: tenant.id }, tenant.name);
+    const option = el('option', { value: tenant.id }, tenantLabel(tenant));
     if (tenant.id === state.me.workspace) option.selected = true;
     select.append(option);
   }
-  select.addEventListener('change', async () => {
-    const response = await act(async () => {
-      const result = await api('me/switch', { body: { tenantId: select.value } });
-      state.token = result.token;
-      sessionStorage.setItem('collab.token', result.token);
-      state.me = await api('me');
-      await loadTenants();
-      renderIdentity();
-      renderNav();
-    }, '已切换组织');
-    void response;
+  select.addEventListener('change', () => {
+    act(() => switchTenant(select.value), '已切换空间');
   });
-  box.replaceChildren(el('span', { class: 'tenant-label' }, '组织'), select);
+  box.replaceChildren(el('span', { class: 'tenant-label' }, '空间'), select);
 }
 
 function renderNav() {
@@ -1076,19 +1089,63 @@ function renderTaskList() {
   return frag(toolbar, list);
 }
 
+const MAX_MATERIALS = 5;
+const MAX_MATERIAL_BYTES = 1024 * 1024;
+const MAX_TOTAL_MATERIAL_BYTES = 2 * 1024 * 1024;
+
+function bytesToBase64(bytes) {
+  let binary = '';
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
+/** 把选择的文件读成接口要求的材料结构；先在本地挡掉超限上传。 */
+async function filesToMaterials(files) {
+  const list = Array.from(files ?? []);
+  if (list.length > MAX_MATERIALS) throw new Error(`最多上传 ${MAX_MATERIALS} 个文件`);
+  let total = 0;
+  const materials = [];
+  for (const file of list) {
+    if (file.size > MAX_MATERIAL_BYTES) throw new Error(`${file.name} 超过 1 MB`);
+    total += file.size;
+    if (total > MAX_TOTAL_MATERIAL_BYTES) throw new Error('材料总大小超过 2 MB');
+    materials.push({
+      name: file.name || '未命名材料',
+      mime: file.type || 'application/octet-stream',
+      data: bytesToBase64(new Uint8Array(await file.arrayBuffer())),
+    });
+  }
+  return materials;
+}
+
 function openCreateTask() {
   const due = new Date(Date.now() + 7 * 86_400_000);
+  const canChooseOwner = Boolean(state.me?.accountId) && !isAgentSide();
+  const ownerOptions = canChooseOwner
+    ? [
+        { value: 'personal', label: '个人空间（只属于你）' },
+        ...state.tenants
+          .filter((tenant) => !tenant.personal && ['owner', 'admin'].includes(tenant.role))
+          .map((tenant) => ({
+            value: tenant.id,
+            label: `${tenant.name}（${TENANT_ROLE_LABEL[tenant.role] ?? tenant.role}）`,
+          })),
+      ]
+    : [];
   openDialog({
     title: hasRole('owner', 'admin') ? '新建任务' : '发起任务提案',
     description: hasRole('owner', 'admin')
-      ? '验收条件必须可核对；它决定任务能否被接受。'
+      ? '验收条件必须可核对；它决定任务能否被接受。个人任务只在你的个人空间，团队看不到，之后可以把经验分享给团队。'
       : '智能体发起的任务先记为提案，负责人接管后才进入正式流程。',
     submitLabel: '创建',
     fields: [
-      { name: 'title', label: '标题', required: true, placeholder: '例如 M-100 缺料分析' },
-      { name: 'type', label: '任务类型', value: 'shortage-analysis', placeholder: '通用字符串标识' },
-      { name: 'goal', label: '目标', type: 'textarea', placeholder: '要判断或达成什么' },
-      { name: 'acceptance', label: '验收条件', type: 'textarea', required: true, placeholder: '例如：数据需带来源与观测时间' },
+      { name: 'title', label: '标题', required: true, placeholder: '例如 仓库现场巡检与问题上报' },
+      { name: 'type', label: '任务类型', value: 'general', placeholder: '通用字符串标识' },
+      { name: 'goal', label: '要做什么', type: 'textarea', placeholder: '把材料和目标交给智能体：它可以检查、核对或处理什么' },
+      { name: 'acceptance', label: '验收条件', type: 'textarea', required: true, placeholder: '例如：逐项报告现状，遇到问题写明原因与处理结果' },
       { name: 'dueAt', label: '截止时间', type: 'datetime-local', value: toLocalInput(due), required: true },
       {
         name: 'priority',
@@ -1102,26 +1159,45 @@ function openCreateTask() {
           { value: 'urgent', label: '紧急' },
         ],
       },
-      { name: 'material', label: '输入：物料编号', placeholder: 'M-100' },
-      { name: 'quantity', label: '输入：数量', type: 'number', placeholder: '100' },
+      ...(canChooseOwner
+        ? [{ name: 'ownership', label: '执行归属', type: 'select', value: 'personal', options: ownerOptions }]
+        : []),
+      { name: 'files', label: '材料（可选，最多 5 个，单个不超过 1 MB）', type: 'files' },
     ],
     onSubmit: (values) =>
       act(async () => {
-        const input = {};
-        if (values.material) input.material = values.material;
-        if (values.quantity) input.quantity = Number(values.quantity);
-        await api('tasks', {
-          body: {
-            title: values.title,
-            type: values.type || 'general',
-            goal: values.goal || values.title,
-            acceptance: values.acceptance,
-            priority: values.priority,
-            dueAt: new Date(values.dueAt).toISOString(),
-            input,
-          },
-        });
-      }, '任务已创建'),
+        const materials = await filesToMaterials(values.files);
+        const body = {
+          title: values.title,
+          type: values.type || 'general',
+          goal: values.goal || values.title,
+          acceptance: values.acceptance,
+          priority: values.priority,
+          dueAt: new Date(values.dueAt).toISOString(),
+          input: {},
+          ...(materials.length ? { materials } : {}),
+        };
+        if (canChooseOwner) {
+          if (values.ownership === 'personal') body.ownership = 'personal';
+          else if (values.ownership) {
+            body.ownership = 'team';
+            body.teamId = values.ownership;
+          }
+        }
+        const result = await api('tasks', { body });
+        let notice = '任务已创建';
+        if (result.workspace && result.workspace !== state.me.workspace) {
+          try {
+            await switchTenant(result.workspace);
+          } catch (error) {
+            notice = `任务已创建，但未能切换空间：${error.message}`;
+          }
+        }
+        state.view = 'tasks';
+        state.taskId = result.id;
+        renderNav();
+        toast(notice, notice === '任务已创建' ? 'info' : 'error');
+      }, ''),
   });
 }
 
@@ -1167,9 +1243,13 @@ function renderTaskDetail() {
     el('dd', {}, task.acceptance),
     el('dt', {}, '版本'),
     el('dd', {}, `v${task.version}`),
-    el('dt', {}, '输入'),
-    el('dd', {}, el('pre', { class: 'code' }, JSON.stringify(task.input))),
   );
+  if (task.input && Object.keys(task.input).length) {
+    meta.append(
+      el('dt', {}, '输入'),
+      el('dd', {}, el('pre', { class: 'code' }, JSON.stringify(task.input))),
+    );
+  }
 
   const actions = renderTaskActions(detail, owner);
 
@@ -1191,6 +1271,7 @@ function renderTaskDetail() {
       : null,
     actions ? el('div', { class: 'toolbar' }, actions) : null,
     el('div', { class: 'card' }, meta),
+    renderMaterials(detail),
     task.result ? el('div', { class: 'card' },
       el('div', { class: 'card-head' }, el('h3', {}, '汇总')),
       el('div', { class: 'result-box' }, task.result.text ?? JSON.stringify(task.result, null, 2))) : null,
@@ -1213,6 +1294,55 @@ function renderTaskDetail() {
       : null,
     renderTimeline(detail.events, detail.subtasks),
   );
+}
+
+function renderMaterials(detail) {
+  const materials = detail.materials ?? [];
+  if (!materials.length) return null;
+  return el(
+    'div',
+    { class: 'card' },
+    el('div', { class: 'card-head' },
+      el('h3', {}, '材料'),
+      el('span', { class: 'muted' }, `${materials.length} 个`)),
+    el('div', { class: 'list' }, materials.map((item) =>
+      el('div', { class: 'list-item static' },
+        el('div', { class: 'row spread top' },
+          el('span', {}, item.name),
+          el('button', {
+            class: 'link',
+            type: 'button',
+            onclick: () => downloadMaterial(detail.task.id, item),
+          }, '下载')),
+        el('div', { class: 'meta' },
+          el('span', {}, formatBytes(item.size)),
+          el('span', { class: 'mono muted', title: `材料编号 ${item.id}` }, item.id.slice(0, 8)))))),
+  );
+}
+
+function formatBytes(size) {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+
+async function downloadMaterial(taskId, item) {
+  try {
+    const content = await api(
+      `tasks/${encodeURIComponent(taskId)}/materials/${encodeURIComponent(item.id)}`,
+    );
+    const binary = atob(content.data);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+    const url = URL.createObjectURL(new Blob([bytes], { type: content.mime }));
+    const link = el('a', { href: url, download: content.name });
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  } catch (error) {
+    toast(error.message, 'error');
+  }
 }
 
 function renderTaskActions(detail, owner) {
@@ -1246,6 +1376,12 @@ function renderTaskActions(detail, owner) {
   }
   if (owner && task.status === 'completed') {
     buttons.push(el('button', { type: 'button', class: 'accent', onclick: () => openCandidate(task) }, '沉淀经验'));
+  }
+  const agentSubmitted = detail.subtasks.some(
+    (item) => item.agentId === state.me.id && ['submitted', 'verified'].includes(item.status),
+  );
+  if (!owner && agentSubmitted && task.status !== 'cancelled') {
+    buttons.push(el('button', { type: 'button', class: 'accent', onclick: () => openCandidate(task) }, '总结成经验'));
   }
   if (owner && !['completed', 'cancelled'].includes(task.status)) {
     buttons.push(el('button', { type: 'button', class: 'ghost', onclick: () => openCancel(task) }, '取消任务'));
@@ -1368,6 +1504,7 @@ const EVENT_TEXT = {
   knowledge_revised: '修订经验',
   knowledge_access_changed: '调整共享范围',
   knowledge_referenced: '引用经验',
+  knowledge_shared: '分享经验',
   comment_added: '发表评论',
   offer_published: '挂出开放子任务',
   offer_claimed: '认领开放子任务',
@@ -1402,6 +1539,8 @@ function eventDetail(type, payload, kinds) {
     case 'knowledge_revoked':
     case 'knowledge_revised':
       return typeof payload.version === 'number' ? `v${payload.version}` : null;
+    case 'knowledge_shared':
+      return Array.isArray(payload.teamIds) ? `${payload.teamIds.length} 个团队` : null;
     case 'offer_published':
       return text(payload.kind);
     case 'offer_claimed':
@@ -1585,7 +1724,7 @@ function openCancel(task) {
 function openCandidate(task) {
   openDialog({
     title: '沉淀候选经验',
-    description: '候选经验需要审核人批准、写明适用范围与有效期后才能被引用。',
+    description: '遇到并解决的问题可以总结成经验。候选经验需要审核人批准、写明适用范围与有效期后才能被引用。',
     submitLabel: '生成候选',
     fields: [
       { name: 'content', label: '经验内容', type: 'textarea', required: true },
@@ -1595,7 +1734,7 @@ function openCandidate(task) {
       act(async () => {
         await api(`tasks/${task.id}/knowledge`, { body: values, expectedVersion: task.version });
         state.view = 'knowledge';
-        state.tab = 'candidates';
+        state.tab = hasRole('reviewer', 'admin') ? 'candidates' : 'published';
         renderNav();
       }, '已生成候选经验'),
   });
@@ -1644,7 +1783,9 @@ function renderKnowledge() {
   };
   const search = el('div', { class: 'search' }, input, el('button', { type: 'button', onclick: runSearch }, '检索'));
 
-  const body = state.tab === 'candidates' ? renderCandidates() : renderPublished();
+  const body = state.tab === 'candidates' && hasRole('reviewer', 'admin')
+    ? renderCandidates()
+    : renderPublished();
   return frag(tabs, state.tab === 'published' ? search : null, body);
 }
 
@@ -1660,25 +1801,46 @@ function tabButton(id, label) {
 }
 
 function renderPublished() {
-  if (!state.knowledge.length) return el('div', { class: 'empty' }, '团队还没有发布经验。');
-  return el('div', { class: 'list' }, state.knowledge.map((item) =>
-    el('div', { class: 'list-item static' },
+  if (!state.knowledge.length) {
+    return el(
+      'div',
+      { class: 'empty' },
+      state.tenant?.personal
+        ? '个人空间还没有发布经验。完成任务后可以沉淀，再分享给团队。'
+        : '团队还没有发布经验。',
+    );
+  }
+  return el('div', { class: 'list' }, state.knowledge.map((item) => {
+    const sharedIn = item.workspace !== state.me.workspace;
+    const source = item.sourcePersonal
+      ? `${item.authorName ?? '成员'} 的个人经验`
+      : `${item.sourceName ?? '其他团队'} 的经验`;
+    const manageable = !sharedIn && hasRole('reviewer', 'admin');
+    const personal = Boolean(state.tenant?.personal) && !sharedIn;
+    return el('div', { class: 'list-item static' },
       el('div', { class: 'row spread top' },
         el('p', { class: 'statement' }, item.content),
         badge('published')),
       el('div', { class: 'meta' },
         el('span', {}, `v${item.version}`),
+        sharedIn ? el('span', {}, `来自 ${source}`) : null,
         el('span', {}, `适用：${item.conditions}`),
         el('span', {}, `有效期至 ${formatDate(item.expiresAt)}`),
+        personal && item.sharedTeams?.length
+          ? el('span', {}, `已分享给 ${item.sharedTeams.length} 个团队`)
+          : null,
         el('span', { class: 'mono muted', title: `经验编号 ${item.id}` }, item.id.slice(0, 8))),
-      hasRole('reviewer', 'admin')
+      manageable
         ? el('div', { class: 'row actions-row' },
           el('button', { class: 'link', type: 'button', onclick: () => openRevise(item) }, '修订'),
-          el('button', { class: 'link', type: 'button', onclick: () => openAccess(item) }, '调整范围'),
+          personal
+            ? el('button', { class: 'link', type: 'button', onclick: () => openShareKnowledge(item) }, '分享给团队')
+            : el('button', { class: 'link', type: 'button', onclick: () => openAccess(item) }, '调整范围'),
           el('button', { class: 'link', type: 'button', onclick: () => openVersions(item) }, '版本历史'),
           el('button', { class: 'link danger', type: 'button', onclick: () => openRevoke(item) }, '撤销'))
         : null,
-    )));
+    );
+  }));
 }
 
 function renderCandidates() {
@@ -1690,6 +1852,7 @@ function renderCandidates() {
         badge('candidate')),
       el('div', { class: 'meta' },
         el('span', {}, `v${item.version}`),
+        el('span', {}, `来自 ${item.authorName || item.authorId}`),
         el('span', {}, `适用：${item.conditions}`),
         el('span', { class: 'mono muted', title: `经验编号 ${item.id}` }, item.id.slice(0, 8))),
       el('div', { class: 'row actions-row' },
@@ -1701,7 +1864,9 @@ function openPublish(item) {
   const expires = new Date(Date.now() + 365 * 86_400_000).toISOString().slice(0, 10);
   openDialog({
     title: '发布经验',
-    description: '发布后，本团队的智能体能读到这条经验。',
+    description: state.tenant?.personal
+      ? '发布后先在个人空间生效，可再分享给团队。'
+      : '发布后，本团队的智能体能读到这条经验。',
     submitLabel: '发布',
     fields: [
       { name: 'expiresAt', label: '有效期至', type: 'date', value: expires, required: true },
@@ -1771,6 +1936,47 @@ function openAccess(item) {
         expectedVersion: item.version,
       }), '已更新范围'),
   });
+}
+
+function openShareKnowledge(item) {
+  act(async () => {
+    let shares = [];
+    try {
+      const result = await api(`knowledge/${item.id}/shares`);
+      shares = result.teams ?? [];
+    } catch {
+      shares = item.sharedTeams ?? [];
+    }
+    const options = state.tenants
+      .filter((tenant) => !tenant.personal && ['owner', 'admin', 'member'].includes(tenant.role))
+      .map((tenant) => ({
+        value: tenant.id,
+        label: `${tenant.name}（${TENANT_ROLE_LABEL[tenant.role] ?? tenant.role}）`,
+      }));
+    for (const team of shares) {
+      if (!options.some((option) => option.value === team.id)) {
+        options.push({ value: team.id, label: `${team.name}（已停用或已退出）` });
+      }
+    }
+    if (!options.length) {
+      toast('先创建或加入一个团队，再分享经验', 'error');
+      return;
+    }
+    openDialog({
+      title: '分享经验给团队',
+      description: '目标团队的成员能看到这条经验；团队经验不能反向带出。取消勾选即可撤回。',
+      fields: [{
+        name: 'teamIds',
+        label: '目标团队',
+        type: 'checkbox-group',
+        value: shares.map((team) => team.id),
+        options,
+      }],
+      submitLabel: '保存',
+      onSubmit: (values) =>
+        act(() => api(`knowledge/${item.id}/shares`, { body: { teamIds: values.teamIds } }), '分享已更新'),
+    });
+  }, '');
 }
 
 function openVersions(item) {
@@ -1880,16 +2086,39 @@ function renderDirectory() {
             }, '批准')))))
     : null;
 
+  const spaces = el('div', { class: 'card' },
+    el('div', { class: 'card-head' },
+      el('h3', {}, '我加入的团队与空间'),
+      toneBadge('muted', `${state.tenants.length} 个`)),
+    state.tenants.length
+      ? el('div', { class: 'list' }, state.tenants.map((space) =>
+          el('div', { class: 'list-row' },
+            el('div', {},
+              el('strong', {}, tenantLabel(space)),
+              el('div', { class: 'muted small' },
+                `${TENANT_ROLE_LABEL[space.role] ?? space.role}` +
+                (space.status === 'suspended' ? ' · 已停用' : '') +
+                (space.id === state.me.workspace ? ' · 当前' : ''))),
+            space.id === state.me.workspace
+              ? null
+              : el('button', {
+                  type: 'button',
+                  class: 'ghost small',
+                  onclick: () => act(() => switchTenant(space.id), `已切换到「${tenantLabel(space)}」`),
+                }, '进入'))))
+      : el('div', { class: 'empty' }, '还没有加入任何团队。'));
+
   return frag(
+    spaces,
     el('div', { class: 'card' },
       el('div', { class: 'card-head' },
-        el('h3', {}, tenant?.name ?? state.tenant?.name ?? state.me.workspace),
+        el('h3', {}, tenantLabel(tenant ?? state.tenant)),
         toneBadge(
           tenant?.role === 'owner' ? 'active' : tenant?.role === 'admin' ? 'ok' : 'muted',
           TENANT_ROLE_LABEL[tenant?.role ?? state.me.tenantRole] ?? '成员')),
       el('p', { class: 'hint tight' },
         tenant?.personal
-          ? '这是自动创建的个人团队。起个名字，再邀请同事进来。'
+          ? '这是你的个人空间，只属于你。个人任务的经验可以分享给团队。'
           : summary),
       el('div', { class: 'row', style: 'flex-wrap:wrap' },
         canManage ? el('button', { class: 'primary', type: 'button', onclick: inviteMember }, '邀请成员') : null,
@@ -1921,8 +2150,7 @@ function createTeam() {
     onSubmit: (values) =>
       act(async () => {
         const result = await api('tenants', { body: values });
-        state.token = result.token;
-        sessionStorage.setItem('collab.token', result.token);
+        applySession(result);
         state.me = await api('me');
         await loadTenants();
         renderIdentity();

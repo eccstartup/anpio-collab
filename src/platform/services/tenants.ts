@@ -64,11 +64,12 @@ export class TenantService {
     });
   }
 
-  async listFor(accountId: string | null): Promise<Tenant[]> {
+  async listFor(accountId: string | null, kind: PrincipalKind = 'human'): Promise<Tenant[]> {
     if (!accountId) return [];
     // LEFT JOIN：workspace 早于租户表存在，老数据里主体有 workspace 却没有 tenants 行。
     // 用 INNER JOIN 的话，这类账号会"看不到自己所在的组织"，登录后被当成第一次来，
     // 于是又建一个新组织——同一个人的两条登录方式会落到两个组织里。
+    // 按 kind 过滤：账号绑定的智能体所在的团队，不算这个人自己的团队。
     const rows = await this.ctx.db.read.all(
       `SELECT p.workspace AS id,
               COALESCE(t.name, p.workspace) AS name,
@@ -77,9 +78,9 @@ export class TenantService {
               COALESCE(t.created_at, p.created_at) AS created_at,
               p.tenant_role AS role
        FROM principals p LEFT JOIN tenants t ON t.id = p.workspace
-       WHERE p.account_id = :account AND p.active = 1
+       WHERE p.account_id = :account AND p.active = 1 AND p.kind = :kind
        ORDER BY COALESCE(t.created_at, p.created_at)`,
-      { account: accountId },
+      { account: accountId, kind },
     );
     return rows.map(row => ({
       id: String(row.id),
@@ -177,6 +178,83 @@ export class TenantService {
     };
   }
 
+  /** 个人空间：每个真人账号最多一个，没有就按需建。 */
+  async ensurePersonal(account: Account): Promise<Principal> {
+    const find = () =>
+      this.ctx.db.read.one(
+        `SELECT p.* FROM principals p JOIN tenants t ON t.id = p.workspace
+         WHERE p.account_id = :account AND p.kind = 'human' AND t.personal = 1
+         ORDER BY p.created_at LIMIT 1`,
+        { account: account.id },
+      );
+    const existing = await find();
+    if (existing) {
+      const principal = toPrincipal(existing);
+      if (!principal.active) throw forbidden('你的个人空间已被停用');
+      return principal;
+    }
+    try {
+      return await this.createTenant(account, `${account.displayName} 的组织`, true);
+    } catch (error) {
+      // 并发创建时唯一索引会让其中一个失败；如果另一个已经落库，直接复用它。
+      const winner = await find();
+      if (winner) {
+        const principal = toPrincipal(winner);
+        if (!principal.active) throw forbidden('你的个人空间已被停用');
+        return principal;
+      }
+      throw error;
+    }
+  }
+
+  /** 账号在某个团队里的 active human 主体；租户必须是正常团队而不是个人空间。 */
+  async humanPrincipalFor(account: Account, tenantId: string): Promise<Principal | null> {
+    const row = await this.ctx.db.read.one(
+      `SELECT p.* FROM principals p JOIN tenants t ON t.id = p.workspace
+       WHERE p.workspace = :tenant AND p.account_id = :account AND p.kind = 'human'
+         AND p.active = 1 AND t.status = 'active' AND t.personal = 0
+       LIMIT 1`,
+      { tenant: tenantId, account: account.id },
+    );
+    return row ? toPrincipal(row) : null;
+  }
+
+  /**
+   * 解析任务归属，只做校验，不写库。
+   * 不传归属时返回空对象，沿用旧的「落在当前 workspace」语义。
+   */
+  async resolveTaskOwner(
+    actor: Principal,
+    body: unknown,
+  ): Promise<{ target?: Principal; personal?: boolean }> {
+    const input = asObject(body);
+    const ownership = input.ownership;
+    const teamIdInput = input.teamId;
+    if (ownership === undefined && teamIdInput === undefined) return {};
+
+    if (actor.kind !== 'human' || !actor.accountId) {
+      throw forbidden('只有绑定账号的人可以指定任务归属');
+    }
+    const account = await this.accounts.findById(actor.accountId);
+    if (!account) throw forbidden('账号不存在');
+
+    if (ownership !== undefined) asEnum(ownership, 'ownership', ['personal', 'team'] as const);
+    if (ownership === 'personal') {
+      if (teamIdInput !== undefined) throw invalid('个人任务不能指定 teamId');
+      return { personal: true };
+    }
+    if (teamIdInput === undefined) throw invalid('团队任务必须提供 teamId');
+
+    const tenantId = asString(teamIdInput, 'teamId', {
+      max: 128,
+      pattern: /^[A-Za-z0-9][A-Za-z0-9._:-]*$/,
+    });
+    const target = await this.humanPrincipalFor(account, tenantId);
+    if (!target) throw forbidden('你不是这个团队的成员，或该团队不可用');
+    if (target.tenantRole === 'guest') throw forbidden('访客不能创建团队任务');
+    return { target };
+  }
+
   /** 账号在租户里的主体：有就返回，没有就按角色新建。 */
   async principalFor(
     account: Account,
@@ -184,9 +262,10 @@ export class TenantService {
     options: { role?: TenantRole; kind?: PrincipalKind; displayName?: string } = {},
   ): Promise<Principal> {
     await this.ensureTenant(tenantId);
+    const kind = options.kind ?? 'human';
     const existing = await this.ctx.db.read.one(
-      'SELECT * FROM principals WHERE workspace = :tenant AND account_id = :account LIMIT 1',
-      { tenant: tenantId, account: account.id },
+      'SELECT * FROM principals WHERE workspace = :tenant AND account_id = :account AND kind = :kind LIMIT 1',
+      { tenant: tenantId, account: account.id, kind },
     );
     if (existing) {
       const principal = toPrincipal(existing);
@@ -194,7 +273,6 @@ export class TenantService {
       throw forbidden('你在这个组织的成员资格已被停用');
     }
     const role = options.role ?? 'member';
-    const kind = options.kind ?? 'human';
     const id = `p_${randomUUID().replace(/-/g, '').slice(0, 16)}`;
     // 人的资料跟着账号走；智能体是独立身份，不继承主人的头像与头衔。
     const profile =

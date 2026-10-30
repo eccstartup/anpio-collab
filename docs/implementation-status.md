@@ -2,9 +2,23 @@
 
 对照 [plan.md](../plan.md)、[第二轮计划](plan-v2.md)、[第三轮计划](plan-v3.md) 与 [第四轮计划](plan-v4.md)，说明本仓库现在做到了什么、哪些只是本机验证、哪些还没开始。
 
-> 结论先行：**阶段 1（本地协作闭环）、阶段 3（知识闭环）已实现；第二轮的身份、协作、监管三块已实现；第三轮的租户、两种登录与 Agent 授权已实现；第四轮补上"登录后补绑 DID"；第五轮把 DID 准入改成"必须已注册"，并补上反向绑邮箱；本轮加个人资料（姓名、头像、头衔、简介）。阶段 4/5 未开始。** 通过本机测试不等于企业环境验收。
+> 结论先行：**阶段 1（本地协作闭环）、阶段 3（知识闭环）已实现；第二轮的身份、协作、监管三块已实现；第三轮的租户、两种登录与 Agent 授权已实现；第四轮补上"登录后补绑 DID"；第五轮把 DID 准入改成"必须已注册"，并补上反向绑邮箱；上一轮加个人资料；本轮把任务改成"交材料让智能体去做"，并允许受派智能体自提交候选经验。阶段 4/5 未开始。** 通过本机测试不等于企业环境验收。
 
-## 个人资料（本轮）
+## 任务材料与智能体经验自提交（本轮）
+
+| 能力 | 实现位置 | 验证方式 |
+| --- | --- | --- |
+| 建任务时随请求提交最多 5 个文件（单个 1 MiB、合计 2 MiB），base64 存库 | `services/materials.ts#parseMaterialUploads/insertMaterials`、`schema.ts#task_materials` | `tests/materials.test.ts` |
+| 材料目录与正文接口，可见性跟随任务 | `tasks.ts#materials/material`、`routes.ts` | 同上（受派智能体能读、无关账号 404） |
+| 非法 base64 / MIME / 超量整单 400 | `materials.ts#parseMaterialUploads` | 同上 |
+| 受派智能体提交结果后可自提交候选经验，仍需人审核发布 | `knowledge.ts#createCandidate`、`routes.ts` | 同上（提交前 403、提交后成功、候选带 `authorName`） |
+| 任务详情展示材料并可下载；创建对话框改为通用表单 + 文件选择 | `src/web/app.js` | `tests/web.test.ts` + 手工 |
+| 执行归属只列个人空间与自己拥有/管理的团队 | `src/web/app.js#openCreateTask` | `tests/web.test.ts`（成员团队不出现） |
+| 请求体默认上限提到 4 MiB | `src/platform/config.ts` | 配置表 |
+
+测试合计 109 项（本轮新增 2 项材料用例、1 项智能体自提交用例、1 项归属下拉用例）。SQLite 与 PostgreSQL 跑同一套用例。
+
+## 个人资料
 
 | 能力 | 实现位置 | 验证方式 |
 | --- | --- | --- |

@@ -249,8 +249,8 @@ export class EmailAuthService {
 
     const memberships = await this.tenants.listFor(account.id);
     if (memberships.length === 0) {
-      // 第一次来：给一个个人组织，自己是所有者。先让人进来，再谈邀请。
-      const principal = await this.tenants.createTenant(account, `${account.displayName} 的组织`, true);
+      // 第一次来：给一个个人空间，自己是所有者。先让人进来，再谈邀请。
+      const principal = await this.tenants.ensurePersonal(account);
       const tenant = await this.tenantBrief(principal.workspace, 'owner');
       const session = await this.identity.openSession(principal, null, 'browser');
       return { status: 'ok', token: session.token, expiresAt: session.expiresAt, principal, tenant };

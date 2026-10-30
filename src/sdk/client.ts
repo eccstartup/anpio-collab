@@ -14,6 +14,8 @@ import type {
   InboxItem,
   KnowledgeSearch,
   KnowledgeSummary,
+  MaterialContent,
+  MaterialMeta,
   NotificationView,
   PrincipalView,
   StatusChange,
@@ -31,6 +33,8 @@ export type {
   InboxItem,
   KnowledgeSearch,
   KnowledgeSummary,
+  MaterialContent,
+  MaterialMeta,
   NotificationView,
   PrincipalView,
   StatusChange,
@@ -253,7 +257,22 @@ export class CollabClient {
     return this.request<TaskContext>(`tasks/${encodeURIComponent(id)}/context`);
   }
 
-  createTask(input: Record<string, unknown>, operationId: string) {
+  /** 任务材料目录。 */
+  taskMaterials(taskId: string) {
+    return this.request<MaterialMeta[]>(`tasks/${encodeURIComponent(taskId)}/materials`);
+  }
+
+  /** 任务材料正文；data 是 base64，由调用方自行解码。 */
+  taskMaterial(taskId: string, materialId: string) {
+    return this.request<MaterialContent>(
+      `tasks/${encodeURIComponent(taskId)}/materials/${encodeURIComponent(materialId)}`,
+    );
+  }
+
+  createTask(
+    input: Record<string, unknown> & { ownership?: 'personal' | 'team'; teamId?: string },
+    operationId: string,
+  ) {
     return this.request<TaskRef>('tasks', { body: input, operationId });
   }
 
@@ -444,6 +463,19 @@ export class CollabClient {
     return this.request<{ id: string; audience: string | string[] }>(
       `knowledge/${encodeURIComponent(id)}/access`,
       { body: { audience }, operationId, expectedVersion },
+    );
+  }
+
+  knowledgeShares(id: string) {
+    return this.request<{ teams: { id: string; name: string }[] }>(
+      `knowledge/${encodeURIComponent(id)}/shares`,
+    );
+  }
+
+  shareKnowledge(id: string, teamIds: string[], operationId: string) {
+    return this.request<{ id: string; teamIds: string[] }>(
+      `knowledge/${encodeURIComponent(id)}/shares`,
+      { body: { teamIds }, operationId },
     );
   }
 

@@ -13,7 +13,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import { migrate } from '../src/platform/db/schema.ts';
-import { ADMIN_TOKEN, startHarness, type Harness } from './helpers/harness.ts';
+import { ADMIN_TOKEN, emailLogin, startHarness, type Harness } from './helpers/harness.ts';
 
 const post = (harness: Harness, path: string, body: unknown, token?: string) =>
   fetch(`${harness.url}${path}`, {
@@ -39,15 +39,6 @@ const ticketOf = (link: string): string => {
   return ticket;
 };
 
-async function emailLogin(harness: Harness, email: string) {
-  const started = await post(harness, '/auth/email/start', { email });
-  assert.equal(started.status, 202);
-  const payload = await json<{ devLink: string }>(started);
-  assert.ok(payload.devLink, '开发模式应返回登录链接');
-  const verified = await post(harness, '/auth/email/verify', { ticket: ticketOf(payload.devLink) });
-  assert.equal(verified.status, 200, await verified.clone().text());
-  return json<{ token: string; tenant: { id: string; role: string }; principal: { id: string } }>(verified);
-}
 
 test('邮箱首次登录：自动创建个人组织，本人是所有者', async () => {
   const harness = await startHarness({ workspace: 'acme' });

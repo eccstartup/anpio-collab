@@ -29,12 +29,28 @@ export type RankedKnowledge = {
   contentTruncated: boolean;
 };
 
-/** 判断主体能否读取某条知识。候选只有作者本人可见。 */
+/** 目标团队是否被分享过这条知识；目标租户必须是正常团队。 */
+async function hasShareTo(ctx: Context, workspace: string, knowledgeId: string): Promise<boolean> {
+  const row = await ctx.db.read.one(
+    `SELECT 1 AS present FROM knowledge_shares s
+     JOIN tenants t ON t.id = s.team_workspace
+     WHERE s.knowledge_id = :id AND s.team_workspace = :workspace
+       AND t.status = 'active' AND t.personal = 0`,
+    { id: knowledgeId, workspace },
+  );
+  return Boolean(row);
+}
+
+/** 判断主体能否读取某条知识。跨空间只看分享，同空间沿用范围/授权规则。 */
 export async function canViewKnowledge(
   ctx: Context,
   principal: Principal,
   item: Knowledge,
 ): Promise<boolean> {
+  // 管理员/审核人的放行只能用于自己所在的空间，不能成为跨租户后门。
+  if (item.workspace !== principal.workspace) {
+    return hasShareTo(ctx, principal.workspace, item.id);
+  }
   if (hasAnyRole(principal, 'admin', 'reviewer')) return true;
   if (item.state === 'candidate') return item.authorId === principal.id;
   if (item.accessMode === 'workspace') return true;
@@ -147,11 +163,32 @@ export class KnowledgeService {
     return row ? toKnowledge(row, String(row.access_mode) as 'workspace' | 'restricted') : null;
   }
 
-  /** 从已验收任务提取候选经验。 */
+  /** 按 id 读取并检查当前主体能否看见；跨团队时只认分享。 */
+  async loadReadable(actor: Principal, id: string): Promise<Knowledge | null> {
+    const row = await this.ctx.db.read.one('SELECT * FROM knowledge WHERE id = :id', { id });
+    if (!row) return null;
+    const item = toKnowledge(row, String(row.access_mode) as 'workspace' | 'restricted');
+    return (await canViewKnowledge(this.ctx, actor, item)) ? item : null;
+  }
+
+  /** 从任务提取候选经验：负责人要求已验收；受派智能体提交结果后即可沉淀。 */
   async createCandidate(actor: Principal, taskId: string, body: unknown): Promise<Knowledge> {
     const task = await readTask(this.ctx, actor, taskId);
-    assertOwner(actor, task);
-    if (task.status !== 'completed') throw conflict('只有已验收的任务可以沉淀经验');
+    const owner = task.ownerId === actor.id || hasAnyRole(actor, 'admin');
+    if (owner) {
+      if (task.status !== 'completed') throw conflict('只有已验收的任务可以沉淀经验');
+    } else {
+      if (actor.kind !== 'agent' && actor.kind !== 'service') {
+        throw forbidden('只有任务负责人或已提交结果的智能体可以沉淀经验');
+      }
+      if (task.status === 'cancelled') throw conflict('任务已取消，无法沉淀经验');
+      const submitted = await this.ctx.db.read.one(
+        `SELECT 1 AS present FROM subtasks
+         WHERE task_id = :taskId AND agent_id = :agent AND status IN ('submitted','verified') LIMIT 1`,
+        { taskId, agent: actor.id },
+      );
+      if (!submitted) throw forbidden('只有已提交结果的受派智能体可以沉淀经验');
+    }
     const input = asObject(body);
     const content = asString(input.content, 'content', { max: 8000 });
     const conditions = asString(input.conditions, 'conditions', { max: 4000 });
@@ -346,16 +383,130 @@ export class KnowledgeService {
     }
   }
 
-  /** 已发布、未过期、且对调用方可见的经验。 */
+  /** 来源空间看到的分享集合；已停用团队也会返回，便于撤回。 */
+  async shares(actor: Principal, id: string): Promise<{ teams: { id: string; name: string; status: string }[] }> {
+    const item = await this.requireItem(actor, id);
+    const rows = await this.ctx.db.read.all(
+      `SELECT t.id, t.name, t.status
+       FROM knowledge_shares s JOIN tenants t ON t.id = s.team_workspace
+       WHERE s.knowledge_id = :id
+       ORDER BY t.name`,
+      { id: item.id },
+    );
+    return {
+      teams: rows.map(row => ({
+        id: String(row.id),
+        name: String(row.name),
+        status: String(row.status),
+      })),
+    };
+  }
+
+  /** 个人经验分享给团队：整单替换，只有来源空间里本人能改。 */
+  async setShares(
+    actor: Principal,
+    id: string,
+    body: unknown,
+  ): Promise<{ id: string; teamIds: string[] }> {
+    const item = await this.requireItem(actor, id);
+    const accountId = actor.accountId;
+    if (actor.kind !== 'human' || !accountId) throw forbidden('只有人可以分享经验');
+
+    const source = await this.ctx.db.read.one(
+      `SELECT t.personal, t.status, p.account_id
+       FROM tenants t JOIN principals p ON p.id = :author AND p.workspace = t.id
+       WHERE t.id = :workspace`,
+      { author: item.authorId, workspace: item.workspace },
+    );
+    if (
+      !source ||
+      Number(source.personal) !== 1 ||
+      String(source.status) !== 'active' ||
+      String(source.account_id ?? '') !== accountId
+    ) {
+      throw forbidden('团队经验不能分享到团队之外');
+    }
+
+    const teamIds = asStringArray(asObject(body).teamIds, 'teamIds', { max: 50, maxLength: 128 });
+    const currentRows = await this.ctx.db.read.all(
+      'SELECT team_workspace AS id FROM knowledge_shares WHERE knowledge_id = :id',
+      { id: item.id },
+    );
+    const current = new Set(currentRows.map(row => String(row.id)));
+    const requested = new Set(teamIds);
+
+    // 非发布状态只能撤回已有分享；新增分享必须先把经验发布出去。
+    if (item.state !== 'published' && teamIds.some(teamId => !current.has(teamId))) {
+      throw conflict('只有已发布的经验可以分享');
+    }
+
+    // 只校验新增目标：人退出团队后仍要能撤回已有分享。
+    for (const teamId of requested) {
+      if (current.has(teamId)) continue;
+      const target = await this.ctx.db.read.one('SELECT status, personal FROM tenants WHERE id = :id', {
+        id: teamId,
+      });
+      if (!target || Number(target.personal) === 1 || String(target.status) !== 'active') {
+        throw invalid('分享目标必须是正常团队，不能是个人空间');
+      }
+      const membership = await this.ctx.db.read.one(
+        `SELECT tenant_role FROM principals
+         WHERE workspace = :tenant AND account_id = :account AND kind = 'human' AND active = 1
+         LIMIT 1`,
+        { tenant: teamId, account: accountId },
+      );
+      if (!membership) throw forbidden('你不是目标团队的成员');
+      if (String(membership.tenant_role) === 'guest') throw forbidden('访客不能接收分享');
+    }
+
+    const unchanged = requested.size === current.size && teamIds.every(teamId => current.has(teamId));
+    if (unchanged) return { id: item.id, teamIds };
+
+    const now = this.ctx.now();
+    await this.ctx.db.transaction(async tx => {
+      await tx.run('DELETE FROM knowledge_shares WHERE knowledge_id = :id', { id: item.id });
+      for (const teamId of teamIds) {
+        await tx.run(
+          `INSERT INTO knowledge_shares(knowledge_id, team_workspace, shared_by, created_at)
+           VALUES(:id, :team, :actor, :at)`,
+          { id: item.id, team: teamId, actor: actor.id, at: now },
+        );
+      }
+      await appendEvent(this.ctx, tx, {
+        taskId: item.sourceTaskId,
+        actorId: actor.id,
+        type: 'knowledge_shared',
+        payload: { id: item.id, teamIds },
+      });
+    });
+    return { id: item.id, teamIds };
+  }
+
+  /** 已发布、未过期、且对调用方可见的经验（含分享给当前团队的个人经验）。 */
   async list(actor: Principal, query = '', limit = 100): Promise<Knowledge[]> {
     if (query.length > 200) throw invalid('查询过长');
     await requireAgentScope(this.ctx, actor, 'knowledge:read');
     const pattern = `%${query.toLowerCase()}%`;
     const rows = await this.ctx.db.read.all(
-      `SELECT k.* FROM knowledge k
-       WHERE k.workspace = :workspace AND k.state = 'published' AND k.expires_at > :now
-         AND (:privileged = 1 OR k.access_mode = 'workspace'
-              OR EXISTS (SELECT 1 FROM knowledge_grants g WHERE g.knowledge_id = k.id AND g.principal_id = :actor))
+      `SELECT k.*,
+              a.display_name AS author_name,
+              st.name AS source_name,
+              st.personal AS source_personal
+       FROM knowledge k
+       LEFT JOIN principals a ON a.id = k.author_id AND a.workspace = k.workspace
+       LEFT JOIN tenants st ON st.id = k.workspace
+       WHERE k.state = 'published' AND k.expires_at > :now
+         AND (
+           (k.workspace = :workspace AND (
+              :privileged = 1 OR k.access_mode = 'workspace'
+              OR EXISTS (SELECT 1 FROM knowledge_grants g
+                         WHERE g.knowledge_id = k.id AND g.principal_id = :actor)))
+           OR
+           (k.workspace <> :workspace AND EXISTS (
+              SELECT 1 FROM knowledge_shares s JOIN tenants t ON t.id = s.team_workspace
+              WHERE s.knowledge_id = k.id AND s.team_workspace = :workspace
+                AND t.status = 'active' AND t.personal = 0))
+         )
          AND (:q = '' OR LOWER(k.content) LIKE :pattern OR LOWER(k.conditions) LIKE :pattern)
        ORDER BY k.created_at DESC, k.id
        LIMIT :limit`,
@@ -369,7 +520,39 @@ export class KnowledgeService {
         limit,
       },
     );
-    return rows.map(row => toKnowledge(row, String(row.access_mode) as 'workspace' | 'restricted'));
+    const items = rows.map(row => {
+      const item = toKnowledge(row, String(row.access_mode) as 'workspace' | 'restricted');
+      item.authorName =
+        row.author_name === null || row.author_name === undefined ? undefined : String(row.author_name);
+      item.sourceName = row.source_name ? String(row.source_name) : item.workspace;
+      item.sourcePersonal = Number(row.source_personal) === 1;
+      if (item.workspace === actor.workspace) item.sharedTeams = [];
+      return item;
+    });
+
+    const sourceIds = items.filter(item => item.workspace === actor.workspace).map(item => item.id);
+    if (sourceIds.length > 0) {
+      const placeholders = sourceIds.map((_, index) => `:id${index}`).join(', ');
+      const params: Record<string, unknown> = {};
+      sourceIds.forEach((id, index) => {
+        params[`id${index}`] = id;
+      });
+      const shareRows = await this.ctx.db.read.all(
+        `SELECT s.knowledge_id, t.id AS team_id, t.name AS team_name
+         FROM knowledge_shares s JOIN tenants t ON t.id = s.team_workspace
+         WHERE s.knowledge_id IN (${placeholders}) AND t.status = 'active' AND t.personal = 0
+         ORDER BY t.name`,
+        params,
+      );
+      const byId = new Map(items.map(item => [item.id, item]));
+      for (const row of shareRows) {
+        byId.get(String(row.knowledge_id))?.sharedTeams?.push({
+          id: String(row.team_id),
+          name: String(row.team_name),
+        });
+      }
+    }
+    return items;
   }
 
   async search(
@@ -396,10 +579,16 @@ export class KnowledgeService {
   async candidates(actor: Principal): Promise<Knowledge[]> {
     if (!hasAnyRole(actor, 'reviewer', 'admin')) throw forbidden('只有审核人或管理员可以查看候选');
     const rows = await this.ctx.db.read.all(
-      "SELECT * FROM knowledge WHERE workspace = :workspace AND state = 'candidate' ORDER BY created_at",
+      `SELECT k.*, p.display_name AS author_name
+       FROM knowledge k
+       LEFT JOIN principals p ON p.id = k.author_id AND p.workspace = k.workspace
+       WHERE k.workspace = :workspace AND k.state = 'candidate' ORDER BY k.created_at`,
       { workspace: actor.workspace },
     );
-    return rows.map(row => toKnowledge(row, 'restricted'));
+    return rows.map(row => ({
+      ...toKnowledge(row, 'restricted'),
+      authorName: row.author_name == null ? undefined : String(row.author_name),
+    }));
   }
 
   async versions(actor: Principal, id: string): Promise<Record<string, unknown>[]> {
@@ -421,13 +610,12 @@ export class KnowledgeService {
 
   /** 当前有效版本的证据包。 */
   async currentEvidence(actor: Principal, id: string): Promise<Record<string, unknown>> {
-    const item = await this.load(actor.workspace, id);
+    const item = await this.loadReadable(actor, id);
     if (
       !item ||
       item.state !== 'published' ||
       !item.expiresAt ||
-      Date.parse(item.expiresAt) <= Date.parse(this.ctx.now()) ||
-      !(await canViewKnowledge(this.ctx, actor, item))
+      Date.parse(item.expiresAt) <= Date.parse(this.ctx.now())
     ) {
       throw notFound('知识不可用');
     }
@@ -455,8 +643,8 @@ export class KnowledgeService {
       throw forbidden('只有负责人或管理员可以读取任务证据');
     }
     if (!Number.isSafeInteger(version) || version < 1) throw invalid('version 必须是正整数');
-    const item = await this.load(actor.workspace, knowledgeId);
-    if (!item || !(await canViewKnowledge(this.ctx, actor, item))) throw notFound('证据不可用');
+    const item = await this.loadReadable(actor, knowledgeId);
+    if (!item) throw notFound('证据不可用');
     const reference = await this.ctx.db.read.one(
       'SELECT 1 AS present FROM knowledge_refs WHERE task_id = :taskId AND knowledge_id = :id AND version = :version',
       { taskId, id: knowledgeId, version },
@@ -489,13 +677,12 @@ export class KnowledgeService {
     assertOwner(actor, task);
     if (task.status === 'cancelled') throw conflict('已取消的任务不能引用知识');
     const knowledgeId = asString(asObject(body).knowledgeId, 'knowledgeId', { max: 128 });
-    const item = await this.load(actor.workspace, knowledgeId);
+    const item = await this.loadReadable(actor, knowledgeId);
     if (
       !item ||
       item.state !== 'published' ||
       !item.expiresAt ||
-      Date.parse(item.expiresAt) <= Date.parse(this.ctx.now()) ||
-      !(await canViewKnowledge(this.ctx, actor, item))
+      Date.parse(item.expiresAt) <= Date.parse(this.ctx.now())
     ) {
       throw notFound('知识不可用');
     }

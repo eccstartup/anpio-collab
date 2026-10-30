@@ -70,7 +70,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, cwd = process.c
     database,
     bootstrapId: env.COLLAB_BOOTSTRAP_ID ?? 'admin',
     bootstrapToken: token,
-    requestBodyLimit: Number(env.COLLAB_BODY_LIMIT ?? 65536),
+    // 任务材料随创建请求以 base64 提交，默认上限要容得下 5 个文件、总计 2 MB 的原始内容。
+    requestBodyLimit: Number(env.COLLAB_BODY_LIMIT ?? 4 * 1024 * 1024),
     webRoot: env.COLLAB_WEB_ROOT ?? DEFAULT_WEB_ROOT,
     logRequests: env.COLLAB_LOG_REQUESTS === '1',
     anpEnroll: parseEnroll(env.COLLAB_ANP_ENROLL),
