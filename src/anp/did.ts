@@ -75,11 +75,15 @@ export function resolveVerificationKey(did: string, keyid: string, document: unk
   const methods = Array.isArray(doc.verificationMethod) ? (doc.verificationMethod as VerificationMethod[]) : [];
   if (methods.length === 0) throw new Error('didDocument 缺少 verificationMethod');
 
-  const wanted = keyid.includes('#') ? keyid : `${did}#${keyid}`;
+  // `#key-1` 是相对引用，要补上 DID 前缀；只有完整的 `did:...#key-1` 才原样用。
+  const wanted = keyid.startsWith('#') ? `${did}${keyid}` : keyid.includes('#') ? keyid : `${did}#${keyid}`;
   const method =
     methods.find(item => typeof item.id === 'string' && (item.id === wanted || `${did}${item.id}` === wanted)) ??
     (methods.length === 1 ? methods[0]! : undefined);
-  if (!method) throw new Error(`didDocument 中没有 ${wanted} 对应的公钥`);
+  if (!method) {
+    const available = methods.map(item => String(item.id ?? '?')).join(', ');
+    throw new Error(`didDocument 中没有 ${wanted} 对应的公钥（可用：${available || '无'}）`);
+  }
 
   // 若文档声明了 authentication，签名的钥匙必须在其中，避免用一把未授权的方法冒充。
   const auth = Array.isArray(doc.authentication) ? doc.authentication : null;

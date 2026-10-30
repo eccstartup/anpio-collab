@@ -346,6 +346,16 @@ async function handlePublicAuth(
   return false;
 }
 
+/** 拒绝日志里的 DID：只用来定位是谁在登录，解析不出来就留空。 */
+function didOf(rawBody: string): string {
+  try {
+    const parsed = JSON.parse(rawBody) as { did?: unknown };
+    return typeof parsed.did === 'string' ? parsed.did : '';
+  } catch {
+    return '';
+  }
+}
+
 function publicPrincipal(principal: Principal) {
   return {
     id: principal.id,
@@ -436,7 +446,12 @@ async function handleAnpAuth(
         return true;
       }
       const appError = toAppError(error);
-      if (appError.code === 'internal') console.error('ANP 登录失败', appError.cause ?? appError);
+      if (appError.code === 'internal') {
+        console.error('ANP 登录失败', appError.cause ?? appError);
+      } else {
+        // 失败最常来自"这条 DID 没登记/文档对不上"，带上 DID 才定位得到是谁在登录。
+        console.warn('[anp.login.rejected]', appError.code, appError.message, didOf(rawBody));
+      }
       sendError(res, appError);
     }
     return true;

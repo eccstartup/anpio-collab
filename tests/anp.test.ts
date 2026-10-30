@@ -57,6 +57,62 @@ test('钱包身份首次登录：自动登记、签发会话、可读 /v1/me', a
   }
 });
 
+test('请求体不带 keyid 时按 #key-1 解析：文档里有多把钥匙也能登录', async () => {
+  const harness = await startHarness();
+  try {
+    const identity = harness.did.identity('wallet');
+    // 钱包发布的文档除 #key-1 外还有设备钥；浏览器请求体里不带 keyid，
+    // 默认取 #key-1——这时不能退化成"任取一把钥匙"，也不能匹配不上。
+    const document = identity.didDocument as {
+      verificationMethod: unknown[];
+      authentication: string[];
+    };
+    harness.did.register({
+      ...identity,
+      didDocument: {
+        ...identity.didDocument,
+        verificationMethod: [
+          ...document.verificationMethod,
+          {
+            id: `${identity.did}#device-1-sign`,
+            type: 'Multikey',
+            controller: identity.did,
+            publicKeyMultibase: identity.publicKeyMultibase,
+          },
+        ],
+        authentication: [identity.keyid],
+      },
+    });
+
+    const challenge = (await (await fetch(`${harness.url}/auth/anp/challenge`)).json()) as { nonce: string };
+    const url = `${harness.url}/auth/anp/login`;
+    const body = JSON.stringify({
+      nonce: challenge.nonce,
+      did: identity.did,
+      didDocument: identity.didDocument,
+      client: 'browser',
+    });
+    const signed = signRequest({
+      url,
+      method: 'POST',
+      body,
+      nonce: challenge.nonce,
+      keyid: identity.keyid,
+      privateKey: identity.privateKey,
+    });
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...signed.headers },
+      body: signed.body,
+    });
+    assert.equal(response.status, 200);
+    const payload = (await response.json()) as { keyid: string };
+    assert.equal(payload.keyid, identity.keyid);
+  } finally {
+    await harness.close();
+  }
+});
+
 test('同一个 DID 再次登录落到同一个主体，不会重复登记', async () => {
   const harness = await startHarness();
   try {
