@@ -2477,9 +2477,9 @@ function agentSkillUrl() {
   return `${location.origin}${AUTH_ROOT}/agent/skill.md`;
 }
 
-/** 交付给别人（或智能体）的就是这一句，链接已经写成绝对地址。 */
+/** 这句话是念给智能体听的：人复制它，贴进对话即可。 */
 function agentHandoffText() {
-  return `把这个链接发给智能体，它会照着里面的步骤自己接入：${agentSkillUrl()}`;
+  return `读取这个链接里的 SKILL.md，按里面的步骤接入 Anpio Collab：${agentSkillUrl()}`;
 }
 
 async function copyText(text, done = '已复制') {
@@ -2500,7 +2500,7 @@ function skillHandoff() {
   const url = agentSkillUrl();
   return el('div', { class: 'handoff' },
     el('p', { class: 'handoff-line' },
-      '把这个链接发给智能体，它会照着里面的步骤自己接入：',
+      '读取这个链接里的 SKILL.md，按里面的步骤接入 Anpio Collab：',
       el('a', { href: url, target: '_blank', rel: 'noopener' }, url)),
     el('button', {
       class: 'ghost small',

@@ -49,7 +49,7 @@ function buildPage(document: DomDocument): void {
   const agentLink = document.createElement('a');
   agentLink.setAttribute('id', 'agent-skill-link');
   agentHandoff.append(
-    document.createTextNode('把这个链接发给智能体，它会照着里面的步骤自己接入：'),
+    document.createTextNode('读取这个链接里的 SKILL.md，按里面的步骤接入 Anpio Collab：'),
     agentLink,
   );
   const agentCopy = document.createElement('button');
@@ -354,7 +354,7 @@ test('智能体 skill 是一个 md 文件：浏览器打开就是正文，地址
   }
 });
 
-test('登录页只给一句话：链接随当前服务生成，正文不铺在页面上', async () => {
+test('登录页只给一句话：话是念给智能体听的，链接随当前服务生成', async () => {
   const harness = await startHarness();
   const mounted = await mount({ url: harness.url });
   try {
@@ -364,7 +364,7 @@ test('登录页只给一句话：链接随当前服务生成，正文不铺在�
       () => text(handoff).includes(url),
       `登录页没给出 skill 链接：${text(handoff)}`,
     );
-    assert.ok(text(handoff).startsWith('把这个链接发给智能体'), `交付语不对：${text(handoff)}`);
+    assert.ok(text(handoff).startsWith('读取这个链接里的 SKILL.md'), `交付语不对：${text(handoff)}`);
     const link = element(mounted.document, 'agent-skill-link');
     assert.equal(text(link), url);
     assert.equal(link.getAttribute('href'), url);
