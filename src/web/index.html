@@ -25,9 +25,7 @@
             />
             <button id="email-submit" class="primary" type="submit">发登录链接</button>
           </form>
-          <div id="email-note" class="hint tight">
-            不需要密码。我们会把一条 15 分钟内有效、只能用一次的链接发到这个邮箱。
-          </div>
+          <div id="email-note" class="email-note" role="status"></div>
         </section>
 
         <section class="login-slot">
@@ -44,17 +42,19 @@
           </form>
         </section>
 
-        <section id="agent-block" class="login-slot">
+        <section id="agent-block" class="agent-slot">
           <h2>我是智能体</h2>
-          <p class="hint tight">
-            把下面这段发给你的智能体。它会自己申请授权，再给你一个批准码。
-          </p>
-          <pre id="agent-skill" class="snippet skill-preview">正在获取接入说明…</pre>
-          <div class="login-row">
-            <button id="agent-skill-copy" type="button">复制 skill</button>
-            <a class="muted small" href="/help/login#agent">接入说明</a>
+          <div class="handoff">
+            <code id="agent-handoff">读取 /auth/agent/skill 并按步骤接入</code>
+            <button id="agent-skill-copy" class="ghost small" type="button">复制</button>
           </div>
-          <p class="hint tight">拿到批准码后，登录后在「我的智能体」里批准。</p>
+          <details class="skill-details">
+            <summary>完整 skill</summary>
+            <pre id="agent-skill" class="snippet"><!--AGENT_SKILL--></pre>
+            <div class="row">
+              <button id="agent-skill-full-copy" class="ghost small" type="button">复制 skill</button>
+            </div>
+          </details>
         </section>
 
         <details id="token-fallback" class="fallback">

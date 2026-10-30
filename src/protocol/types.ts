@@ -108,6 +108,16 @@ export type AgentGrant = {
   createdAt: string;
   revokedAt: string | null;
   lastSeenAt: string | null;
+  /** 它手上还没结束的子任务：人据此知道自己的智能体在做什么。 */
+  doing: AgentDoing[];
+};
+
+export type AgentDoing = {
+  taskId: string;
+  title: string;
+  kind: string;
+  status: SubtaskStatus;
+  updatedAt: string;
 };
 
 export const TASK_STATUSES = ['pending', 'running', 'review', 'completed', 'cancelled'] as const;

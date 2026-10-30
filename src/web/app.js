@@ -130,7 +130,7 @@ const TITLES = {
   pool: ['开放池', '能力匹配就可以认领，认领即加入'],
   mentions: ['提醒', '有人在评论里提到了你'],
   knowledge: ['经验库', '同组智能体共享的经验'],
-  agents: ['我的智能体', '把 skill 发给它，再批准它'],
+  agents: ['我的智能体', '你请进来的智能体，和它们正在做的事'],
   directory: ['团队', '你和谁一起工作'],
   oversight: ['监管', '哪里不对：卡住、失联、积压与被反复拒绝'],
   audit: ['审计', '谁在何时做了什么，结果如何'],
@@ -1854,6 +1854,7 @@ function renderDirectory() {
           : summary),
       el('div', { class: 'row', style: 'flex-wrap:wrap' },
         canManage ? el('button', { class: 'primary', type: 'button', onclick: inviteMember }, '邀请成员') : null,
+        canManage ? el('button', { type: 'button', onclick: openAgentInvite }, '邀请智能体') : null,
         canManage ? el('button', { type: 'button', onclick: () => renameTeam(tenant?.name ?? '') }, '重命名') : null,
         el('button', { type: 'button', onclick: createTeam }, '新建团队'),
         el('button', { type: 'button', onclick: openJoinTeam }, '加入团队'))),
@@ -1888,6 +1889,47 @@ function createTeam() {
         renderIdentity();
         renderNav();
       }, '已创建并切换'),
+  });
+}
+
+/** 邀请智能体：签一个短码，交给它，它自己入队。 */
+function openAgentInvite() {
+  openDialog({
+    title: '邀请智能体',
+    description: '生成一串短码，发给智能体，它自己会加入这个团队。',
+    fields: [
+      {
+        name: 'expiresInHours',
+        label: '有效期',
+        type: 'select',
+        value: '72',
+        options: [
+          { value: '24', label: '1 天' },
+          { value: '72', label: '3 天' },
+          { value: '168', label: '7 天' },
+        ],
+      },
+    ],
+    submitLabel: '生成邀请码',
+    onSubmit: (values) =>
+      act(async () => {
+        const invite = await api('tenants/current/agent-invites', {
+          body: { expiresInHours: Number(values.expiresInHours) },
+        });
+        showPanel(
+          '智能体邀请码',
+          '把这串码发给智能体，它自己会入队。',
+          el('div', { class: 'stack' },
+            el('div', { class: 'handoff' },
+              el('code', {}, invite.code),
+              el('button', {
+                class: 'ghost small',
+                type: 'button',
+                onclick: () => copyText(invite.code, '已复制'),
+              }, '复制')),
+            el('div', { class: 'muted small' }, `有效期至 ${formatTime(invite.expiresAt)}；只能用一次。`)),
+        );
+      }, '邀请码已生成'),
   });
 }
 
@@ -2335,24 +2377,34 @@ function approveAgent(prefill = '') {
 function renderAgents() {
   if (isAgentOnly()) return el('div', { class: 'empty' }, '智能体账号不能批准其他智能体。');
 
+  const doingCell = (grant) => {
+    const doing = grant.doing ?? [];
+    if (!doing.length) return el('span', { class: 'muted small' }, '空闲');
+    return el('div', { class: 'stack', style: 'gap:2px' }, doing.slice(0, 3).map((item) =>
+      el('button', {
+        type: 'button',
+        class: 'link small nowrap',
+        title: item.title,
+        onclick: () => openTaskById(item.taskId),
+      }, `${item.title} · ${STATUS_LABEL[item.status] ?? item.status}`)));
+  };
+
   const grantRow = (grant) => el('tr', {},
     el('td', {},
       el('div', { class: 'row', style: 'gap:8px;align-items:baseline' },
-        el('strong', {}, grant.agentName),
-        grant.status === 'active'
-          ? el('span', { class: 'badge', dataset: { tone: 'ok' } }, '有效')
-          : el('span', { class: 'badge', dataset: { tone: 'danger' } }, '已撤销')),
-      el('div', { class: 'muted small mono' }, grant.agentDid ? `did:wba:…${grant.agentDid.slice(-12)}` : grant.agentPrincipalId)),
-    el('td', {},
-      el('div', { class: 'row', style: 'gap:6px;flex-wrap:wrap' },
-        grant.scopes.map((scope) => el('span', { class: 'badge' }, SCOPE_LABEL[scope] ?? scope)))),
-    el('td', { class: 'muted small' },
-      grant.status === 'revoked'
-        ? `撤销于 ${formatTime(grant.revokedAt)}`
-        : grant.expiresAt
-          ? `至 ${formatTime(grant.expiresAt)}`
-          : '长期有效'),
-    el('td', { class: 'muted small' }, grant.lastSeenAt ? formatTime(grant.lastSeenAt) : '尚未使用'),
+        el('strong', {},
+          grant.agentName,
+          grant.scopes.length > 1
+            ? el('span', {
+                class: 'muted small',
+                title: `授权范围：${grant.scopes.map((scope) => SCOPE_LABEL[scope] ?? scope).join('、')}`,
+              }, ` · ${grant.scopes.length} 项`)
+            : null),
+        grant.status === 'active' ? null : toneBadge('danger', '已撤销')),
+      el('div', { class: 'muted small mono' },
+        grant.agentDid ? `did:wba:…${grant.agentDid.slice(-12)}` : grant.agentPrincipalId)),
+    el('td', {}, doingCell(grant)),
+    el('td', { class: 'muted small nowrap' }, grant.lastSeenAt ? formatTime(grant.lastSeenAt) : '尚未上线'),
     el('td', {},
       grant.status === 'active'
         ? el('button', {
@@ -2363,7 +2415,7 @@ function renderAgents() {
                 await api(`agents/${encodeURIComponent(grant.id)}/revoke`, { body: {} });
               }, '已撤销授权'),
           }, '撤销')
-        : null));
+        : '—'));
 
   const pending = canManageTenant() && state.pendingAgents.length
     ? el('div', { class: 'list', style: 'margin-top:14px' }, state.pendingAgents.map((item) =>
@@ -2372,66 +2424,126 @@ function renderAgents() {
             el('strong', {}, item.name || '未命名智能体'),
             el('div', { class: 'muted small' },
               `批准码 ${item.userCode} · ${formatTime(item.expiresAt)} 前有效`)),
-          el('button', { type: 'button', class: 'ghost small', onclick: () => approveAgent(item.userCode) }, '批准'))))
+          el('button', {
+            type: 'button',
+            class: 'ghost small',
+            onclick: () => approveAgent(item.userCode),
+          }, '批准'))))
     : null;
+
+  const handoff = el('div', { class: 'handoff' },
+    el('code', {}, agentHandoff()),
+    el('button', {
+      class: 'ghost small',
+      type: 'button',
+      onclick: () => copyText(agentHandoff(), '已复制，发给智能体即可'),
+    }, '复制'));
 
   return frag(
     el('div', { class: 'card' },
       el('div', { class: 'card-head' },
-        el('h3', {}, '把 skill 发给你的智能体'),
-        el('span', { class: 'muted' }, '复制后粘贴给它')),
-      el('pre', { class: 'snippet', id: 'agent-skill-inline' }, state.agentSkill || '正在获取…'),
-      el('div', { class: 'row' },
-        el('button', { class: 'primary', type: 'button', onclick: () => copyAgentSkill('agent-skill-inline') }, '复制 skill'),
-        el('a', { href: '/help/login#agent' }, '接入说明'))),
+        el('h3', {}, '接入一个智能体'),
+        canManageTenant()
+          ? el('button', { class: 'ghost small', type: 'button', onclick: openAgentInvite }, '生成邀请码')
+          : el('span', { class: 'muted' }, '这一行发给它就行')),
+      handoff,
+      el('details', { class: 'skill-details' },
+        el('summary', {}, '完整 skill'),
+        el('pre', { class: 'snippet', id: 'agent-skill-inline' }, state.agentSkill || '正在获取…'),
+        el('div', { class: 'row' },
+          el('button', {
+            class: 'ghost small',
+            type: 'button',
+            onclick: () => void loadAgentSkill().then((skill) => copyText(skill, '已复制完整 skill')),
+          }, '复制 skill')))),
 
     el('div', { class: 'card' },
-      el('h3', {}, '批准智能体'),
-      el('p', { class: 'hint tight' },
-        '智能体申请后会给你一个批准码。在这里批准，它才能拿到令牌。'),
-      el('div', { class: 'row' },
-        el('button', { class: 'primary', type: 'button', onclick: () => approveAgent(state.pendingCode ?? '') }, '输入批准码')),
-      state.pendingCode
-        ? el('p', { class: 'hint tight' }, `待批准的批准码：${state.pendingCode}`)
-        : null,
+      el('div', { class: 'card-head' },
+        el('h3', {}, '批准接入'),
+        el('span', { class: 'muted' }, '它把批准码给你时走这里')),
+      el('div', { class: 'login-row' },
+        el('input', {
+          id: 'approve-code',
+          placeholder: 'ABCD-2345',
+          autocomplete: 'off',
+          spellcheck: 'false',
+          value: state.pendingCode ?? '',
+        }),
+        el('button', {
+          class: 'primary',
+          type: 'button',
+          onclick: () => approveAgent(document.getElementById('approve-code')?.value ?? ''),
+        }, '批准')),
       pending),
 
     el('div', { class: 'card' },
-      el('h3', {}, '已授权的智能体'),
+      el('div', { class: 'card-head' },
+        el('h3', {}, '智能体'),
+        el('span', { class: 'muted' }, `${state.grants.filter((grant) => grant.status === 'active').length} 个在用`)),
       state.grants.length
         ? el('div', { class: 'table-wrap' }, el('table', {},
             el('thead', {}, el('tr', {},
-              el('th', {}, '智能体'), el('th', {}, '范围'), el('th', {}, '期限'), el('th', {}, '最近活跃'), el('th', {}, ''))),
+              el('th', {}, '智能体'), el('th', {}, '在做什么'), el('th', {}, '最近活跃'), el('th', {}, ''))),
             el('tbody', {}, state.grants.map(grantRow))))
-        : el('div', { class: 'empty' }, '还没有授权任何智能体。')),
+        : el('div', { class: 'empty' }, '还没有智能体。')),
   );
 }
 
-async function copyAgentSkill(sourceId) {
-  const text = state.agentSkill || document.getElementById(sourceId)?.textContent || '';
+/** 登录页和「我的智能体」共用的一句交付语：让智能体自己来取说明。 */
+function agentHandoff() {
+  return `读取 ${location.origin}/auth/agent/skill，按其中步骤接入；有邀请码就一起带上。`;
+}
+
+async function copyText(text, done = '已复制') {
   if (!text) {
-    toast('还没有拿到 skill，请稍后重试', 'error');
+    toast('还没有内容可复制', 'error');
     return;
   }
   try {
     await navigator.clipboard.writeText(text);
-    toast('已复制，发给你的智能体即可');
+    toast(done);
   } catch {
     toast('复制失败，请手动选中文本复制', 'error');
   }
 }
 
-/** 登录页和「我的智能体」共用同一份 skill：地址由服务端按当前访问地址生成。 */
+/** 登录页和「我的智能体」共用同一份 skill：优先用服务端注入的那一份。 */
 async function loadAgentSkill() {
   if (state.agentSkill) return state.agentSkill;
+  const seeded = document.getElementById('agent-skill')?.textContent?.trim() ?? '';
+  if (seeded) {
+    state.agentSkill = seeded;
+    return seeded;
+  }
   try {
     const response = await fetch(`${AUTH_ROOT}/agent/skill`, { headers: { accept: 'text/markdown' } });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     state.agentSkill = await response.text();
   } catch {
-    state.agentSkill = `Base URL: ${location.origin}\n\n接入说明暂时取不到，请刷新页面重试。`;
+    state.agentSkill = localAgentSkill();
   }
   return state.agentSkill;
+}
+
+/** 页面不是由服务端渲染时（本地打开、静态托管），也给一份能直接用的说明。 */
+function localAgentSkill() {
+  const base = location.origin;
+  return `# Anpio Collab
+
+Base URL: ${base}
+
+你是智能体，用自己的 DID 代表自己。
+
+1. POST ${base}/auth/agent/request
+   {"name":"<名字>","did":"<你的 DID>","invite":"<邀请码，可选>"}
+   带邀请码直接入队；不带就返回 8 位批准码，交给邀请你的人。
+2. POST ${base}/auth/agent/token
+   {"deviceCode":"<deviceCode>"}
+   202 等人批准，200 返回 token；之后请求都带 Authorization: Bearer <token>。
+3. GET /v1/tasks、GET /v1/offers、POST /v1/tasks/:id/comments、
+   GET /v1/knowledge、POST /v1/agent/heartbeat。
+
+先读目标与验收条件再动手，交付时附上来源与时间。`;
 }
 
 // ---------------------------------------------------------------- 审计
@@ -2493,20 +2605,22 @@ function bindWalletForm() {
   });
 }
 
-/** 「我是智能体」这一段：把服务端生成的 skill 直接放在登录页，可一键复制。 */
+/** 「我是智能体」：一行交付语，完整 skill 收在详情里，随时可复制。 */
 function bindAgentSkill() {
+  const handoff = document.getElementById('agent-handoff');
+  if (handoff) handoff.textContent = agentHandoff();
+  document.getElementById('agent-skill-copy')?.addEventListener('click', () => {
+    void copyText(agentHandoff(), '已复制，发给智能体即可');
+  });
+  document.getElementById('agent-skill-full-copy')?.addEventListener('click', async () => {
+    await copyText(await loadAgentSkill(), '已复制完整 skill');
+  });
   const preview = document.getElementById('agent-skill');
-  if (!preview) return;
-  const copy = document.getElementById('agent-skill-copy');
-  if (copy) {
-    copy.addEventListener('click', async () => {
-      await loadAgentSkill();
-      await copyAgentSkill('agent-skill');
+  if (preview) {
+    void loadAgentSkill().then((skill) => {
+      preview.textContent = skill;
     });
   }
-  void loadAgentSkill().then((skill) => {
-    preview.textContent = skill;
-  });
 }
 
 /** 邮箱登录：先发链接，再让对方去邮箱点。 */

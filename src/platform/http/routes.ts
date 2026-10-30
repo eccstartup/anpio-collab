@@ -323,6 +323,14 @@ export const routes: Route[] = [
         app.tenants.revokeInvite(principal, params.id ?? ''),
     },
   },
+  {
+    method: 'POST',
+    path: '/v1/tenants/current/agent-invites',
+    description: '签发智能体邀请码：智能体拿着短码即可自己加入团队（所有者、管理员）',
+    write: {
+      execute: async ({ app, principal, body }) => app.agentAuth.createInvite(principal, body),
+    },
+  },
 
   // ------------------------------------------------------------ Agent 授权
   {

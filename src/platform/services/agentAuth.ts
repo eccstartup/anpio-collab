@@ -49,6 +49,10 @@ export class AgentAuthService {
       ? input.capabilities.slice(0, 20).map(item => String(item).slice(0, 60))
       : [];
 
+    // 有团队邀请码就不必等人批准：邀请人已经替这个团队做了决定。
+    const invite = input.invite === undefined ? '' : normalizeCode(asString(input.invite, 'invite', { max: 32, min: 4 }));
+    if (invite) return this.joinByInvite({ did, name, capabilities, invite });
+
     const deviceCode = randomBytes(32).toString('base64url');
     const userCode = await this.freshUserCode();
     const now = this.ctx.now();
@@ -76,6 +80,103 @@ export class AgentAuthService {
       expiresIn: DEVICE_TTL_SECONDS,
       expiresAt,
       verificationUri: '/agents/approve',
+    };
+  }
+
+  /**
+   * 邀请码入队：智能体只凭一个团队邀请码就成为成员，不需要谁在线批准。
+   *
+   * 建出来的主体不挂任何人的账号——它属于团队，不属于某个人的身份，
+   * 因此没有任何人能以它的身份登录；邀请人只是这份授权的管理者。
+   */
+  private async joinByInvite(input: {
+    did: string;
+    name: string;
+    capabilities: string[];
+    invite: string;
+  }) {
+    const ticket = await this.ctx.db.read.one('SELECT * FROM agent_invites WHERE code = :code', {
+      code: input.invite,
+    });
+    if (!ticket) throw invalid('邀请码不存在');
+    if (ticket.used_at !== null && ticket.used_at !== undefined) throw conflict('邀请码已使用');
+    if (String(ticket.expires_at) <= this.ctx.now()) throw conflict('邀请码已过期');
+
+    await this.identity.assertDidRegistered(input.did);
+
+    const tenantId = String(ticket.tenant_id);
+    const taken = await this.ctx.db.read.one(
+      `SELECT p.kind FROM identities i JOIN principals p ON p.id = i.principal_id
+       WHERE i.workspace = :workspace AND i.did = :did`,
+      { workspace: tenantId, did: input.did },
+    );
+    if (taken) throw conflict('这条 DID 已经在这个团队里');
+
+    const displayName = input.name || `Agent ${input.did.slice(-6)}`;
+    const scopes = JSON.parse(String(ticket.scopes ?? '[]')) as AgentScope[];
+    const now = this.ctx.now();
+    const expiresAt = new Date(Date.parse(now) + 24 * 30 * 3600 * 1000).toISOString();
+    const deviceCode = randomBytes(32).toString('base64url');
+
+    const principalId = await this.ctx.db.transaction(async tx => {
+      const changed = await tx.run(
+        'UPDATE agent_invites SET used_at = :at, used_by_did = :did WHERE code = :code AND used_at IS NULL',
+        { at: now, did: input.did, code: input.invite },
+      );
+      if (changed === 0) throw conflict('邀请码已使用');
+      const id = await this.tenants.insertPrincipal(tx, {
+        workspace: tenantId,
+        accountId: null,
+        kind: 'agent',
+        tenantRole: 'member',
+        displayName,
+        did: input.did,
+        capabilities: input.capabilities,
+      });
+      await tx.run(
+        `INSERT INTO identities(id, workspace, did, principal_id, fingerprint, client, created_at, last_login_at, login_count)
+         VALUES(:id, :workspace, :did, :principal, NULL, 'agent', :at, NULL, 0)`,
+        { id: randomUUID(), workspace: tenantId, did: input.did, principal: id, at: now },
+      );
+      // 直接记为已批准：轮询拿到的是一个已经能用的 deviceCode。
+      await tx.run(
+        `INSERT INTO agent_requests(id, device_code_hash, user_code, requested_did, name, capabilities,
+                                    status, expires_at, approved_principal_id, approved_by, created_at)
+         VALUES(:id, :hash, '', :did, :name, :capabilities, 'approved', :expiresAt, :principal, :by, :at)`,
+        {
+          id: randomUUID(),
+          hash: hashToken(deviceCode),
+          did: input.did,
+          name: displayName,
+          capabilities: JSON.stringify(input.capabilities),
+          expiresAt: new Date(Date.parse(now) + DEVICE_TTL_SECONDS * 1000).toISOString(),
+          principal: id,
+          by: String(ticket.created_by),
+          at: now,
+        },
+      );
+      return id;
+    });
+
+    await this.upsertGrant({
+      tenantId,
+      agentPrincipalId: principalId,
+      ownerId: String(ticket.created_by),
+      scopes: scopes.length ? scopes : DEFAULT_SCOPES,
+      expiresAt,
+      now,
+    });
+
+    const tenant = await this.ctx.db.read.one<{ name: string }>('SELECT name FROM tenants WHERE id = :id', {
+      id: tenantId,
+    });
+    return {
+      deviceCode,
+      userCode: '',
+      expiresIn: DEVICE_TTL_SECONDS,
+      expiresAt,
+      verificationUri: '/agents/approve',
+      joined: { tenant: tenantId, name: tenant ? String(tenant.name) : tenantId },
     };
   }
 
@@ -125,6 +226,37 @@ export class AgentAuthService {
   }
 
   // ---------------------------------------------------------------- 人侧
+
+  /** 团队邀请码：管理员签一个短码，交给智能体，它自己就能入队。 */
+  async createInvite(actor: Principal, body: unknown) {
+    if (!this.tenants.isAdmin(actor)) throw forbidden('只有所有者或管理员可以邀请智能体');
+    await this.tenants.ensureTenant(actor.workspace);
+    const input = asObject(body);
+    const hours = input.expiresInHours === undefined
+      ? 72
+      : asInteger(Number(input.expiresInHours), 'expiresInHours', { min: 1, max: 24 * 30 });
+    const scopes = this.tenants.parseScopes(input.scopes, DEFAULT_SCOPES);
+    const now = this.ctx.now();
+    const expiresAt = new Date(Date.parse(now) + hours * 3600 * 1000).toISOString();
+    const code = await this.freshInviteCode();
+    await this.ctx.db.transaction(async tx => {
+      await tx.run(
+        `INSERT INTO agent_invites(code, tenant_id, created_by, scopes, expires_at, created_at, used_at, used_by_did)
+         VALUES(:code, :tenant, :by, :scopes, :expiresAt, :at, NULL, NULL)`,
+        { code, tenant: actor.workspace, by: actor.id, scopes: JSON.stringify(scopes), expiresAt, at: now },
+      );
+    });
+    // 走事务连接：团队可能是这次请求里刚补建的，读连接还看不到。
+    const tenant = await this.ctx.db.transaction(tx =>
+      tx.one<{ name: string }>('SELECT name FROM tenants WHERE id = :id', { id: actor.workspace }),
+    );
+    return {
+      code,
+      scopes,
+      expiresAt,
+      tenant: { id: actor.workspace, name: tenant ? String(tenant.name) : actor.workspace },
+    };
+  }
 
   /** 页面上要显示"最近发起、还没批准的请求"，这样不用手输也能点。 */
   async pendingRequests(actor: Principal) {
@@ -290,7 +422,42 @@ export class AgentAuthService {
        ORDER BY g.created_at DESC`,
       { tenant: actor.workspace, owner: actor.id },
     );
-    return rows.map(row => this.toGrant(row));
+    const grants = rows.map(row => this.toGrant(row));
+    const doing = await this.doingFor(grants.map(grant => grant.agentPrincipalId));
+    for (const grant of grants) grant.doing = doing.get(grant.agentPrincipalId) ?? [];
+    return grants;
+  }
+
+  /** 一次查完这一批智能体手上没结束的子任务，避免逐个再问数据库。 */
+  private async doingFor(agentIds: string[]) {
+    const result = new Map<string, AgentGrant['doing']>();
+    if (agentIds.length === 0) return result;
+    const params: Record<string, string> = {};
+    const slots = agentIds.map((id, index) => {
+      params[`a${index}`] = id;
+      return `:a${index}`;
+    });
+    const rows = await this.ctx.db.read.all(
+      `SELECT s.agent_id, s.task_id, s.kind, s.status, s.updated_at, t.title
+       FROM subtasks s JOIN tasks t ON t.id = s.task_id
+       WHERE s.agent_id IN (${slots.join(', ')})
+         AND s.status IN ('invited', 'accepted', 'submitted', 'returned', 'timed_out', 'outcome_unknown')
+       ORDER BY s.updated_at DESC`,
+      params,
+    );
+    for (const row of rows) {
+      const agentId = String(row.agent_id);
+      const list = result.get(agentId) ?? [];
+      list.push({
+        taskId: String(row.task_id),
+        title: String(row.title ?? ''),
+        kind: String(row.kind ?? ''),
+        status: String(row.status) as AgentGrant['doing'][number]['status'],
+        updatedAt: String(row.updated_at),
+      });
+      result.set(agentId, list);
+    }
+    return result;
   }
 
   async revoke(actor: Principal, grantId: string) {
@@ -403,7 +570,22 @@ export class AgentAuthService {
       createdAt: String(row.created_at),
       revokedAt: row.revoked_at === null || row.revoked_at === undefined ? null : String(row.revoked_at),
       lastSeenAt: row.last_seen === null || row.last_seen === undefined ? null : String(row.last_seen),
+      doing: [],
     };
+  }
+
+  private async freshInviteCode(): Promise<string> {
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      // 以 T 开头，和智能体自己申请的批准码一眼区分开。
+      const raw = `T${Array.from({ length: 7 }, () => CODE_ALPHABET[randomBytes(1)[0] % CODE_ALPHABET.length]).join('')}`;
+      const code = `${raw.slice(0, 4)}-${raw.slice(4)}`;
+      const clash = await this.ctx.db.read.one(
+        'SELECT 1 AS present FROM agent_invites WHERE code = :code',
+        { code },
+      );
+      if (!clash) return code;
+    }
+    throw conflict('生成邀请码失败，请重试');
   }
 
   private async freshUserCode(): Promise<string> {

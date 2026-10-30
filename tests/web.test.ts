@@ -323,6 +323,23 @@ test('登录说明页：无需登录即可访问，两种登录方式都在', as
   }
 });
 
+test('登录页自带智能体 skill：服务端注入，脚本不跑也有内容', async () => {
+  const harness = await startHarness();
+  try {
+    const html = await (await realFetch(`${harness.url}/`)).text();
+    const injected = /<pre id="agent-skill"[^>]*>([\s\S]*?)<\/pre>/.exec(html);
+    assert.ok(injected, 'index.html 里的 #agent-skill 没有被填入内容');
+    const skill = injected[1];
+    assert.ok(!html.includes('<!--AGENT_SKILL-->'), '占位符应被替换掉');
+    assert.ok(skill.includes('/auth/agent/request'), 'skill 要写清怎么申请接入');
+    assert.ok(skill.includes('/auth/agent/token'), 'skill 要写清怎么换令牌');
+    assert.ok(skill.includes('邀请码'), 'skill 要告诉智能体邀请码这条路');
+    assert.ok(skill.includes(harness.url), 'skill 里的地址应指向当前服务');
+  } finally {
+    await harness.close();
+  }
+});
+
 test('登录页直接给出智能体 skill：地址随当前服务生成，复制即可交给智能体', async () => {
   const harness = await startHarness();
   const mounted = await mount({ url: harness.url });

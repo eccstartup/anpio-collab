@@ -199,7 +199,7 @@ label.checkbox input {
   margin-bottom: 10px;
 }
 
-/* 四个入口各占一段，只有邮箱和钱包是登录；智能体拿走 skill，高级收在最后。 */
+/* 四个入口各占一段，只有邮箱和钱包是登录；智能体是一行交付，高级收在最后。 */
 .login-slot {
   padding: 20px 0;
   border-top: 1px solid var(--line);
@@ -211,10 +211,11 @@ label.checkbox input {
   border-top: 0;
 }
 
-.login-slot h2 {
-  font-size: 12px;
+.login-slot h2,
+.agent-slot h2 {
+  font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.12em;
   color: var(--muted);
   margin-bottom: 12px;
 }
@@ -234,12 +235,76 @@ label.checkbox input {
   flex: none;
 }
 
-.skill-preview {
-  margin: 0 0 10px;
-  max-height: 240px;
-  overflow: auto;
-  white-space: pre-wrap;
+/* 智能体不是登录，是交付：一行可复制的话，加一份按需展开的完整说明。 */
+.agent-slot {
+  margin: 2px 0 18px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--paper);
+}
+
+.handoff {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 8px 8px 12px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.handoff code {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-soft);
   overflow-wrap: anywhere;
+}
+
+.handoff button {
+  flex: none;
+}
+
+.skill-details {
+  margin-top: 10px;
+}
+
+.skill-details summary {
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  list-style: none;
+}
+
+.skill-details summary::before {
+  content: "＋";
+  display: inline-block;
+  width: 16px;
+  color: var(--muted);
+}
+
+.skill-details[open] summary::before {
+  content: "－";
+}
+
+.skill-details .snippet {
+  margin: 10px 0;
+  max-height: 300px;
+  overflow: auto;
+}
+
+/* 只在有内容时出现：发信结果、开发模式链接，没消息就不占位。 */
+.email-note {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.email-note:empty {
+  display: none;
 }
 
 .lede {

@@ -414,6 +414,18 @@ function statements(dialect: 'sqlite' | 'postgres'): string[] {
     `CREATE INDEX IF NOT EXISTS agent_grants_owner ON agent_grants(tenant_id, owner_principal_id, status)`,
     `CREATE UNIQUE INDEX IF NOT EXISTS agent_grants_agent ON agent_grants(agent_principal_id)`,
 
+    // 团队邀请智能体的短码：智能体拿着它就能自己入队，不必有人在线批准。
+    `CREATE TABLE IF NOT EXISTS agent_invites (
+      code TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL REFERENCES tenants(id),
+      created_by TEXT NOT NULL REFERENCES principals(id),
+      scopes TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      used_at TEXT,
+      used_by_did TEXT
+    )`,
+
     // ---- v3：本地邮件投递 ----
     // 生产替换 MailService 即可；这张表只是本地演示与测试的可观测出口。
     `CREATE TABLE IF NOT EXISTS mail_outbox (
