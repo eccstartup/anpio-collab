@@ -153,8 +153,21 @@ export class TenantService {
         },
       );
     });
-    const row = await this.ctx.db.read.one('SELECT * FROM principals WHERE id = :id', { id: principalId });
-    return toPrincipal(row!);
+    // 不回头再读一次：写请求本身在事务里，读到的是另一条连接。
+    return {
+      id: principalId,
+      workspace: id,
+      roles: rolesFor('owner', 'human'),
+      accountId: account.id,
+      tenantRole: 'owner',
+      did: null,
+      kind: 'human',
+      handle: null,
+      displayName: account.displayName,
+      description: '',
+      capabilities: [],
+      active: true,
+    };
   }
 
   /** 账号在租户里的主体：有就返回，没有就按角色新建。 */

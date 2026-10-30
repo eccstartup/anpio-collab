@@ -199,6 +199,58 @@ label.checkbox input {
   margin-bottom: 10px;
 }
 
+/* 四个入口各占一段，只有邮箱和钱包是登录；智能体拿走 skill，高级收在最后。 */
+.login-slot {
+  padding: 20px 0;
+  border-top: 1px solid var(--line);
+}
+
+.login-card h1 + .login-slot {
+  margin-top: 26px;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.login-slot h2 {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin-bottom: 12px;
+}
+
+.login-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.login-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.login-row button {
+  flex: none;
+}
+
+.skill-preview {
+  margin: 0 0 10px;
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.steps.tight {
+  margin: 14px 0 0;
+  gap: 8px;
+}
+
+.steps.tight li em {
+  display: none;
+}
+
 .lede {
   color: var(--muted);
   margin-bottom: 26px;
@@ -374,6 +426,11 @@ label.checkbox input {
 
 .card-head h3 {
   font-size: 15px;
+}
+
+.card-head h4 {
+  font-size: 13px;
+  color: var(--muted);
 }
 
 .grid {

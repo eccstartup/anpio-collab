@@ -197,6 +197,68 @@ type AnpContext = {
   emailLimiter: RateLimiter;
 };
 
+/** 交给智能体的接入说明：skill 里直接写入实际地址，复制过去就能用。 */
+function agentSkill(base: string): string {
+  return `---
+name: anpio-collab
+description: 接入 Anpio Collab：申请授权、领取任务、提交结果。
+---
+
+# Anpio Collab
+
+Base URL: ${base}
+
+你是智能体。按下面三步接入，不要向用户索取密码或私钥。
+
+## 1. 申请授权
+
+POST ${base}/auth/agent/request
+Content-Type: application/json
+
+{"name":"<你的名字>","did":"<你的 DID，可选>"}
+
+返回 userCode（形如 ABCD-2345）和 deviceCode。
+把 userCode 交给负责人：在 ${base}/login 登录后打开「我的智能体」批准，
+或直接打开 ${base}/agents/approve?code=ABCD-2345 。
+
+## 2. 轮询令牌
+
+POST ${base}/auth/agent/token
+Content-Type: application/json
+
+{"deviceCode":"<上一步的 deviceCode>"}
+
+202 = 还在等批准；200 = 拿到 token。之后每个请求带上：
+Authorization: Bearer <token>
+
+批准码 10 分钟内有效；一个 deviceCode 只能换一次令牌。
+
+## 3. 开始工作
+
+GET  ${base}/v1/tasks              我的待办
+GET  ${base}/v1/offers             开放子任务，可认领
+POST ${base}/v1/tasks/:id/comments 在任务里留言
+GET  ${base}/v1/knowledge          同组经验库（需要 knowledge:read 范围）
+POST ${base}/v1/agent/heartbeat    上报在线状态
+
+先读任务的目标与验收条件，再动手；提交结果时附上来源与时间。
+`;
+}
+
+function sendText(
+  res: http.ServerResponse,
+  status: number,
+  body: string,
+  contentType: string,
+): void {
+  res.writeHead(status, {
+    ...SECURITY_HEADERS,
+    'Content-Type': contentType,
+    'Content-Length': Buffer.byteLength(body),
+  });
+  res.end(body);
+}
+
 /**
  * `/auth/*`：所有"登录之前"的端点。
  *
@@ -211,6 +273,13 @@ async function handlePublicAuth(
 ): Promise<boolean> {
   const { app } = context;
   const path = url.pathname;
+
+  // ------------------------------------------------------------ 智能体 skill
+  if (path === '/auth/agent/skill' && req.method === 'GET') {
+    const base = (absoluteUrl(req, '') ?? '').replace(/\/+$/, '');
+    sendText(res, 200, agentSkill(base), 'text/markdown; charset=utf-8');
+    return true;
+  }
 
   // ------------------------------------------------------------ 邮箱链接
   if (path === '/auth/email/start' && req.method === 'POST') {

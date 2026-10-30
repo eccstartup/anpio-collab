@@ -133,6 +133,27 @@ export const routes: Route[] = [
   },
   {
     method: 'POST',
+    path: '/v1/tenants',
+    description: '新建团队：创建者成为所有者，并换发到这个团队的会话',
+    write: {
+      execute: async ({ app, principal, body, token }) => {
+        const name = asString(asObject(body).name, 'name', { max: 120, min: 1 });
+        if (!principal.accountId) throw forbidden('当前主体未绑定账号，无法新建团队');
+        const account = await app.accounts.findById(principal.accountId);
+        if (!account) throw forbidden('账号不存在');
+        const target = await app.tenants.createTenant(account, name);
+        const session = await app.identity.openSession(target, target.did, 'browser');
+        await app.identity.logout(token);
+        return {
+          token: session.token,
+          expiresAt: session.expiresAt,
+          tenant: { id: target.workspace, name, role: target.tenantRole },
+        };
+      },
+    },
+  },
+  {
+    method: 'POST',
     path: '/v1/me/logout',
     description: '退出当前会话（只撤销这一个令牌）',
     write: {

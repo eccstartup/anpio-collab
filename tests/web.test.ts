@@ -15,7 +15,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import type { AnpIdentity } from '../src/anp/identity.ts';
 import { signRequest } from '../src/anp/signature.ts';
-import { ADMIN_ID, ADMIN_TOKEN, startHarness, type Harness } from './helpers/harness.ts';
+import { ADMIN_TOKEN, startHarness, type Harness } from './helpers/harness.ts';
 import { DomElement, DomNode, DomDocument } from './helpers/dom.ts';
 
 const WEB_ROOT = new URL('../src/web/', import.meta.url);
@@ -57,6 +57,13 @@ function buildPage(document: DomDocument): void {
   const walletNote = document.createElement('p');
   walletNote.setAttribute('id', 'wallet-note');
   card.append(walletNote);
+
+  // 「我是智能体」：登录页直接给出可复制的 skill，不跳文档。
+  const agentSkill = document.createElement('pre');
+  agentSkill.setAttribute('id', 'agent-skill');
+  const agentCopy = document.createElement('button');
+  agentCopy.setAttribute('id', 'agent-skill-copy');
+  card.append(agentSkill, agentCopy);
 
   const fallback = document.createElement('details');
   fallback.setAttribute('id', 'token-fallback');
@@ -297,7 +304,7 @@ test('index.html 与测试骨架的 id 保持一致', async () => {
   for (const id of [
     'login', 'email-form', 'email', 'email-submit', 'email-note',
     'wallet-steps', 'wallet-form', 'bind-code', 'wallet-submit', 'wallet-note',
-    'agent-block', 'token-fallback', 'login-form', 'token', 'login-error', 'shell', 'nav',
+    'agent-block', 'agent-skill', 'agent-skill-copy', 'token-fallback', 'login-form', 'token', 'login-error', 'shell', 'nav',
     'tenant', 'identity', 'logout', 'topbar', 'view', 'toast', 'dialog',
   ]) {
     assert.ok(html.includes(`id="${id}"`), `index.html 缺少 #${id}`);
@@ -334,6 +341,26 @@ test('登录说明页：无需登录即可访问，两种登录方式都在', as
   }
 });
 
+test('登录页直接给出智能体 skill：地址随当前服务生成，复制即可交给智能体', async () => {
+  const harness = await startHarness();
+  const mounted = await mount({ url: harness.url });
+  try {
+    const preview = element(mounted.document, 'agent-skill');
+    await waitFor(
+      () => text(preview).includes('/auth/agent/request'),
+      `skill 没有加载到登录页：${text(preview)}`,
+    );
+    const skill = text(preview);
+    assert.ok(skill.includes(harness.url), 'skill 里的地址应指向当前服务');
+    assert.ok(skill.includes('agents/approve'), 'skill 应告诉智能体去哪里批准');
+    assert.ok(!text(element(mounted.document, 'login')).includes('输入批准码'), '智能体这一步不应出现登录表单');
+  } finally {
+    await sleep(80);
+    mounted.dispose();
+    await harness.close();
+  }
+});
+
 test('用钱包插件登录：领取挑战、签名、换令牌、按角色生成导航', async () => {
   const harness = await startHarness();
   const identity = harness.did.identity('alice');
@@ -361,9 +388,9 @@ test('用钱包插件登录：领取挑战、签名、换令牌、按角色生�
     assert.deepEqual(me.roles, ['owner'], '人类钱包首次登录应按 owner 自动登记');
 
     // 纯负责人没有监管与审计，导航必须如实反映权限。
-    assert.deepEqual(navLabels(mounted.document), ['工作台', '任务', '提醒', '经验库', '我的智能体', '参与者', '设置']);
+    assert.deepEqual(navLabels(mounted.document), ['工作台', '任务', '提醒', '我的智能体', '团队', '设置']);
 
-    for (const label of ['工作台', '任务', '提醒', '经验库', '我的智能体', '参与者', '设置']) {
+    for (const label of ['工作台', '任务', '提醒', '我的智能体', '团队', '设置']) {
       await visit(mounted.document, label);
       assert.ok(text(element(mounted.document, 'view')).trim().length > 0, `「${label}」渲染为空`);
     }
@@ -373,86 +400,6 @@ test('用钱包插件登录：领取挑战、签名、换令牌、按角色生�
     const settings = text(element(mounted.document, 'view'));
     assert.ok(settings.includes(identity.did.slice(0, 24)), '设置页没有显示已绑定的 DID');
     assert.ok(settings.includes('browser'), '会话列表缺少来源');
-  } finally {
-    await sleep(80);
-    mounted.dispose();
-    await harness.close();
-  }
-});
-
-test('设置页用钱包补绑 DID：令牌登录的账号也能挂上 ANP 身份', async () => {
-  const harness = await startHarness();
-  const identity = harness.did.identity('binder');
-  const mounted = await mount({ url: harness.url, wallet: fakeWallet(identity) });
-  try {
-    element(mounted.document, 'token').value = ADMIN_TOKEN;
-    await element(mounted.document, 'login-form').fire('submit');
-    await waitFor(
-      () => element(mounted.document, 'shell').hidden === false,
-      `令牌登录未完成：${text(element(mounted.document, 'login-error'))}`,
-    );
-
-    await visit(mounted.document, '设置');
-    assert.ok(text(element(mounted.document, 'view')).includes('绑定我的 DID'), '设置页缺少绑定入口');
-    assert.ok(text(element(mounted.document, 'view')).includes('已检测到钱包插件'), '应提示检测到钱包插件');
-    assert.ok(text(element(mounted.document, 'view')).includes('登录方式'), '设置页缺少登录方式总览');
-    assert.ok(text(element(mounted.document, 'view')).includes('绑定邮箱'), '设置页缺少补绑邮箱入口');
-    assert.ok(text(element(mounted.document, 'view')).includes('did.json'), '应说明 DID 必须已登记');
-
-    await buttonByText(mounted.document, '用钱包绑定 DID').fire('click');
-    await waitFor(
-      () => text(element(mounted.document, 'view')).includes(identity.did.slice(-24)),
-      `绑定后列表没有出现这条 DID：${text(element(mounted.document, 'toast'))}`,
-    );
-
-    // 服务端确实把这条 DID 挂到了 admin 主体上，并设为主身份。
-    const me = (await (
-      await realFetch(`${harness.url}/v1/me`, { headers: { authorization: `Bearer ${ADMIN_TOKEN}` } })
-    ).json()) as { id: string; did: string | null };
-    assert.equal(me.id, ADMIN_ID);
-    assert.equal(me.did, identity.did);
-
-    // 再点一次不该报错，也不该多出一条。
-    await buttonByText(mounted.document, '用钱包绑定 DID').fire('click');
-    await waitFor(
-      () => text(element(mounted.document, 'toast')).includes('已经绑定'),
-      `重复绑定没有给出提示：${text(element(mounted.document, 'toast'))}`,
-    );
-    const identities = (await (
-      await realFetch(`${harness.url}/v1/me/identities`, { headers: { authorization: `Bearer ${ADMIN_TOKEN}` } })
-    ).json()) as unknown[];
-    assert.equal(identities.length, 1);
-  } finally {
-    await sleep(80);
-    mounted.dispose();
-    await harness.close();
-  }
-});
-
-test('未注册的 DID 绑不上：设置页把"没登记"说清楚，也不留下半条绑定', async () => {
-  const harness = await startHarness();
-  // 有私钥、但文档没登记到注册服务器：这正是"我造了个 DID" 与 "这个 DID 存在" 的区别。
-  const ghost = harness.did.generate('ghost');
-  const mounted = await mount({ url: harness.url, wallet: fakeWallet(ghost) });
-  try {
-    element(mounted.document, 'token').value = ADMIN_TOKEN;
-    await element(mounted.document, 'login-form').fire('submit');
-    await waitFor(
-      () => element(mounted.document, 'shell').hidden === false,
-      `令牌登录未完成：${text(element(mounted.document, 'login-error'))}`,
-    );
-
-    await visit(mounted.document, '设置');
-    await buttonByText(mounted.document, '用钱包绑定 DID').fire('click');
-    await waitFor(
-      () => text(element(mounted.document, 'toast')).includes('没有在注册服务器上登记'),
-      `失败原因没有说清楚：${text(element(mounted.document, 'toast'))}`,
-    );
-
-    const identities = (await (
-      await realFetch(`${harness.url}/v1/me/identities`, { headers: { authorization: `Bearer ${ADMIN_TOKEN}` } })
-    ).json()) as unknown[];
-    assert.equal(identities.length, 0, '被拒绝的绑定不应留下记录');
   } finally {
     await sleep(80);
     mounted.dispose();
@@ -474,7 +421,7 @@ test('智能体用访问令牌登录：只看到自己的事，没有全局看�
       `工作台没有渲染：${text(element(mounted.document, 'toast'))}`,
     );
 
-    assert.deepEqual(navLabels(mounted.document), ['工作台', '任务', '开放池', '提醒', '设置']);
+    assert.deepEqual(navLabels(mounted.document), ['工作台', '任务', '开放池', '提醒', '经验库', '设置']);
 
     const home = text(element(mounted.document, 'view'));
     assert.ok(home.includes('待办子任务'), `智能体工作台缺少待办计数：${home.slice(0, 300)}`);
@@ -524,7 +471,7 @@ test('监管者看板：列异常、看在线表、能触发扫描', async () =>
       `管理员登录后没有进入工作台：${text(element(mounted.document, 'login-error'))}`,
     );
 
-    assert.deepEqual(navLabels(mounted.document), ['工作台', '任务', '提醒', '经验库', '我的智能体', '成员', '参与者', '监管', '审计', '设置']);
+    assert.deepEqual(navLabels(mounted.document), ['工作台', '任务', '提醒', '经验库', '我的智能体', '团队', '监管', '审计', '设置']);
 
     await visit(mounted.document, '监管');
     const view = text(element(mounted.document, 'view'));

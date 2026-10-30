@@ -71,6 +71,39 @@ test('邮箱首次登录：自动创建个人组织，本人是所有者', async
   }
 });
 
+test('新建团队：创建者是所有者，旧会话作废，团队之间互相隔离', async () => {
+  const harness = await startHarness({ workspace: 'acme' });
+  try {
+    const session = await emailLogin(harness, 'carol@example.com');
+    const created = await post(harness, '/v1/tenants', { name: '供应链小组' }, session.token);
+    assert.equal(created.status, 200, await created.clone().text());
+    const result = await json<{ token: string; tenant: { id: string; name: string; role: string } }>(created);
+    assert.equal(result.tenant.name, '供应链小组');
+    assert.equal(result.tenant.role, 'owner');
+    assert.notEqual(result.tenant.id, session.tenant.id);
+
+    const me = await json<{ workspace: string; tenantRole: string }>(await get(harness, '/v1/me', result.token));
+    assert.equal(me.workspace, result.tenant.id);
+    assert.equal(me.tenantRole, 'owner');
+
+    // 换团队后旧令牌立即失效，避免同一浏览器里同时存在两条会话。
+    const stale = await get(harness, '/v1/me', session.token);
+    assert.equal(stale.status, 401);
+
+    // 新团队是空的：任务不会从上一个团队跟过来。
+    const tasks = await json<unknown[]>(await get(harness, '/v1/tasks', result.token));
+    assert.deepEqual(tasks, []);
+
+    const tenants = await json<Array<{ id: string; role: string }>>(
+      await get(harness, '/v1/me/tenants', result.token),
+    );
+    assert.equal(tenants.length, 2);
+    assert.deepEqual(tenants.map(item => item.role), ['owner', 'owner']);
+  } finally {
+    await harness.close();
+  }
+});
+
 test('邀请：邮件链接一次完成验证、入组与登录，且只能用一次', async () => {
   const harness = await startHarness({ workspace: 'acme' });
   try {
