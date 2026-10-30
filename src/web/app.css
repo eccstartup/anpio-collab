@@ -270,14 +270,27 @@ label.checkbox input {
   flex: none;
 }
 
-/* 一句话交付：链接就在话里，旁边只有一个复制。
-   链接要能折行，局域网地址可能很长。 */
+/* 智能体入口：话装在一个框里，复制在框外，跟标题同一层。 */
+.agent-handoff {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.agent-handoff button {
+  flex: none;
+}
+
 .handoff-line {
   flex: 1;
   min-width: 0;
   margin: 0;
+  padding: 10px 12px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
   font-size: 12.5px;
-  line-height: 1.6;
+  line-height: 1.7;
   color: var(--ink-soft);
 }
 

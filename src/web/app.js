@@ -2495,10 +2495,10 @@ async function copyText(text, done = '已复制') {
   }
 }
 
-/** 智能体的接入物是一个文件：给他一句话，链接写在话里。 */
+/** 智能体的接入物是一个文件：话装在一个框里，复制在框外。 */
 function skillHandoff() {
   const url = agentSkillUrl();
-  return el('div', { class: 'handoff' },
+  return el('div', { class: 'agent-handoff' },
     el('p', { class: 'handoff-line' },
       '读取这个链接里的 SKILL.md，按里面的步骤接入 Anpio Collab：',
       el('a', { href: url, target: '_blank', rel: 'noopener' }, url)),
