@@ -7,7 +7,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { expectStatus, register, startHarness, TASK_INPUT } from './helpers/harness.ts';
+import { expectStatus, nextOperationId, register, startHarness, TASK_INPUT } from './helpers/harness.ts';
 
 type Alert = {
   id: string;
@@ -227,6 +227,58 @@ test('拒绝请求激增会形成一条工作空间级告警', async () => {
     const alert = ((await harness.admin.oversight()) as Overview).alerts.find(item => item.rule === 'denied_spike');
     assert.ok(alert);
     assert.equal(alert!.subjectId, 'acme');
+  } finally {
+    await harness.close();
+  }
+});
+
+test('提问与 @ 提醒超时进入监管；回答与已读后自动解决', async () => {
+  const harness = await startHarness();
+  try {
+    const agent = await register(harness, 'ask-agent', ['agent']);
+    const task = (await harness.admin.createTask(TASK_INPUT, nextOperationId('create'))) as { id: string };
+    const subtask = (await harness.admin.assign(
+      task.id,
+      { agent: 'ask-agent', kind: 'inventory' },
+      nextOperationId('assign'),
+    )) as { id: string };
+    await agent.accept(subtask.id, nextOperationId('accept'));
+
+    const question = (await agent.sendMessage(
+      task.id,
+      { body: '@admin 盘点口径用哪天的？', kind: 'question', payload: { to: 'admin' } },
+      nextOperationId('ask'),
+    )) as { id: string };
+
+    await harness.db.run('UPDATE task_comments SET created_at = :at WHERE id = :id', {
+      at: past(300),
+      id: question.id,
+    });
+    await harness.db.run('UPDATE task_mentions SET created_at = :at WHERE comment_id = :id', {
+      at: past(300),
+      id: question.id,
+    });
+
+    await harness.admin.scanAlerts();
+    const view = (await harness.admin.oversight()) as Overview;
+    assert.equal(view.alerts.filter(item => item.rule === 'question_unanswered').length, 1);
+    const mention = view.alerts.find(item => item.rule === 'mention_unread');
+    assert.ok(mention, '未读 @ 提醒应形成告警');
+    assert.equal(mention!.severity, 'low');
+
+    await harness.admin.markRead(task.id, nextOperationId('read'));
+    await harness.admin.sendMessage(
+      task.id,
+      { body: '用昨天的，注明时效。', kind: 'answer', replyTo: question.id },
+      nextOperationId('answer'),
+    );
+    await harness.admin.scanAlerts();
+
+    const rows = await harness.db.read.all<{ rule: string; status: string }>(
+      `SELECT rule, status FROM alerts WHERE rule IN ('question_unanswered', 'mention_unread')`,
+    );
+    assert.equal(rows.length, 2);
+    assert.equal(rows.every(row => row.status === 'resolved'), true, '回答与已读后两条告警都应解决');
   } finally {
     await harness.close();
   }

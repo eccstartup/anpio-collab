@@ -12,6 +12,8 @@
  *  - v4 个人资料：姓名、头像、头衔、简介。
  *  - v7 知识文档与任务房间。
  *  - v8 AICD 视为普通文档：默认 kind=document，版本有效期可空。
+ *  - v9 本地对象存储：文件可以脱离任务，上传分三步（申请、直传、确认）。
+ *  - v10 房间已读游标：未读按每人每任务记录，不改变任务版本。
  *
  * 补列必须先于事务探测（只读连接看不到未提交的 DDL），
  * 因此 `ensureColumns` 在事务外查现有列，事务内只做 CREATE 与 ALTER。
@@ -75,7 +77,38 @@ const KNOWLEDGE_VERSIONS_TABLE = `CREATE TABLE IF NOT EXISTS knowledge_versions 
     )`;
 
 /**
- * 依赖 v7 新列的索引必须等补列之后再做：升级库里这些列此刻还不存在，
+ * v9：文件不再必须属于任务。AICD 附件可以先独立上传，再挂到文档上。
+ * SQLite 只能重建表来去掉 `task_id NOT NULL`，因此这份 DDL 同时服务新库与重建。
+ */
+const SPACE_FILES_TABLE = `CREATE TABLE IF NOT EXISTS space_files (
+      id TEXT PRIMARY KEY,
+      workspace TEXT NOT NULL,
+      task_id TEXT REFERENCES tasks(id),
+      subtask_id TEXT REFERENCES subtasks(id),
+      message_id TEXT REFERENCES task_comments(id),
+      name TEXT NOT NULL,
+      mime TEXT NOT NULL,
+      size INTEGER NOT NULL,
+      sha256 TEXT NOT NULL,
+      storage TEXT NOT NULL DEFAULT 'inline',
+      object_key TEXT NOT NULL,
+      data TEXT,
+      kind TEXT NOT NULL DEFAULT 'intermediate',
+      version INTEGER NOT NULL DEFAULT 1,
+      supersedes_id TEXT,
+      produced_by TEXT NOT NULL REFERENCES principals(id),
+      source TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'ready',
+      created_at TEXT NOT NULL,
+      deleted_at TEXT
+    )`;
+
+const SPACE_FILES_INDEXES = [
+  'CREATE INDEX IF NOT EXISTS space_files_task ON space_files(task_id, created_at DESC, id)',
+  'CREATE INDEX IF NOT EXISTS space_files_hash ON space_files(workspace, sha256)',
+];
+
+/** 依赖 v7 新列的索引必须等补列之后再做：升级库里这些列此刻还不存在，
  * 提前执行会让整次迁移失败。
  */
 const POST_COLUMN_STATEMENTS = [
@@ -550,32 +583,56 @@ function statements(dialect: 'sqlite' | 'postgres'): string[] {
     )`,
     `CREATE INDEX IF NOT EXISTS task_threads_open ON task_threads(task_id, status, created_at DESC)`,
 
-    // 团队空间文件。第一阶段一律内联存 base64；第二阶段把 storage 切到 fs/s3，
-    // 接口不变。sha256 现在只用于校验与展示，字节去重留给对象存储。
-    `CREATE TABLE IF NOT EXISTS space_files (
-      id TEXT PRIMARY KEY,
+    // 房间已读游标：只影响"未读"计数，不推进任务版本，也不产生事件。
+    `CREATE TABLE IF NOT EXISTS task_reads (
       workspace TEXT NOT NULL,
       task_id TEXT NOT NULL REFERENCES tasks(id),
-      subtask_id TEXT REFERENCES subtasks(id),
-      message_id TEXT REFERENCES task_comments(id),
+      principal_id TEXT NOT NULL REFERENCES principals(id),
+      last_read_at TEXT NOT NULL,
+      PRIMARY KEY (task_id, principal_id)
+    )`,
+
+    // 团队空间文件。内联 base64 仍保留给小文件；更大的文件走对象存储，
+    // 同团队同一份内容只保留一个对象。
+    SPACE_FILES_TABLE,
+    ...SPACE_FILES_INDEXES,
+
+    `CREATE TABLE IF NOT EXISTS space_objects (
+      workspace TEXT NOT NULL,
+      sha256 TEXT NOT NULL,
+      storage TEXT NOT NULL,
+      size INTEGER NOT NULL,
+      object_key TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      deleted_at TEXT,
+      PRIMARY KEY (workspace, sha256, storage)
+    )`,
+    `CREATE INDEX IF NOT EXISTS space_objects_key ON space_objects(object_key)`,
+
+    // 上传会话：申请地址时确定元数据，PUT 只搬字节，确认时才产生文件记录。
+    `CREATE TABLE IF NOT EXISTS space_uploads (
+      id TEXT PRIMARY KEY,
+      workspace TEXT NOT NULL,
+      principal_id TEXT NOT NULL REFERENCES principals(id),
+      token_hash TEXT NOT NULL UNIQUE,
       name TEXT NOT NULL,
       mime TEXT NOT NULL,
-      size INTEGER NOT NULL,
-      sha256 TEXT NOT NULL,
-      storage TEXT NOT NULL DEFAULT 'inline',
-      object_key TEXT NOT NULL,
-      data TEXT,
+      size INTEGER,
+      sha256 TEXT,
+      storage TEXT NOT NULL,
+      object_key TEXT,
       kind TEXT NOT NULL DEFAULT 'intermediate',
-      version INTEGER NOT NULL DEFAULT 1,
+      task_id TEXT REFERENCES tasks(id),
+      subtask_id TEXT,
+      message_id TEXT,
       supersedes_id TEXT,
-      produced_by TEXT NOT NULL REFERENCES principals(id),
       source TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'ready',
+      status TEXT NOT NULL DEFAULT 'pending',
       created_at TEXT NOT NULL,
-      deleted_at TEXT
+      expires_at TEXT NOT NULL,
+      completed_file_id TEXT
     )`,
-    `CREATE INDEX IF NOT EXISTS space_files_task ON space_files(task_id, created_at DESC, id)`,
-    `CREATE INDEX IF NOT EXISTS space_files_hash ON space_files(workspace, sha256)`,
+    `CREATE INDEX IF NOT EXISTS space_uploads_expiry ON space_uploads(status, expires_at)`,
 
     `CREATE TABLE IF NOT EXISTS knowledge_assets (
       id TEXT PRIMARY KEY,
@@ -677,7 +734,7 @@ const ADDED_COLUMNS: { table: string; column: string; definition: string }[] = [
   { table: 'task_comments', column: 'edited_at', definition: 'TEXT' },
 ];
 
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 10;
 
 async function existingColumns(db: Database, table: string): Promise<Set<string> | null> {
   try {
@@ -802,6 +859,38 @@ async function postgresVersionsExpiryNullable(db: Database): Promise<boolean> {
   return !row || String(row.is_nullable) === 'YES';
 }
 
+/** v9：space_files.task_id 允许为空，独立附件不再伪造一个任务。 */
+async function sqliteNeedsSpaceFilesRebuild(db: Database): Promise<boolean> {
+  const rows = await db.read.all<{ name: string; notnull: number }>('PRAGMA table_info(space_files)');
+  if (rows.length === 0) return false;
+  const taskId = rows.find(row => String(row.name) === 'task_id');
+  return !taskId || Number(taskId.notnull) === 1;
+}
+
+async function rebuildSqliteSpaceFiles(tx: Queryable): Promise<void> {
+  await tx.run('ALTER TABLE space_files RENAME TO space_files_v8_rebuild');
+  await tx.run(SPACE_FILES_TABLE);
+  await tx.run(
+    `INSERT INTO space_files(id, workspace, task_id, subtask_id, message_id, name, mime, size, sha256,
+                             storage, object_key, data, kind, version, supersedes_id, produced_by,
+                             source, status, created_at, deleted_at)
+     SELECT id, workspace, task_id, subtask_id, message_id, name, mime, size, sha256,
+            storage, object_key, data, kind, version, supersedes_id, produced_by,
+            source, status, created_at, deleted_at
+     FROM space_files_v8_rebuild`,
+  );
+  await tx.run('DROP TABLE space_files_v8_rebuild');
+  for (const statement of SPACE_FILES_INDEXES) await tx.run(statement);
+}
+
+async function postgresSpaceFilesTaskNullable(db: Database): Promise<boolean> {
+  const row = await db.read.one<{ is_nullable: string }>(
+    `SELECT is_nullable FROM information_schema.columns
+     WHERE table_schema = current_schema() AND table_name = 'space_files' AND column_name = 'task_id'`,
+  );
+  return !row || String(row.is_nullable) === 'YES';
+}
+
 /** v7 回填：把旧 task_materials 搬进 space_files，字节不丢、来源可追。 */
 async function backfillSpaceFiles(tx: Queryable): Promise<void> {
   const rows = await tx.all<Record<string, unknown>>(
@@ -852,8 +941,10 @@ export async function migrate(db: Database, now: () => string): Promise<void> {
   }
   const rebuildKnowledge = db.dialect === 'sqlite' && (await sqliteNeedsKnowledgeRebuild(db));
   const rebuildVersions = db.dialect === 'sqlite' && (await sqliteNeedsVersionsRebuild(db));
+  const rebuildSpaceFiles = db.dialect === 'sqlite' && (await sqliteNeedsSpaceFilesRebuild(db));
   const dropNotNull = db.dialect === 'postgres' && !(await postgresTaskIdNullable(db));
   const dropVersionsNotNull = db.dialect === 'postgres' && !(await postgresVersionsExpiryNullable(db));
+  const dropSpaceFilesNotNull = db.dialect === 'postgres' && !(await postgresSpaceFilesTaskNullable(db));
 
   if (db.dialect === 'sqlite') {
     await db.exec('PRAGMA legacy_alter_table=ON; PRAGMA foreign_keys=OFF');
@@ -875,11 +966,15 @@ export async function migrate(db: Database, now: () => string): Promise<void> {
       if (dropVersionsNotNull) {
         await tx.run('ALTER TABLE knowledge_versions ALTER COLUMN expires_at DROP NOT NULL');
       }
+      if (dropSpaceFilesNotNull) {
+        await tx.run('ALTER TABLE space_files ALTER COLUMN task_id DROP NOT NULL');
+      }
       if (db.dialect === 'postgres') {
         await tx.run("ALTER TABLE knowledge ALTER COLUMN kind SET DEFAULT 'document'");
       }
       if (rebuildKnowledge) await rebuildSqliteKnowledge(tx);
       if (rebuildVersions) await rebuildSqliteKnowledgeVersions(tx);
+      if (rebuildSpaceFiles) await rebuildSqliteSpaceFiles(tx);
       for (const statement of POST_COLUMN_STATEMENTS) {
         await tx.run(statement);
       }
@@ -937,7 +1032,7 @@ export async function migrate(db: Database, now: () => string): Promise<void> {
       await db.exec('PRAGMA legacy_alter_table=OFF; PRAGMA foreign_keys=ON');
     }
   }
-  if (db.dialect === 'sqlite' && (rebuildKnowledge || rebuildVersions)) {
+  if (db.dialect === 'sqlite' && (rebuildKnowledge || rebuildVersions || rebuildSpaceFiles)) {
     const broken = await db.read.all<Record<string, unknown>>('PRAGMA foreign_key_check');
     if (broken.length > 0) {
       throw new Error(`knowledge 重建后存在外键不一致：${JSON.stringify(broken.slice(0, 5))}`);

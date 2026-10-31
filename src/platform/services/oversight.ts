@@ -35,6 +35,8 @@ export type OversightThresholds = {
   deniedThreshold: number;
   /** 经验到期前多少天提醒。 */
   knowledgeExpiryDays: number;
+  /** 提问与 @ 超过多少小时没人回应算积压。 */
+  pendingMessageHours: number;
 };
 
 export const DEFAULT_THRESHOLDS: OversightThresholds = {
@@ -46,12 +48,13 @@ export const DEFAULT_THRESHOLDS: OversightThresholds = {
   unadoptedHours: 12,
   deniedThreshold: 8,
   knowledgeExpiryDays: 3,
+  pendingMessageHours: 4,
 };
 
 export type Finding = {
   rule: string;
   severity: AlertSeverity;
-  subjectType: 'subtask' | 'task' | 'principal' | 'workspace' | 'knowledge';
+  subjectType: 'subtask' | 'task' | 'principal' | 'workspace' | 'knowledge' | 'message' | 'mention';
   subjectId: string;
   taskId: string | null;
   title: string;
@@ -281,6 +284,51 @@ export class OversightService {
         taskId: String(row.task_id),
         title: `经验即将过期：${String(row.content).slice(0, 40)}`,
         detail: `有效期至 ${String(row.expires_at)}。过期后不再出现在检索结果里，需要复审或修订。`,
+      });
+    }
+
+    // 10. 提问长时间没有回答。线程已解决的不再追问。
+    const questions = await this.ctx.db.read.all(
+      `SELECT c.*, t.title AS task_title FROM task_comments c JOIN tasks t ON t.id = c.task_id
+       WHERE t.workspace = :workspace AND c.kind = 'question' AND c.created_at < :before
+         AND NOT EXISTS (
+           SELECT 1 FROM task_comments a WHERE a.task_id = c.task_id AND a.reply_to = c.id)
+         AND NOT EXISTS (
+           SELECT 1 FROM task_threads th WHERE th.id = c.thread_id AND th.status = 'resolved')
+       ORDER BY c.created_at`,
+      { workspace, before: hoursAgo(now, t.pendingMessageHours) },
+    );
+    for (const row of questions) {
+      findings.push({
+        rule: 'question_unanswered',
+        severity: 'normal',
+        subjectType: 'message',
+        subjectId: String(row.id),
+        taskId: String(row.task_id),
+        title: `提问无人回答：${String(row.body).slice(0, 60)}`,
+        detail: `任务「${String(row.task_title)}」，由 ${String(row.author_id)} 提出已超过 ${t.pendingMessageHours} 小时。`,
+      });
+    }
+
+    // 11. @ 提醒长时间未读。
+    const mentions = await this.ctx.db.read.all(
+      `SELECT m.*, c.body, c.kind, t.title AS task_title
+       FROM task_mentions m
+       JOIN task_comments c ON c.id = m.comment_id
+       JOIN tasks t ON t.id = m.task_id
+       WHERE t.workspace = :workspace AND m.read_at IS NULL AND m.created_at < :before
+       ORDER BY m.created_at`,
+      { workspace, before: hoursAgo(now, t.pendingMessageHours) },
+    );
+    for (const row of mentions) {
+      findings.push({
+        rule: 'mention_unread',
+        severity: 'low',
+        subjectType: 'mention',
+        subjectId: String(row.id),
+        taskId: String(row.task_id),
+        title: `@ 提醒未读：${String(row.body).slice(0, 60)}`,
+        detail: `任务「${String(row.task_title)}」，收件人 ${String(row.recipient_id)} 超过 ${t.pendingMessageHours} 小时未读。`,
       });
     }
 

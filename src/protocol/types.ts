@@ -430,13 +430,14 @@ export type TaskThread = {
   messageCount: number;
 };
 
-export const SPACE_FILE_KINDS = ['input', 'intermediate', 'output', 'evidence'] as const;
+export const SPACE_FILE_KINDS = ['input', 'intermediate', 'output', 'evidence', 'attachment'] as const;
 export type SpaceFileKind = (typeof SPACE_FILE_KINDS)[number];
 
 export type SpaceFile = {
   id: string;
   workspace: string;
-  taskId: string;
+  /** 独立附件（例如 AICD 的附件）不属于任何任务。 */
+  taskId: string | null;
   subtaskId: string | null;
   messageId: string | null;
   name: string;
@@ -476,6 +477,9 @@ export type TaskRoom = {
   files: SpaceFile[];
   activity: RoomActivity[];
   knowledge: Knowledge[];
+  /** 自上次已读以来的新消息；question 只统计点名问我的那些。 */
+  unread: { messages: number; questions: number; mentions: number };
+  lastReadAt: string | null;
 };
 
 export const OFFER_STATUSES = ['open', 'claimed', 'withdrawn'] as const;

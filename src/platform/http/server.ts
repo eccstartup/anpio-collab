@@ -68,6 +68,101 @@ function sendError(res: http.ServerResponse, error: AppError, extraHeaders: Reco
   sendJson(res, error.status, { error: { code: error.code, message: error.message } }, extraHeaders);
 }
 
+/** 文件下载：写完头部后错误只能切断连接，不能再改状态码。 */
+function sendStream(
+  res: http.ServerResponse,
+  status: number,
+  headers: Record<string, string>,
+  stream: NodeJS.ReadableStream,
+): void {
+  res.writeHead(status, { ...SECURITY_HEADERS, 'Cache-Control': 'private, max-age=0', ...headers });
+  stream.on('error', () => res.destroy());
+  stream.pipe(res);
+}
+
+function contentDisposition(name: string): string {
+  const fallback = name.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
+  return `attachment; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(name)}`;
+}
+
+/**
+ * 上传地址不需要 Bearer：URL 里的随机令牌就是这一次上传的凭证。
+ * 必须在通用 JSON 解析之前处理，否则大文件会先被读进内存并触发体积上限。
+ */
+async function handleRawUpload(
+  app: App,
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  url: URL,
+): Promise<boolean> {
+  const match = /^\/v1\/space\/uploads\/([a-f0-9]{64})$/.exec(url.pathname);
+  if (!match) return false;
+  if (req.method !== 'PUT') {
+    sendError(res, new AppError('invalid', '上传地址只接受 PUT'));
+    return true;
+  }
+  const rawLength = req.headers['content-length'];
+  let declared: number | null = null;
+  if (typeof rawLength === 'string') {
+    declared = Number(rawLength);
+    if (!Number.isSafeInteger(declared) || declared < 0) {
+      sendError(res, invalid('Content-Length 不合法'));
+      return true;
+    }
+  }
+  try {
+    const result = await app.collab.receiveUpload(match[1], req, declared);
+    sendJson(res, 200, result);
+  } catch (error) {
+    sendError(res, toAppError(error));
+  }
+  return true;
+}
+
+async function handleFileContent(
+  app: App,
+  principal: Principal,
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  url: URL,
+): Promise<boolean> {
+  if (req.method !== 'GET') return false;
+  const workspaceMatch = /^\/v1\/space\/files\/([^/]+)\/content$/.exec(url.pathname);
+  const taskMatch = /^\/v1\/tasks\/([^/]+)\/files\/([^/]+)\/content$/.exec(url.pathname);
+  if (!workspaceMatch && !taskMatch) return false;
+  const rangeHeader = typeof req.headers.range === 'string' ? req.headers.range : undefined;
+  try {
+    const opened = taskMatch
+      ? await app.collab.openTaskContent(
+          principal,
+          decodeURIComponent(taskMatch[1]),
+          decodeURIComponent(taskMatch[2]),
+          rangeHeader,
+        )
+      : await app.collab.openContent(principal, decodeURIComponent(workspaceMatch![1]), rangeHeader);
+    const length = opened.range
+      ? opened.range.end - opened.range.start + 1
+      : opened.size;
+    sendStream(
+      res,
+      opened.range ? 206 : 200,
+      {
+        'Content-Type': opened.file.mime,
+        'Content-Length': String(length),
+        'Accept-Ranges': 'bytes',
+        'Content-Disposition': contentDisposition(opened.file.name),
+        ...(opened.range
+          ? { 'Content-Range': `bytes ${opened.range.start}-${opened.range.end}/${opened.size}` }
+          : {}),
+      },
+      opened.stream,
+    );
+  } catch (error) {
+    sendError(res, toAppError(error));
+  }
+  return true;
+}
+
 async function readRawBody(req: http.IncomingMessage, limit: number): Promise<string> {
   let size = 0;
   const chunks: Buffer[] = [];
@@ -527,6 +622,7 @@ export function createServer(options: ServerOptions): http.Server {
 
       if (req.method === 'GET' && (await serveStatic(res, webRoot, url.pathname))) return;
 
+      if (await handleRawUpload(app, req, res, url)) return;
       if (await handlePublicAuth(anp, req, res, url)) return;
       if (await handleAnpAuth(anp, req, res, url)) return;
     } catch (error) {
@@ -544,6 +640,7 @@ export function createServer(options: ServerOptions): http.Server {
       }
       const token = header.slice(7).trim();
       principal = await app.principals.authenticate(token);
+      if (await handleFileContent(app, principal, req, res, url)) return;
       const match = router.match(req.method ?? 'GET', url.pathname);
       if (!match) throw notFound('接口不存在');
 

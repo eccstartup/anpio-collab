@@ -1620,12 +1620,21 @@ function renderMessageComposer(room) {
 
 function downloadSpaceFile(taskId, file) {
   act(async () => {
-    const content = await api(`tasks/${encodeURIComponent(taskId)}/files/${encodeURIComponent(file.fileId ?? file.id)}`);
-    const binary = atob(content.data);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
-    const url = URL.createObjectURL(new Blob([bytes], { type: content.file.mime }));
-    const link = el('a', { href: url, download: content.file.name });
+    const fileId = encodeURIComponent(file.fileId ?? file.id);
+    // 任务文件与独立附件走同一条流式读取路径，不再把整个文件塞进 base64 JSON。
+    const path = taskId
+      ? `tasks/${encodeURIComponent(taskId)}/files/${fileId}/content`
+      : `space/files/${fileId}/content`;
+    const response = await fetch(`${API_ROOT}/${path}`, {
+      headers: { authorization: `Bearer ${state.token}` },
+    });
+    if (!response.ok) {
+      if (response.status === 401) signOut('登录状态已失效，请重新连接');
+      const payload = await readPayload(response);
+      throw new Error(payload?.error?.message ?? `下载失败（HTTP ${response.status}）`);
+    }
+    const url = URL.createObjectURL(await response.blob());
+    const link = el('a', { href: url, download: file.name ?? '下载' });
     document.body.append(link);
     link.click();
     link.remove();

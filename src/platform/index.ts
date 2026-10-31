@@ -29,6 +29,12 @@ export async function start(): Promise<void> {
       didAllowHttp: config.didAllowHttp,
     },
     oversight: config.oversight,
+    storage: {
+      driver: config.storage,
+      root: config.blobDir,
+      maxUploadBytes: config.maxUploadBytes,
+      s3: config.s3,
+    },
   });
 
   if (await app.principals.isEmpty()) {

@@ -626,10 +626,15 @@ export class KnowledgeService {
     const role = input.role === undefined ? 'evidence' : asEnum(input.role, 'role', ['evidence', 'attachment'] as const);
     const file = await this.ctx.db.read.one(
       `SELECT * FROM space_files
-       WHERE id = :id AND workspace = :workspace AND status = 'ready' AND kind = 'output'`,
+       WHERE id = :id AND workspace = :workspace AND status = 'ready'`,
       { id: fileId, workspace: item.workspace },
     );
-    if (!file) throw notFound('文件不存在，或不是可提升的成果文件');
+    if (!file) throw notFound('文件不存在');
+    // 任务成果仍需是 output 才能当证据；独立附件本来就是为文档准备的，不设这个限制。
+    const taskId = file.task_id === null || file.task_id === undefined ? null : String(file.task_id);
+    if (role === 'evidence' && taskId !== null && String(file.kind) !== 'output') {
+      throw notFound('文件不存在，或不是可提升的成果文件');
+    }
     const exists = await this.ctx.db.read.one(
       'SELECT 1 AS present FROM knowledge_assets WHERE knowledge_id = :knowledge AND file_id = :file',
       { knowledge: item.id, file: fileId },
@@ -672,7 +677,8 @@ export class KnowledgeService {
   }
 
   /** 从任务提取候选文档：负责人要求已验收；受派智能体提交结果后即可沉淀。 */
-  async createCandidate(actor: Principal, taskId: string, body: unknown): Promise<Knowledge> {    const task = await readTask(this.ctx, actor, taskId);
+  async createCandidate(actor: Principal, taskId: string, body: unknown): Promise<Knowledge> {
+    const task = await readTask(this.ctx, actor, taskId);
     const owner = task.ownerId === actor.id || hasAnyRole(actor, 'admin');
     if (owner) {
       if (task.status !== 'completed') throw conflict('只有已验收的任务可以沉淀文档');

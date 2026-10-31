@@ -8,14 +8,19 @@
 
 import type {
   Knowledge,
+  MessageKind,
   Notification,
   Principal,
   Priority,
+  SpaceFile,
   Subtask,
   SubtaskStatus,
   Task,
+  TaskComment,
   TaskEvent,
+  TaskRoom,
   TaskStatus,
+  TaskThread,
 } from '../protocol/types.ts';
 
 export type TaskRef = { id: string; status: TaskStatus; version: number; workspace?: string };
@@ -183,6 +188,7 @@ export type Evidence = {
 
 export type NotificationView = Notification;
 export type PrincipalView = Principal;
+export type { MessageKind, SpaceFile, TaskComment, TaskRoom, TaskThread };
 export type AuditEntry = {
   seq: number;
   principalId: string;

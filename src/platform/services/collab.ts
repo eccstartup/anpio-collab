@@ -9,7 +9,8 @@
  * 因此"状态 + 事件 + 通知"要么一起生效，要么一起回滚。
  */
 
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
+import { Readable } from 'node:stream';
 import { conflict, forbidden, invalid, notFound } from '../../protocol/errors.ts';
 import { asEnum, asObject, asOptionalString, asString, asStringArray } from '../../protocol/parse.ts';
 import { MESSAGE_KINDS, PRESENCE_STATES } from '../../protocol/types.ts';
@@ -33,10 +34,37 @@ import { encode } from '../db/mappers.ts';
 import { hasAnyRole, loadTask, readTask, requireAgentScope } from './access.ts';
 import { appendEvent } from './events.ts';
 import { NotificationService } from './notifications.ts';
+import type { BlobStore } from '../storage.ts';
 
 const MENTION = /@([A-Za-z0-9][A-Za-z0-9._:-]{0,63})/g;
 const DEFAULT_OFFER_DAYS = 3;
 const MAX_INLINE_BYTES = 256 * 1024;
+const MAX_INLINE_DOWNLOAD_BYTES = 8 * 1024 * 1024;
+const UPLOAD_TTL_MINUTES = 15;
+
+function parseByteRange(header: string | undefined, size: number): { start: number; end: number } | null {
+  if (!header) return null;
+  const match = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
+  if (!match) throw invalid('Range 只支持单段 bytes=start-end');
+  const [, rawStart, rawEnd] = match;
+  if (!rawStart && !rawEnd) throw invalid('Range 不合法');
+  let start: number;
+  let end: number;
+  if (!rawStart) {
+    const suffix = Number(rawEnd);
+    if (!Number.isSafeInteger(suffix) || suffix <= 0) throw invalid('Range 不合法');
+    start = Math.max(0, size - suffix);
+    end = size - 1;
+  } else {
+    start = Number(rawStart);
+    end = rawEnd ? Number(rawEnd) : size - 1;
+  }
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || start > end) {
+    throw invalid('Range 不合法');
+  }
+  if (start >= size) throw invalid('Range 超出文件大小');
+  return { start, end: Math.min(end, size - 1) };
+}
 
 function parseJson(value: unknown, fallback: unknown): unknown {
   if (typeof value !== 'string' || value === '') return fallback;
@@ -98,7 +126,7 @@ function toSpaceFile(row: Record<string, unknown>): SpaceFile {
   return {
     id: String(row.id),
     workspace: String(row.workspace),
-    taskId: String(row.task_id),
+    taskId: row.task_id === null || row.task_id === undefined ? null : String(row.task_id),
     subtaskId: row.subtask_id === null || row.subtask_id === undefined ? null : String(row.subtask_id),
     messageId:
       row.message_id === null || row.message_id === undefined ? null : String(row.message_id),
@@ -109,7 +137,7 @@ function toSpaceFile(row: Record<string, unknown>): SpaceFile {
     storage: (['inline', 'fs', 's3'] as const).includes(String(row.storage) as 'inline')
       ? (String(row.storage) as SpaceFile['storage'])
       : 'inline',
-    kind: (['input', 'intermediate', 'output', 'evidence'] as const).includes(String(row.kind) as 'input')
+    kind: (['input', 'intermediate', 'output', 'evidence', 'attachment'] as const).includes(String(row.kind) as 'input')
       ? (String(row.kind) as SpaceFileKind)
       : 'intermediate',
     version: Number(row.version),
@@ -184,8 +212,15 @@ function eventSummary(type: string, payload: Record<string, unknown>): string {
   return subject === undefined ? label : `${label}：${String(subject).slice(0, 80)}`;
 }
 
-function toOffer(row: Record<string, unknown>): TaskOffer {
-  return {
+/** 结构化收件人：`payload.to` 可以是单个主体 ID，也可以是数组。 */
+function addressedTo(payload: Record<string, unknown>): string[] {
+  const raw = payload.to;
+  if (typeof raw === 'string') return [raw];
+  if (Array.isArray(raw)) return raw.filter((item): item is string => typeof item === 'string');
+  return [];
+}
+
+function toOffer(row: Record<string, unknown>): TaskOffer {  return {
     id: String(row.id),
     taskId: String(row.task_id),
     kind: String(row.kind),
@@ -204,10 +239,12 @@ function toOffer(row: Record<string, unknown>): TaskOffer {
 export class CollabService {
   private readonly ctx: Context;
   private readonly notifications: NotificationService;
+  private readonly storage: BlobStore;
 
-  constructor(ctx: Context, notifications: NotificationService) {
+  constructor(ctx: Context, notifications: NotificationService, storage: BlobStore) {
     this.ctx = ctx;
     this.notifications = notifications;
+    this.storage = storage;
   }
 
   // ---------------------------------------------------------------- 评论
@@ -264,17 +301,26 @@ export class CollabService {
     }
 
     const mentioned = [...new Set([...text.matchAll(MENTION)].map(match => match[1]!))].slice(0, 20);
+    // 结构化收件人：`payload.to` 让 question / handoff 不必依赖正文里的 @。
+    const addressed: string[] = [];
+    if (payload.to !== undefined) {
+      const raw = typeof payload.to === 'string' ? [payload.to] : payload.to;
+      for (const item of asStringArray(raw, 'payload.to', { max: 20, maxLength: 128 })) {
+        if (!addressed.includes(item)) addressed.push(item);
+      }
+    }
 
     const commentId = this.ctx.newId();
     const at = this.ctx.now();
     const recipients: Principal[] = [];
-    for (const id of mentioned) {
+    for (const id of [...new Set([...mentioned, ...addressed])]) {
       if (id === actor.id) continue;
       const row = await this.ctx.db.read.one(
         'SELECT * FROM principals WHERE id = :id AND workspace = :workspace AND active = 1',
         { id, workspace: actor.workspace },
       );
       if (row) recipients.push({ id: String(row.id) } as Principal);
+      else if (addressed.includes(id)) throw invalid(`收件人 ${id} 不存在或已停用`);
     }
 
     await this.ctx.db.transaction(async tx => {
@@ -509,7 +555,7 @@ export class CollabService {
     const kind =
       input.kind === undefined
         ? 'intermediate'
-        : asEnum(input.kind, 'kind', ['input', 'intermediate', 'output', 'evidence'] as const);
+        : asEnum(input.kind, 'kind', ['input', 'intermediate', 'output', 'evidence', 'attachment'] as const);
     const data = asString(input.data, 'data', { max: 360_000 });
     if (data.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) {
       throw invalid('data 必须是 base64');
@@ -636,17 +682,31 @@ export class CollabService {
     taskId: string,
     fileId: string,
   ): Promise<{ file: SpaceFile; data: string }> {
-    await requireAgentScope(this.ctx, actor, 'tasks:read');
-    const task = await readTask(this.ctx, actor, taskId);
-    const row = await this.ctx.db.read.one(
-      `SELECT f.*, p.display_name AS produced_by_name
-       FROM space_files f LEFT JOIN principals p ON p.id = f.produced_by
-       WHERE f.id = :id AND f.task_id = :taskId AND f.status = 'ready'`,
-      { id: fileId, taskId: task.id },
-    );
-    if (!row) throw notFound('文件不存在');
-    if (String(row.storage) !== 'inline' || !row.data) throw notFound('对象存储尚未接入，无法读取该文件');
-    return { file: toSpaceFile(row), data: String(row.data) };
+    await readTask(this.ctx, actor, taskId);
+    return this.downloadWorkspaceFile(actor, fileId, taskId);
+  }
+
+  /** 文件内容的 JSON 版本；大文件请走 `/content` 流式接口。 */
+  async downloadWorkspaceFile(
+    actor: Principal,
+    fileId: string,
+    taskId?: string,
+  ): Promise<{ file: SpaceFile; data: string }> {
+    const opened = taskId
+      ? await this.openTaskContent(actor, taskId, fileId)
+      : await this.openContent(actor, fileId);
+    const chunks: Buffer[] = [];
+    let total = 0;
+    for await (const chunk of opened.stream) {
+      const buffer = chunk as Buffer;
+      total += buffer.byteLength;
+      if (total > MAX_INLINE_DOWNLOAD_BYTES) {
+        opened.stream.destroy();
+        throw invalid('文件超过 8 MiB，请使用 /content 流式接口下载');
+      }
+      chunks.push(buffer);
+    }
+    return { file: opened.file, data: Buffer.concat(chunks).toString('base64') };
   }
 
   async deleteFile(actor: Principal, taskId: string, fileId: string): Promise<{ id: string; status: string }> {
@@ -671,6 +731,415 @@ export class CollabService {
         type: 'file_deleted',
         payload: { fileId, name: String(row.name) },
       });
+    });
+    return { id: fileId, status: 'deleted' };
+  }
+
+  // ---------------------------------------------------------------- 对象存储上传
+
+  /**
+   * 申请上传地址。
+   *
+   * 本地磁盘驱动返回本服务的 PUT 地址，服务端边收边算哈希；S3 驱动返回
+   * 预签名地址，客户端直接把字节送到对象存储。两种方式都只给 15 分钟。
+   */
+  async createUpload(actor: Principal, body: unknown): Promise<Record<string, unknown>> {
+    await requireAgentScope(this.ctx, actor, 'tasks:submit');
+    const input = asObject(body);
+    const name = asString(input.name, 'name', { max: 200 });
+    const mime = asOptionalString(input.mime, 'mime', { max: 200 }) ?? 'application/octet-stream';
+    const kind =
+      input.kind === undefined
+        ? 'intermediate'
+        : asEnum(input.kind, 'kind', ['input', 'intermediate', 'output', 'evidence', 'attachment'] as const);
+    const size =
+      input.size === undefined
+        ? null
+        : (() => {
+            const value = Number(input.size);
+            if (!Number.isSafeInteger(value) || value < 0) throw invalid('size 必须是非负整数');
+            if (value > this.storage.maxUploadBytes) throw invalid('文件超过大小上限');
+            return value;
+          })();
+    const sha256 =
+      input.sha256 === undefined
+        ? null
+        : (() => {
+            const value = asString(input.sha256, 'sha256', { max: 64 }).toLowerCase();
+            if (!/^[a-f0-9]{64}$/.test(value)) throw invalid('sha256 必须是 64 位十六进制');
+            return value;
+          })();
+    const taskId =
+      input.taskId === undefined || input.taskId === null
+        ? null
+        : asString(input.taskId, 'taskId', { max: 128 });
+    const subtaskId =
+      input.subtaskId === undefined || input.subtaskId === null
+        ? null
+        : asString(input.subtaskId, 'subtaskId', { max: 128 });
+    const messageId =
+      input.messageId === undefined || input.messageId === null
+        ? null
+        : asString(input.messageId, 'messageId', { max: 128 });
+    const supersedesId =
+      input.supersedesId === undefined || input.supersedesId === null
+        ? null
+        : asString(input.supersedesId, 'supersedesId', { max: 128 });
+    const source =
+      input.source === undefined
+        ? actor.kind === 'human'
+          ? 'human_upload'
+          : 'agent_upload'
+        : asEnum(input.source, 'source', ['human_upload', 'agent_upload', 'tool_output'] as const);
+
+    if (taskId) {
+      const task = await readTask(this.ctx, actor, taskId);
+      if (subtaskId) {
+        const subtask = await this.ctx.db.read.one(
+          'SELECT id FROM subtasks WHERE id = :id AND task_id = :taskId',
+          { id: subtaskId, taskId: task.id },
+        );
+        if (!subtask) throw notFound('子任务不存在');
+      }
+      if (messageId) {
+        const message = await this.ctx.db.read.one(
+          'SELECT id FROM task_comments WHERE id = :id AND task_id = :taskId',
+          { id: messageId, taskId: task.id },
+        );
+        if (!message) throw notFound('消息不存在');
+      }
+      if (supersedesId) {
+        const prior = await this.ctx.db.read.one(
+          'SELECT id FROM space_files WHERE id = :id AND task_id = :taskId AND status <> \'deleted\'',
+          { id: supersedesId, taskId: task.id },
+        );
+        if (!prior) throw notFound('被替代的文件不存在');
+      }
+    } else if (subtaskId || messageId || supersedesId) {
+      throw invalid('没有任务的文件不能关联子任务、消息或被替代版本');
+    }
+
+    if (this.storage.kind === 's3' && !sha256) {
+      throw invalid('S3 直传需要预先提供 sha256，才能确定对象键');
+    }
+
+    const token = randomBytes(32).toString('hex');
+    const id = this.ctx.newId();
+    const at = this.ctx.now();
+    const expiresAt = new Date(Date.parse(at) + UPLOAD_TTL_MINUTES * 60_000).toISOString();
+    const objectKey = sha256 ? this.storage.objectKey(actor.workspace, sha256) : null;
+    await this.ctx.db.transaction(async tx => {
+      await tx.run(
+        `INSERT INTO space_uploads(id, workspace, principal_id, token_hash, name, mime, size, sha256,
+                                   storage, object_key, kind, task_id, subtask_id, message_id,
+                                   supersedes_id, source, status, created_at, expires_at, completed_file_id)
+         VALUES(:id, :workspace, :principal, :tokenHash, :name, :mime, :size, :sha256,
+                :storage, :objectKey, :kind, :taskId, :subtaskId, :messageId,
+                :supersedesId, :source, 'pending', :at, :expiresAt, NULL)`,
+        {
+          id,
+          workspace: actor.workspace,
+          principal: actor.id,
+          tokenHash: createHash('sha256').update(token).digest('hex'),
+          name,
+          mime,
+          size,
+          sha256,
+          storage: this.storage.kind,
+          objectKey,
+          kind,
+          taskId,
+          subtaskId,
+          messageId,
+          supersedesId,
+          source,
+          at,
+          expiresAt,
+        },
+      );
+    });
+
+    const target = objectKey
+      ? await this.storage.uploadTarget({ objectKey, mime, size })
+      : null;
+    const uploadUrl = target?.url ?? `/v1/space/uploads/${token}`;
+    return {
+      id,
+      storage: this.storage.kind,
+      method: target?.method ?? 'PUT',
+      url: uploadUrl,
+      headers: target?.headers ?? { 'content-type': mime, ...(size != null ? { 'content-length': String(size) } : {}) },
+      expiresAt,
+    };
+  }
+
+  /** 无 Bearer 的 PUT 落点：上传令牌本身是能力凭证，且只能写这一份对象。 */
+  async receiveUpload(
+    token: string,
+    source: AsyncIterable<Buffer | string>,
+    declaredSize: number | null,
+  ): Promise<{ id: string; status: string; size: number; sha256: string }> {
+    if (!/^[a-f0-9]{64}$/.test(token)) throw notFound('上传地址无效');
+    const row = await this.ctx.db.read.one(
+      `SELECT * FROM space_uploads WHERE token_hash = :hash`,
+      { hash: createHash('sha256').update(token).digest('hex') },
+    );
+    if (!row) throw notFound('上传地址无效');
+    if (String(row.status) === 'complete') throw conflict('这次上传已经完成');
+    if (String(row.status) === 'expired' || Date.parse(String(row.expires_at)) <= Date.parse(this.ctx.now())) {
+      await this.ctx.db.run("UPDATE space_uploads SET status = 'expired' WHERE id = :id", { id: String(row.id) });
+      throw conflict('上传地址已过期，请重新申请');
+    }
+    if (declaredSize !== null && declaredSize > this.storage.maxUploadBytes) {
+      throw invalid('文件超过大小上限');
+    }
+    if (declaredSize !== null && row.size !== null && Number(row.size) !== declaredSize) {
+      throw invalid('Content-Length 与申请时声明的大小不一致');
+    }
+    let result;
+    try {
+      result = await this.storage.put(String(row.workspace), source, this.storage.maxUploadBytes);
+    } catch (error) {
+      throw invalid(error instanceof Error ? error.message : '上传失败');
+    }
+    if (row.sha256 && String(row.sha256) !== result.sha256) {
+      // 内容寻址下，这个对象键可能已被其他文件引用；不能在这里删对象。
+      throw invalid('文件哈希与申请时声明的不一致');
+    }
+    const at = this.ctx.now();
+    await this.ctx.db.run(
+      `UPDATE space_uploads
+       SET status = 'uploaded', size = :size, sha256 = :sha256, object_key = :objectKey
+       WHERE id = :id AND status = 'pending'`,
+      { id: String(row.id), size: result.size, sha256: result.sha256, objectKey: result.objectKey },
+    );
+    return { id: String(row.id), status: 'uploaded', size: result.size, sha256: result.sha256 };
+  }
+
+  async uploadStatus(actor: Principal, uploadId: string): Promise<Record<string, unknown>> {
+    const row = await this.ctx.db.read.one(
+      'SELECT * FROM space_uploads WHERE id = :id AND workspace = :workspace AND principal_id = :principal',
+      { id: uploadId, workspace: actor.workspace, principal: actor.id },
+    );
+    if (!row) throw notFound('上传不存在');
+    return {
+      id: String(row.id),
+      status: String(row.status),
+      name: String(row.name),
+      mime: String(row.mime),
+      size: row.size === null || row.size === undefined ? null : Number(row.size),
+      sha256: row.sha256 === null || row.sha256 === undefined ? null : String(row.sha256),
+      fileId: row.completed_file_id === null || row.completed_file_id === undefined ? null : String(row.completed_file_id),
+      expiresAt: String(row.expires_at),
+    };
+  }
+
+  /** 确认上传并生成文件记录。重复调用返回同一个文件。 */
+  async completeUpload(actor: Principal, uploadId: string): Promise<SpaceFile> {
+    await requireAgentScope(this.ctx, actor, 'tasks:submit');
+    const row = await this.ctx.db.read.one(
+      'SELECT * FROM space_uploads WHERE id = :id AND workspace = :workspace AND principal_id = :principal',
+      { id: uploadId, workspace: actor.workspace, principal: actor.id },
+    );
+    if (!row) throw notFound('上传不存在');
+    if (String(row.status) === 'expired' || Date.parse(String(row.expires_at)) <= Date.parse(this.ctx.now())) {
+      throw conflict('上传地址已过期，请重新申请');
+    }
+    if (String(row.status) === 'pending') throw conflict('文件还没有上传完成');
+    const existingId = row.completed_file_id ? String(row.completed_file_id) : null;
+    if (existingId) {
+      const existing = await this.ctx.db.read.one('SELECT * FROM space_files WHERE id = :id', { id: existingId });
+      if (existing) return toSpaceFile(existing);
+    }
+    if (String(row.storage) !== this.storage.kind) throw conflict('存储后端已经变化，请重新上传');
+    if (!row.object_key) throw conflict('上传缺少对象键，请重新上传');
+    const objectKey = String(row.object_key);
+    let verified: { size: number; sha256: string };
+    try {
+      verified = await this.storage.verify(objectKey, {
+        size: row.size === null ? null : Number(row.size),
+        sha256: row.sha256 === null ? null : String(row.sha256),
+      });
+    } catch (error) {
+      throw invalid(error instanceof Error ? error.message : '对象校验失败');
+    }
+
+    const id = this.ctx.newId();
+    const at = this.ctx.now();
+    const taskId = row.task_id === null || row.task_id === undefined ? null : String(row.task_id);
+    if (taskId) await readTask(this.ctx, actor, taskId);
+    let version = 1;
+    if (row.supersedes_id && taskId) {
+      const prior = await this.ctx.db.read.one(
+        'SELECT version FROM space_files WHERE id = :id AND task_id = :taskId',
+        { id: String(row.supersedes_id), taskId },
+      );
+      if (!prior) throw notFound('被替代的文件不存在');
+      version = Number(prior.version) + 1;
+    }
+
+    await this.ctx.db.transaction(async tx => {
+      await tx.run(
+        `INSERT INTO space_objects(workspace, sha256, storage, size, object_key, created_at, deleted_at)
+         VALUES(:workspace, :sha256, :storage, :size, :objectKey, :at, NULL)
+         ON CONFLICT(workspace, sha256, storage) DO NOTHING`,
+        {
+          workspace: actor.workspace,
+          sha256: verified.sha256,
+          storage: this.storage.kind,
+          size: verified.size,
+          objectKey,
+          at,
+        },
+      );
+      await tx.run(
+        `INSERT INTO space_files(id, workspace, task_id, subtask_id, message_id, name, mime, size,
+                                 sha256, storage, object_key, data, kind, version, supersedes_id,
+                                 produced_by, source, status, created_at, deleted_at)
+         VALUES(:id, :workspace, :taskId, :subtask, :message, :name, :mime, :size,
+                :sha256, :storage, :objectKey, NULL, :kind, :version, :supersedes,
+                :producedBy, :source, 'ready', :at, NULL)`,
+        {
+          id,
+          workspace: actor.workspace,
+          taskId,
+          subtask: row.subtask_id === null || row.subtask_id === undefined ? null : String(row.subtask_id),
+          message: row.message_id === null || row.message_id === undefined ? null : String(row.message_id),
+          name: String(row.name),
+          mime: String(row.mime),
+          size: verified.size,
+          sha256: verified.sha256,
+          storage: this.storage.kind,
+          objectKey,
+          kind: String(row.kind),
+          version,
+          supersedes: row.supersedes_id === null || row.supersedes_id === undefined ? null : String(row.supersedes_id),
+          producedBy: actor.id,
+          source: String(row.source),
+          at,
+        },
+      );
+      await tx.run(
+        "UPDATE space_uploads SET status = 'complete', completed_file_id = :file WHERE id = :id",
+        { id: uploadId, file: id },
+      );
+      if (taskId) {
+        await appendEvent(this.ctx, tx, {
+          taskId,
+          actorId: actor.id,
+          type: 'file_uploaded',
+          payload: { fileId: id, name: String(row.name), mime: String(row.mime), size: verified.size, sha256: verified.sha256, kind: String(row.kind), version },
+        });
+      }
+    });
+
+    return {
+      id,
+      workspace: actor.workspace,
+      taskId,
+      subtaskId: row.subtask_id === null || row.subtask_id === undefined ? null : String(row.subtask_id),
+      messageId: row.message_id === null || row.message_id === undefined ? null : String(row.message_id),
+      name: String(row.name),
+      mime: String(row.mime),
+      size: verified.size,
+      sha256: verified.sha256,
+      storage: this.storage.kind,
+      kind: String(row.kind) as SpaceFileKind,
+      version,
+      supersedesId: row.supersedes_id === null || row.supersedes_id === undefined ? null : String(row.supersedes_id),
+      producedBy: actor.id,
+      producedByName: actor.displayName,
+      source: String(row.source) as SpaceFile['source'],
+      status: 'ready',
+      createdAt: at,
+      deletedAt: null,
+    };
+  }
+
+  /** 读取文件字节流。任务文件沿用任务可见性；独立附件按团队空间可见。 */
+  async openContent(
+    actor: Principal,
+    fileId: string,
+    rangeHeader?: string,
+  ): Promise<{
+    file: SpaceFile;
+    stream: Readable;
+    size: number;
+    range: { start: number; end: number } | null;
+  }> {
+    const row = await this.ctx.db.read.one(
+      `SELECT f.*, p.display_name AS produced_by_name
+       FROM space_files f LEFT JOIN principals p ON p.id = f.produced_by
+       WHERE f.id = :id AND f.workspace = :workspace AND f.status = 'ready'`,
+      { id: fileId, workspace: actor.workspace },
+    );
+    if (!row) throw notFound('文件不存在');
+    await requireAgentScope(this.ctx, actor, 'tasks:read');
+    if (row.task_id !== null && row.task_id !== undefined) {
+      await readTask(this.ctx, actor, String(row.task_id));
+    } else if (String(row.produced_by) !== actor.id && !hasAnyRole(actor, 'admin', 'reviewer')) {
+      // 独立附件默认只对上传者与管理员可见；挂到文档后，按文档的可见性放行。
+      const docs = await this.ctx.db.read.all(
+        `SELECT k.* FROM knowledge_assets a JOIN knowledge k ON k.id = a.knowledge_id
+         WHERE a.file_id = :file`,
+        { file: fileId },
+      );
+      let readable = false;
+      for (const doc of docs) {
+        if (await this.canReadKnowledge(actor, String(doc.id), doc)) {
+          readable = true;
+          break;
+        }
+      }
+      if (!readable) throw forbidden('无权读取该附件');
+    }
+    const file = toSpaceFile(row);
+    const total = Number(row.size);
+    const range = parseByteRange(rangeHeader, total);
+    if (String(row.storage) === 'inline') {
+      const bytes = Buffer.from(String(row.data ?? ''), 'base64');
+      const slice = range ? bytes.subarray(range.start, range.end + 1) : bytes;
+      return { file, stream: Readable.from(slice), size: total, range };
+    }
+    if (!row.object_key) throw notFound('文件对象不存在');
+    try {
+      const opened = await this.storage.open(String(row.object_key), range ?? undefined);
+      return { file, stream: opened.stream, size: total, range };
+    } catch {
+      throw notFound('文件对象不存在');
+    }
+  }
+
+  async openTaskContent(
+    actor: Principal,
+    taskId: string,
+    fileId: string,
+    rangeHeader?: string,
+  ): Promise<{ file: SpaceFile; stream: Readable; size: number; range: { start: number; end: number } | null }> {
+    await readTask(this.ctx, actor, taskId);
+    const result = await this.openContent(actor, fileId, rangeHeader);
+    if (result.file.taskId !== taskId) throw notFound('文件不存在');
+    return result;
+  }
+
+  /** 独立附件的软删除；任务文件仍走任务权限。 */
+  async deleteWorkspaceFile(actor: Principal, fileId: string): Promise<{ id: string; status: string }> {
+    await requireAgentScope(this.ctx, actor, 'tasks:submit');
+    const row = await this.ctx.db.read.one(
+      'SELECT * FROM space_files WHERE id = :id AND workspace = :workspace AND status <> \'deleted\'',
+      { id: fileId, workspace: actor.workspace },
+    );
+    if (!row) throw notFound('文件不存在');
+    if (row.task_id !== null && row.task_id !== undefined) {
+      return this.deleteFile(actor, String(row.task_id), fileId);
+    }
+    const allowed = String(row.produced_by) === actor.id || hasAnyRole(actor, 'admin');
+    if (!allowed) throw forbidden('只有上传者或管理员可以删除附件');
+    await this.ctx.db.transaction(async tx => {
+      await tx.run(
+        "UPDATE space_files SET status = 'deleted', deleted_at = :at WHERE id = :id AND status <> 'deleted'",
+        { at: this.ctx.now(), id: fileId },
+      );
     });
     return { id: fileId, status: 'deleted' };
   }
@@ -840,6 +1309,7 @@ export class CollabService {
       });
     }
     activity.sort((left, right) => left.at.localeCompare(right.at) || left.type.localeCompare(right.type));
+    const unread = await this.unreadFor(actor, task.id, messages);
 
     return {
       task,
@@ -856,7 +1326,317 @@ export class CollabService {
       files,
       activity: activity.slice(-200),
       knowledge,
+      unread: { messages: unread.messages, questions: unread.questions, mentions: unread.mentions },
+      lastReadAt: unread.lastReadAt,
     };
+  }
+
+  /** 房间未读：按每人每任务的游标计算，不改变任务版本。 */
+  private async unreadFor(
+    actor: Principal,
+    taskId: string,
+    messages?: TaskComment[],
+  ): Promise<{ messages: number; questions: number; mentions: number; lastReadAt: string | null }> {
+    const read = await this.ctx.db.read.one(
+      'SELECT last_read_at FROM task_reads WHERE task_id = :taskId AND principal_id = :principal',
+      { taskId, principal: actor.id },
+    );
+    const lastReadAt = read ? String(read.last_read_at) : null;
+    const rows = messages ?? (await this.listComments(actor, taskId, { limit: 500 }));
+    const others = rows.filter(item => item.authorId !== actor.id);
+    const fresh = others.filter(item => !lastReadAt || item.createdAt > lastReadAt);
+    const answered = new Set(rows.map(item => item.replyTo).filter((id): id is string => Boolean(id)));
+    const questions = fresh.filter(
+      item => item.kind === 'question' && addressedTo(item.payload).includes(actor.id) && !answered.has(item.id),
+    );
+    const mention = await this.ctx.db.read.one(
+      `SELECT COUNT(*) AS count FROM task_mentions
+       WHERE task_id = :taskId AND recipient_id = :principal AND read_at IS NULL`,
+      { taskId, principal: actor.id },
+    );
+    return {
+      messages: fresh.length,
+      questions: questions.length,
+      mentions: Number(mention?.count ?? 0),
+      lastReadAt,
+    };
+  }
+
+  /** 把房间标为已读：只移动游标，不产生事件，也不推进任务版本。 */
+  async markRead(
+    actor: Principal,
+    taskId: string,
+  ): Promise<{ taskId: string; lastReadAt: string; unread: { messages: number; questions: number; mentions: number } }> {
+    const task = await readTask(this.ctx, actor, taskId);
+    const at = this.ctx.now();
+    await this.ctx.db.transaction(async tx => {
+      await tx.run(
+        `INSERT INTO task_reads(workspace, task_id, principal_id, last_read_at)
+         VALUES(:workspace, :taskId, :principal, :at)
+         ON CONFLICT(task_id, principal_id) DO UPDATE SET last_read_at = :at`,
+        { workspace: actor.workspace, taskId: task.id, principal: actor.id, at },
+      );
+      await tx.run(
+        `UPDATE task_mentions SET read_at = :at
+         WHERE task_id = :taskId AND recipient_id = :principal AND read_at IS NULL`,
+        { at, taskId: task.id, principal: actor.id },
+      );
+    });
+    return { taskId: task.id, lastReadAt: at, unread: { messages: 0, questions: 0, mentions: 0 } };
+  }
+
+  /** 点名问我的、尚未回答的问题；供智能体待办与 CLI 使用。 */
+  async questionsFor(actor: Principal): Promise<TaskComment[]> {
+    await requireAgentScope(this.ctx, actor, 'tasks:read');
+    const teamVisible = await this.teamVisible(actor);
+    const rows = await this.ctx.db.read.all(
+      `SELECT c.*, p.display_name AS author_name, p.avatar AS author_avatar, p.kind AS author_kind,
+              t.title AS task_title
+       FROM task_comments c
+       JOIN tasks t ON t.id = c.task_id
+       LEFT JOIN principals p ON p.id = c.author_id
+       WHERE t.workspace = :workspace AND c.kind = 'question' AND c.payload LIKE :needle
+         AND ${this.visibleTaskSql}
+       ORDER BY c.created_at DESC LIMIT 200`,
+      { workspace: actor.workspace, principal: actor.id, teamVisible, needle: `%"${actor.id}"%` },
+    );
+    const replies = new Set<string>();
+    const answered = await this.ctx.db.read.all(
+      `SELECT c.task_id, c.reply_to FROM task_comments c JOIN tasks t ON t.id = c.task_id
+       WHERE t.workspace = :workspace AND c.reply_to IS NOT NULL`,
+      { workspace: actor.workspace },
+    );
+    for (const row of answered) replies.add(`${String(row.task_id)}|${String(row.reply_to)}`);
+
+    return rows
+      .map(toComment)
+      .filter(item => !replies.has(`${item.taskId}|${item.id}`))
+      .filter(item => {
+        // payload 可能含有相似字符串，最终仍以解析后的收件人为准。
+        return addressedTo(item.payload).includes(actor.id);
+      });
+  }
+
+  /** 当前主体能看到的任务集合；与 readTask 的规则保持一致。 */
+  private async teamVisible(actor: Principal): Promise<number> {
+    if (actor.kind !== 'human' || actor.tenantRole === 'guest') return 0;
+    const tenant = await this.ctx.db.read.one('SELECT personal, status FROM tenants WHERE id = :id', {
+      id: actor.workspace,
+    });
+    return tenant && Number(tenant.personal) === 0 && String(tenant.status) === 'active' ? 1 : 0;
+  }
+
+  private readonly visibleTaskSql = `(t.owner_id = :principal
+    OR EXISTS (SELECT 1 FROM task_coordinators tc WHERE tc.task_id = t.id AND tc.principal_id = :principal)
+    OR EXISTS (SELECT 1 FROM subtasks ts WHERE ts.task_id = t.id AND ts.agent_id = :principal)
+    OR :teamVisible = 1)`;
+
+  /** 跨任务检索消息、文件与已发布文档；结果只含调用方有权读取的内容。 */
+  async search(
+    actor: Principal,
+    query: string,
+  ): Promise<{
+    query: string;
+    messages: (TaskComment & { taskTitle: string })[];
+    files: (SpaceFile & { taskTitle: string | null })[];
+    knowledge: { id: string; title: string; summary: string; kind: string; version: number; state: string }[];
+  }> {
+    const text = query.trim();
+    if (!text) throw invalid('检索词不能为空');
+    await requireAgentScope(this.ctx, actor, 'tasks:read');
+    const needle = `%${text.toLowerCase()}%`;
+    const teamVisible = await this.teamVisible(actor);
+
+    const messageRows = await this.ctx.db.read.all(
+      `SELECT c.*, p.display_name AS author_name, p.avatar AS author_avatar, p.kind AS author_kind,
+              t.title AS task_title
+       FROM task_comments c
+       JOIN tasks t ON t.id = c.task_id
+       LEFT JOIN principals p ON p.id = c.author_id
+       WHERE t.workspace = :workspace AND LOWER(c.body) LIKE :needle
+         AND ${this.visibleTaskSql}
+       ORDER BY c.created_at DESC LIMIT 50`,
+      { workspace: actor.workspace, principal: actor.id, teamVisible, needle },
+    );
+    const fileRows = await this.ctx.db.read.all(
+      `SELECT f.*, t.title AS task_title, p.display_name AS produced_by_name
+       FROM space_files f
+       JOIN tasks t ON t.id = f.task_id
+       LEFT JOIN principals p ON p.id = f.produced_by
+       WHERE f.workspace = :workspace AND f.status = 'ready'
+         AND (LOWER(f.name) LIKE :needle OR LOWER(f.mime) LIKE :needle)
+         AND ${this.visibleTaskSql}
+       ORDER BY f.created_at DESC LIMIT 50`,
+      { workspace: actor.workspace, principal: actor.id, teamVisible, needle },
+    );
+
+    const knowledgeRows = await this.ctx.db.read.all(
+      `SELECT k.* FROM knowledge k
+       WHERE k.workspace = :workspace AND k.state = 'published'
+         AND (k.expires_at IS NULL OR k.expires_at > :now)
+         AND (LOWER(k.title) LIKE :needle OR LOWER(k.summary) LIKE :needle OR LOWER(k.content) LIKE :needle)
+       ORDER BY k.updated_at DESC LIMIT 50`,
+      { workspace: actor.workspace, needle, now: this.ctx.now() },
+    );
+    const knowledge: { id: string; title: string; summary: string; kind: string; version: number; state: string }[] = [];
+    for (const row of knowledgeRows) {
+      const id = String(row.id);
+      if (!(await this.canReadKnowledge(actor, id, row))) continue;
+      knowledge.push({
+        id,
+        title: String(row.title ?? ''),
+        summary: String(row.summary ?? ''),
+        kind: String(row.kind ?? 'document'),
+        version: Number(row.version),
+        state: String(row.state),
+      });
+      if (knowledge.length >= 20) break;
+    }
+
+    return {
+      query: text,
+      messages: messageRows.map(row => { const item = toComment(row) as TaskComment & { taskTitle: string }; item.taskTitle = String(row.task_title); return item; }).slice(0, 20),
+      files: fileRows.map(row => { const item = toSpaceFile(row) as SpaceFile & { taskTitle: string | null }; item.taskTitle = row.task_title === null || row.task_title === undefined ? null : String(row.task_title); return item; }).slice(0, 20),
+      knowledge,
+    };
+  }
+
+  /** 文档可见性：管理员/审核人、公开范围、授权名单或作者本人。 */
+  private async canReadKnowledge(
+    actor: Principal,
+    knowledgeId: string,
+    row: Record<string, unknown>,
+  ): Promise<boolean> {
+    if (hasAnyRole(actor, 'admin', 'reviewer')) return true;
+    if (String(row.author_id) === actor.id) return true;
+    if (String(row.access_mode ?? 'workspace') === 'workspace') return true;
+    const grant = await this.ctx.db.read.one(
+      'SELECT 1 AS present FROM knowledge_grants WHERE knowledge_id = :id AND principal_id = :principal',
+      { id: knowledgeId, principal: actor.id },
+    );
+    return Boolean(grant);
+  }
+
+  /**
+   * 交接包：给"换一个进程接着做"的智能体一份紧凑事实。
+   * 与 UI 同源，不另造一套状态；文件给出带令牌访问的下载地址。
+   */
+  async contextPack(
+    actor: Principal,
+    taskId: string,
+    origin: string,
+  ): Promise<{ markdown: string; manifest: Record<string, unknown> }> {
+    const room = await this.room(actor, taskId);
+    const { task } = room;
+    const summaryRow = await this.ctx.db.read.one(
+      'SELECT * FROM task_summaries WHERE task_id = :taskId ORDER BY version DESC LIMIT 1',
+      { taskId: task.id },
+    );
+    const base = origin.replace(/\/+$/, '');
+    const files = room.files.map(file => ({
+      ...file,
+      downloadUrl: `${base}/v1/tasks/${encodeURIComponent(task.id)}/files/${encodeURIComponent(file.id)}/content`,
+    }));
+    const recent = room.messages.slice(-20);
+    const pendingRow = await this.ctx.db.read.one(
+      `SELECT COUNT(*) AS count FROM subtasks
+       WHERE task_id = :taskId AND status IN ('invited','accepted','returned')`,
+      { taskId: task.id },
+    );
+    const manifest = {
+      task: {
+        id: task.id,
+        title: task.title,
+        type: task.type,
+        status: task.status,
+        version: task.version,
+        goal: task.goal,
+        acceptance: task.acceptance,
+        dueAt: task.dueAt,
+        ownerId: task.ownerId,
+      },
+      generatedAt: this.ctx.now(),
+      generatedBy: actor.id,
+      stageSummary: summaryRow
+        ? {
+            version: Number(summaryRow.version),
+            text: String(summaryRow.text),
+            pending: String(summaryRow.pending),
+            createdAt: String(summaryRow.created_at),
+          }
+        : null,
+      pendingSubtasks: Number(pendingRow?.count ?? 0),
+      threads: room.threads,
+      messages: recent,
+      files,
+      knowledge: room.knowledge.map(item => ({
+        id: item.id,
+        version: item.version,
+        title: item.title,
+        summary: item.summary,
+        kind: item.kind,
+        state: item.state,
+      })),
+      unread: room.unread,
+    };
+
+    const lines: string[] = [];
+    lines.push(`# 任务交接包：${task.title}`, '');
+    lines.push(`- 任务 ID：${task.id}`);
+    lines.push(`- 类型：${task.type}`);
+    lines.push(`- 状态：${task.status}（v${task.version}）`);
+    lines.push(`- 负责人：${task.ownerId}`);
+    if (task.dueAt) lines.push(`- 截止：${task.dueAt}`);
+    lines.push(`- 生成时间：${manifest.generatedAt}`);
+    lines.push('', '## 目标', '', task.goal || '（未填写）');
+    lines.push('', '## 验收条件', '', task.acceptance || '（未填写）');
+    if (summaryRow) {
+      lines.push(
+        '',
+        `## 当前阶段摘要（v${Number(summaryRow.version)}）`,
+        '',
+        String(summaryRow.text),
+        '',
+        `未决：${String(summaryRow.pending) || '无'}`,
+      );
+    }
+    const openThreads = room.threads.filter(item => item.status === 'open');
+    lines.push('', '## 未决线程', '');
+    lines.push(openThreads.length ? openThreads.map(item => `- ${item.topic}（${item.id}）`).join('\n') : '无');
+    lines.push('', `## 最近对话（${recent.length} 条）`, '');
+    lines.push(
+      recent.length
+        ? recent
+            .map(
+              item =>
+                `- ${item.createdAt} [${item.kind}] ${item.authorName}：${item.body.replace(/\s+/g, ' ').slice(0, 300)}`,
+            )
+            .join('\n')
+        : '无',
+    );
+    lines.push('', `## 文件（${files.length} 个）`, '');
+    lines.push(
+      files.length
+        ? files
+            .map(
+              file =>
+                `- ${file.name}（${file.kind}，${file.size} 字节，sha256 ${file.sha256.slice(0, 16)}…）` +
+                `\n  下载：${file.downloadUrl}`,
+            )
+            .join('\n')
+        : '无',
+    );
+    lines.push('', `## 相关文档（${room.knowledge.length} 份）`, '');
+    lines.push(
+      room.knowledge.length
+        ? room.knowledge
+            .map(item => `- ${item.title || item.id}（v${item.version}，${item.kind}）`)
+            .join('\n')
+        : '无',
+    );
+    lines.push('', '## 未读', '', `- 消息：${room.unread.messages}，点我问：${room.unread.questions}`);
+
+    return { markdown: lines.join('\n'), manifest };
   }
 
   // ---------------------------------------------------------------- 开放认领

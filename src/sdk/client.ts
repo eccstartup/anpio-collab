@@ -16,14 +16,19 @@ import type {
   KnowledgeSummary,
   MaterialContent,
   MaterialMeta,
+  MessageKind,
   NotificationView,
   PrincipalView,
+  SpaceFile,
   StatusChange,
   SubtaskRef,
+  TaskComment,
   TaskContext,
   TaskDetail,
   TaskListItem,
   TaskRef,
+  TaskRoom,
+  TaskThread,
 } from './types.ts';
 
 export type {
@@ -35,14 +40,37 @@ export type {
   KnowledgeSummary,
   MaterialContent,
   MaterialMeta,
+  MessageKind,
   NotificationView,
   PrincipalView,
+  SpaceFile,
   StatusChange,
   SubtaskRef,
+  TaskComment,
   TaskContext,
   TaskDetail,
   TaskListItem,
   TaskRef,
+  TaskRoom,
+  TaskThread,
+};
+
+export type UploadSession = {
+  id: string;
+  storage: 'fs' | 's3';
+  method: 'PUT';
+  url: string;
+  headers: Record<string, string>;
+  expiresAt: string;
+};
+
+export type ContextPack = { markdown: string; manifest: Record<string, unknown> };
+
+export type SpaceSearch = {
+  query: string;
+  messages: (TaskComment & { taskTitle: string })[];
+  files: (SpaceFile & { taskTitle: string | null })[];
+  knowledge: { id: string; title: string; summary: string; kind: string; version: number; state: string }[];
 };
 
 export class CollabError extends Error {
@@ -255,6 +283,207 @@ export class CollabClient {
 
   context(id: string) {
     return this.request<TaskContext>(`tasks/${encodeURIComponent(id)}/context`);
+  }
+
+  // ------------------------------------------------------------ 房间与文件
+  room(taskId: string) {
+    return this.request<TaskRoom>(`tasks/${encodeURIComponent(taskId)}/room`);
+  }
+
+  messages(taskId: string, filters: { threadId?: string; limit?: number } = {}) {
+    const params = new URLSearchParams();
+    if (filters.threadId) params.set('threadId', filters.threadId);
+    if (filters.limit) params.set('limit', String(filters.limit));
+    const suffix = params.size ? `?${params}` : '';
+    return this.request<TaskComment[]>(`tasks/${encodeURIComponent(taskId)}/messages${suffix}`);
+  }
+
+  sendMessage(
+    taskId: string,
+    input: {
+      body: string;
+      kind?: MessageKind;
+      threadId?: string;
+      replyTo?: string;
+      payload?: Record<string, unknown>;
+      fileIds?: string[];
+    },
+    operationId: string,
+  ) {
+    return this.request<TaskComment>(`tasks/${encodeURIComponent(taskId)}/messages`, {
+      body: input,
+      operationId,
+    });
+  }
+
+  threads(taskId: string) {
+    return this.request<TaskThread[]>(`tasks/${encodeURIComponent(taskId)}/threads`);
+  }
+
+  openThread(taskId: string, input: { topic: string; assigneeId?: string }, operationId: string) {
+    return this.request<TaskThread>(`tasks/${encodeURIComponent(taskId)}/threads`, {
+      body: input,
+      operationId,
+    });
+  }
+
+  resolveThread(taskId: string, threadId: string, operationId: string) {
+    return this.request<TaskThread>(
+      `tasks/${encodeURIComponent(taskId)}/threads/${encodeURIComponent(threadId)}/resolve`,
+      { body: {}, operationId },
+    );
+  }
+
+  markRead(taskId: string, operationId: string) {
+    return this.request<{
+      taskId: string;
+      lastReadAt: string;
+      unread: { messages: number; questions: number; mentions: number };
+    }>(`tasks/${encodeURIComponent(taskId)}/read`, { body: {}, operationId });
+  }
+
+  /** 点名问我、尚未回答的问题。 */
+  questions() {
+    return this.request<TaskComment[]>('agent/questions');
+  }
+
+  /** 交接包：markdown 给智能体读，manifest 给程序用。 */
+  contextPack(taskId: string) {
+    return this.request<ContextPack>(`tasks/${encodeURIComponent(taskId)}/context-pack`);
+  }
+
+  search(query: string) {
+    return this.request<SpaceSearch>(`space/search?q=${encodeURIComponent(query)}`);
+  }
+
+  file(id: string) {
+    return this.request<SpaceFile>(`space/files/${encodeURIComponent(id)}`);
+  }
+
+  /** 申请上传地址。本地驱动返回服务端 PUT 地址，S3 驱动返回预签名地址。 */
+  uploadUrl(
+    input: {
+      name: string;
+      mime: string;
+      size?: number;
+      sha256?: string;
+      taskId?: string;
+      subtaskId?: string;
+      messageId?: string;
+      supersedesId?: string;
+      kind?: string;
+      source?: string;
+    },
+    operationId: string,
+  ) {
+    return this.request<UploadSession>('space/files/upload-url', { body: input, operationId });
+  }
+
+  uploadStatus(uploadId: string) {
+    return this.request<{ id: string; status: string; fileId: string | null; expiresAt: string }>(
+      `space/uploads/${encodeURIComponent(uploadId)}`,
+    );
+  }
+
+  completeUpload(uploadId: string, operationId: string) {
+    return this.request<SpaceFile>(`space/uploads/${encodeURIComponent(uploadId)}/complete`, {
+      body: {},
+      operationId,
+    });
+  }
+
+  /** 把字节 PUT 到上传地址。S3 返回空响应，本地驱动返回哈希与大小。 */
+  async putUpload(session: UploadSession, bytes: Uint8Array): Promise<Record<string, unknown>> {
+    const target = session.url.startsWith('http')
+      ? session.url
+      : new URL(session.url, this.baseUrl).toString();
+    let response: Response;
+    try {
+      response = await fetch(target, {
+        method: 'PUT',
+        headers: {
+          ...session.headers,
+          'content-length': String(bytes.byteLength),
+        },
+        body: bytes,
+        redirect: 'error',
+        signal: AbortSignal.timeout(120_000),
+      });
+    } catch (error) {
+      throw new CollabError('上传失败：网络中断', { uncertain: true, cause: error });
+    }
+    if (!response.ok) {
+      const text = await response.text();
+      let message = `上传失败（HTTP ${response.status}）`;
+      try {
+        const payload = JSON.parse(text) as { error?: { message?: string } };
+        if (payload.error?.message) message = payload.error.message;
+      } catch {
+        // S3 的错误体不是 JSON，保留 HTTP 状态即可。
+      }
+      throw new CollabError(message, { status: response.status });
+    }
+    const type = response.headers.get('content-type') ?? '';
+    return type.includes('json') ? ((await response.json()) as Record<string, unknown>) : { ok: true };
+  }
+
+  /** 三步上传的便捷封装：申请 → PUT → 确认。 */
+  async uploadBytes(
+    input: {
+      name: string;
+      mime: string;
+      size?: number;
+      sha256?: string;
+      taskId?: string;
+      subtaskId?: string;
+      messageId?: string;
+      supersedesId?: string;
+      kind?: string;
+      source?: string;
+    },
+    bytes: Uint8Array,
+    operationId: string,
+  ) {
+    const session = await this.uploadUrl({ ...input, size: input.size ?? bytes.byteLength }, operationId);
+    await this.putUpload(session, bytes);
+    return this.completeUpload(session.id, `${operationId}:complete`);
+  }
+
+  /** 流式读取文件字节；比 base64 JSON 接口更适合大文件。 */
+  async download(path: string): Promise<{ data: Uint8Array; mime: string; name: string | null }> {
+    const response = await fetch(new URL(`/v1/${path}`, this.baseUrl), {
+      headers: { authorization: `Bearer ${this.token}` },
+      redirect: 'error',
+      signal: AbortSignal.timeout(this.timeoutMs),
+    });
+    if (!response.ok) {
+      let message = `下载失败（HTTP ${response.status}）`;
+      try {
+        const payload = (await response.json()) as { error?: { message?: string } };
+        if (payload.error?.message) message = payload.error.message;
+      } catch {
+        // 非 JSON 错误体。
+      }
+      throw new CollabError(message, { status: response.status });
+    }
+    const disposition = response.headers.get('content-disposition') ?? '';
+    const match =
+      /filename\*=UTF-8''([^;]+)/i.exec(disposition) ?? /filename="?([^";]+)"?/i.exec(disposition);
+    return {
+      data: new Uint8Array(await response.arrayBuffer()),
+      mime: response.headers.get('content-type') ?? 'application/octet-stream',
+      name: match?.[1] ? decodeURIComponent(match[1]) : null,
+    };
+  }
+
+  downloadFile(fileId: string) {
+    return this.download(`space/files/${encodeURIComponent(fileId)}/content`);
+  }
+
+  downloadTaskFile(taskId: string, fileId: string) {
+    return this.download(
+      `tasks/${encodeURIComponent(taskId)}/files/${encodeURIComponent(fileId)}/content`,
+    );
   }
 
   /** 任务材料目录。 */

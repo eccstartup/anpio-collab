@@ -19,8 +19,12 @@
  *   node src/agents/cli.ts knowledge "缺料"
  */
 
+import { createHash } from 'node:crypto';
+import { readFile, writeFile } from 'node:fs/promises';
+import { basename, extname, resolve } from 'node:path';
 import { resolveAgentSession, shortDid, withAgentClient } from './session.ts';
 import { CollabClient } from '../sdk/client.ts';
+import type { MessageKind } from '../protocol/types.ts';
 
 const USAGE = `用法:
   login [绑定码] | whoami | me
@@ -28,6 +32,13 @@ const USAGE = `用法:
   claim <offerId>
   task <taskId> | context <taskId> | comments <taskId>
   comment <taskId> <内容>
+  room <taskId> | messages <taskId> [threadId]
+  say <taskId> <内容> | ask <taskId> [--to <主体ID>]... <内容>
+  handoff <taskId> [--to <主体ID>]... <内容>
+  thread <taskId> <主题> | resolve <taskId> <threadId>
+  read <taskId> | questions | pack <taskId>
+  find <关键词> | upload <文件路径> [--task <taskId>]
+  download <文件ID> [--out <路径>]
   adopt <taskId>
   heartbeat [online|busy|offline] [备注] | presence | oversight
   knowledge [查询] | search <关键词> [limit]
@@ -37,6 +48,43 @@ const USAGE = `用法:
   progress <subtaskId> <说明>
   outcome-unknown <subtaskId> <原因> <外部操作编号>
   ack <notificationId>`;
+
+/** 从参数里取出 `--to <id>`，剩下的按空格拼回正文。 */
+function splitRecipients(argv: string[]): { to: string[]; text: string } {
+  const to: string[] = [];
+  const words: string[] = [];
+  for (let index = 0; index < argv.length; index += 1) {
+    const word = argv[index]!;
+    if (word === '--to') {
+      const value = argv[index + 1];
+      if (!value) throw new Error('--to 后面需要主体 ID');
+      to.push(value);
+      index += 1;
+    } else {
+      words.push(word);
+    }
+  }
+  return { to, text: words.join(' ') };
+}
+
+function mimeOf(path: string): string {
+  const ext = extname(path).toLowerCase();
+  return (
+    {
+      '.md': 'text/markdown',
+      '.txt': 'text/plain',
+      '.json': 'application/json',
+      '.csv': 'text/csv',
+      '.pdf': 'application/pdf',
+      '.png': 'image/png',
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.gif': 'image/gif',
+      '.webp': 'image/webp',
+      '.zip': 'application/zip',
+    }[ext] ?? 'application/octet-stream'
+  );
+}
 
 async function readStdin(): Promise<string> {
   let input = '';
@@ -104,6 +152,71 @@ async function run(client: CollabClient, argv: string[]): Promise<unknown> {
       if (!first || !rest[0]) throw new Error('需要 taskId 与内容');
       // 评论是追加而不是覆盖，重复执行会多出一条，所以带时间戳。
       return client.comment(first, rest.join(' '), `cli:comment:${first}:${Date.now()}`);
+    case 'room':
+      if (!first) throw new Error('需要 taskId');
+      return client.room(first);
+    case 'messages':
+      if (!first) throw new Error('需要 taskId');
+      return client.messages(first, rest[0] ? { threadId: rest[0] } : {});
+    case 'say':
+    case 'ask':
+    case 'handoff': {
+      if (!first) throw new Error('需要 taskId');
+      const kind: MessageKind =
+        command === 'ask' ? 'question' : command === 'handoff' ? 'handoff' : 'comment';
+      const { to, text } = splitRecipients(rest);
+      if (!text) throw new Error('需要消息内容');
+      return client.sendMessage(
+        first,
+        { body: text, kind, ...(to.length ? { payload: { to } } : {}) },
+        `cli:${command}:${first}:${Date.now()}`,
+      );
+    }
+    case 'thread':
+      if (!first || !rest[0]) throw new Error('需要 taskId 与主题');
+      return client.openThread(first, { topic: rest.join(' ') }, `cli:thread:${first}:${Date.now()}`);
+    case 'resolve':
+      if (!first || !rest[0]) throw new Error('需要 taskId 与 threadId');
+      return client.resolveThread(first, rest[0], `cli:resolve:${first}:${rest[0]}`);
+    case 'read':
+      if (!first) throw new Error('需要 taskId');
+      return client.markRead(first, `cli:read:${first}:${Date.now()}`);
+    case 'questions':
+      return client.questions();
+    case 'pack':
+      if (!first) throw new Error('需要 taskId');
+      return client.contextPack(first);
+    case 'find':
+      return client.search([first ?? '', ...rest].join(' ').trim());
+    case 'upload': {
+      if (!first) throw new Error('需要文件路径');
+      const path = resolve(first);
+      const bytes = new Uint8Array(await readFile(path));
+      const taskFlag = rest.indexOf('--task');
+      const taskId = taskFlag >= 0 ? rest[taskFlag + 1] : undefined;
+      if (taskFlag >= 0 && !taskId) throw new Error('--task 后面需要 taskId');
+      return client.uploadBytes(
+        {
+          name: basename(path),
+          mime: mimeOf(path),
+          size: bytes.byteLength,
+          sha256: createHash('sha256').update(bytes).digest('hex'),
+          ...(taskId ? { taskId } : {}),
+        },
+        bytes,
+        `cli:upload:${taskId ?? 'space'}:${Date.now()}`,
+      );
+    }
+    case 'download': {
+      if (!first) throw new Error('需要文件 ID');
+      const outFlag = rest.indexOf('--out');
+      const out = outFlag >= 0 ? rest[outFlag + 1] : undefined;
+      if (outFlag >= 0 && !out) throw new Error('--out 后面需要路径');
+      const file = await client.downloadFile(first);
+      const path = resolve(out ?? file.name ?? first);
+      await writeFile(path, file.data);
+      return { path, bytes: file.data.byteLength, mime: file.mime };
+    }
     case 'adopt':
       if (!first) throw new Error('需要 taskId');
       return client.adopt(first, `cli:adopt:${first}`);

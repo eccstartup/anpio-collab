@@ -634,6 +634,28 @@ export const routes: Route[] = [
   },
   {
     method: 'GET',
+    path: '/v1/tasks/:id/context-pack',
+    description: '导出交接包（markdown + manifest）',
+    auditRead: true,
+    read: async ({ app, principal, params, origin }) =>
+      app.collab.contextPack(principal, params.id ?? '', origin),
+  },
+  {
+    method: 'POST',
+    path: '/v1/tasks/:id/read',
+    description: '把房间标为已读（只移动未读游标）',
+    write: {
+      execute: async ({ app, principal, params }) => app.collab.markRead(principal, params.id ?? ''),
+    },
+  },
+  {
+    method: 'GET',
+    path: '/v1/agent/questions',
+    description: '点名问我且尚未回答的房间问题',
+    read: async ({ app, principal }) => app.collab.questionsFor(principal),
+  },
+  {
+    method: 'GET',
     path: '/v1/tasks/:id/threads',
     description: '任务下的对话线程',
     read: async ({ app, principal, params }) => app.collab.listThreads(principal, params.id ?? ''),
@@ -1153,6 +1175,59 @@ export const routes: Route[] = [
     write: {
       execute: async ({ app, principal, params, body }) =>
         app.knowledge.setShares(principal, params.id ?? '', body),
+    },
+  },
+  {
+    method: 'GET',
+    path: '/v1/space/search',
+    description: '跨任务检索消息、文件与已发布文档',
+    read: async ({ app, principal, query }) =>
+      app.collab.search(principal, parseQuery(query)),
+  },
+  {
+    method: 'POST',
+    path: '/v1/space/files/upload-url',
+    description: '申请文件上传地址（本地磁盘或 S3 预签名）',
+    write: {
+      execute: async ({ app, principal, body }) => app.collab.createUpload(principal, body),
+    },
+  },
+  {
+    method: 'GET',
+    path: '/v1/space/uploads/:id',
+    description: '上传会话状态',
+    read: async ({ app, principal, params }) => app.collab.uploadStatus(principal, params.id ?? ''),
+  },
+  {
+    method: 'POST',
+    path: '/v1/space/uploads/:id/complete',
+    description: '确认上传并生成文件记录',
+    write: {
+      execute: async ({ app, principal, params }) => app.collab.completeUpload(principal, params.id ?? ''),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/space/files/:id/complete',
+    description: '确认上传并生成文件记录（兼容按文件路径调用）',
+    write: {
+      execute: async ({ app, principal, params }) => app.collab.completeUpload(principal, params.id ?? ''),
+    },
+  },
+  {
+    method: 'GET',
+    path: '/v1/space/files/:id',
+    description: '读取文件内容（base64，≤8 MiB）',
+    read: async ({ app, principal, params }) =>
+      app.collab.downloadWorkspaceFile(principal, params.id ?? ''),
+  },
+  {
+    method: 'POST',
+    path: '/v1/space/files/:id/delete',
+    description: '软删除文件或独立附件',
+    write: {
+      execute: async ({ app, principal, params }) =>
+        app.collab.deleteWorkspaceFile(principal, params.id ?? ''),
     },
   },
   {

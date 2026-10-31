@@ -31,6 +31,19 @@ export type Config = {
   didAllowHttp: boolean;
   sessionHours: number;
   oversight: Partial<OversightThresholds>;
+  /** 文件字节存放方式：本地磁盘（默认）或 S3/MinIO。 */
+  storage: 'fs' | 's3';
+  blobDir: string;
+  maxUploadBytes: number;
+  s3: {
+    bucket: string | null;
+    region: string | null;
+    endpoint: string | null;
+    prefix: string;
+    forcePathStyle: boolean;
+    accessKeyId: string | null;
+    secretAccessKey: string | null;
+  };
 };
 
 const parsePort = (raw: string | undefined, fallback: number): number => {
@@ -81,6 +94,24 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, cwd = process.c
       offlineMinutes: parsePositiveInt(env.COLLAB_OFFLINE_MINUTES, 15, 'COLLAB_OFFLINE_MINUTES'),
       stalledSubtaskHours: parsePositiveInt(env.COLLAB_STALLED_HOURS, 24, 'COLLAB_STALLED_HOURS'),
       deniedThreshold: parsePositiveInt(env.COLLAB_DENIED_THRESHOLD, 8, 'COLLAB_DENIED_THRESHOLD'),
+    },
+    storage: env.COLLAB_STORAGE === 's3' ? 's3' : 'fs',
+    blobDir: env.COLLAB_BLOB_DIR
+      ? resolve(env.COLLAB_BLOB_DIR)
+      : resolve(cwd, database.startsWith('postgres') ? 'collab-blobs' : `${database}.blobs`),
+    maxUploadBytes: parsePositiveInt(
+      env.COLLAB_MAX_UPLOAD_BYTES,
+      25 * 1024 * 1024,
+      'COLLAB_MAX_UPLOAD_BYTES',
+    ),
+    s3: {
+      bucket: env.COLLAB_S3_BUCKET ?? null,
+      region: env.COLLAB_S3_REGION ?? null,
+      endpoint: env.COLLAB_S3_ENDPOINT ?? null,
+      prefix: env.COLLAB_S3_PREFIX ?? '',
+      forcePathStyle: env.COLLAB_S3_FORCE_PATH_STYLE === '1',
+      accessKeyId: env.COLLAB_S3_ACCESS_KEY_ID ?? env.AWS_ACCESS_KEY_ID ?? null,
+      secretAccessKey: env.COLLAB_S3_SECRET_ACCESS_KEY ?? env.AWS_SECRET_ACCESS_KEY ?? null,
     },
   };
 }

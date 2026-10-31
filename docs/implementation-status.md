@@ -2,7 +2,25 @@
 
 对照 [plan.md](../plan.md)、[第二轮计划](plan-v2.md)、[第三轮计划](plan-v3.md)、[第四轮计划](plan-v4.md) 与 [第五轮计划](plan-v5.md)，说明本仓库现在做到了什么、哪些只是本机验证、哪些还没开始。
 
-> 结论先行：**阶段 1（本地协作闭环）、阶段 3（知识闭环）已实现；第二轮的身份、协作、监管三块已实现；第三轮的租户、两种登录与 Agent 授权已实现；第四轮补上"登录后补绑 DID"；第五轮把 DID 准入改成"必须已注册"，并补上反向绑邮箱；再上一轮加个人资料；上一轮把任务改成"交材料让智能体去做"，并允许受派智能体自提交候选经验；本轮完成第五轮计划的第一阶段——手动经验生命周期、复制与来源链、任务房间。第五轮第二至四阶段（对象存储、检索/交接包、语义检索）未开始。** 通过本机测试不等于企业环境验收。
+> 结论先行：**阶段 1（本地协作闭环）、阶段 3（知识闭环）已实现；第二轮的身份、协作、监管三块已实现；第三轮的租户、两种登录与 Agent 授权已实现；第四轮补上"登录后补绑 DID"；第五轮把 DID 准入改成"必须已注册"，并补上反向绑邮箱；再上一轮加个人资料；上一轮把任务改成"交材料让智能体去做"，并允许受派智能体自提交候选经验；上上轮完成第五轮计划的第一阶段——手动经验生命周期、复制与来源链、任务房间；本轮完成第二阶段——本地对象存储与三步上传、独立附件、流式下载、房间未读与点名提问、交接包与跨任务检索。第三阶段的语义检索未开始。** 通过本机测试不等于企业环境验收。
+
+## 第二阶段：对象存储、未读与交接包（本轮）
+
+| 能力 | 实现位置 | 验证方式 |
+| --- | --- | --- |
+| 本地对象存储：内容寻址 `<sha256前两位>/<sha256>`，临时文件 + `fsync` + 原子改名；同一团队同一内容只落一个对象 | `src/platform/storage.ts`、`app.ts` | `tests/storage.test.ts`（落盘、去重、软删除后字节保留） |
+| 可选 S3：按环境变量动态加载，未配置时完全走本地；上传令牌可换成预签名 PUT | `storage.ts` | 本地驱动全测；S3 路径未在真实桶上跑过 |
+| 三步上传：`POST /v1/space/files/upload-url` → `PUT /v1/space/uploads/:token` → `POST /v1/space/uploads/:id/complete`；令牌一次有效、过期清理、哈希与大小校验 | `services/storage.ts`、`routes.ts` | `tests/storage.test.ts`（重放、哈希不符、令牌复用） |
+| 文件可脱离任务：`space_files.task_id` 可空（schema v9 重建表），AICD 附件先独立上传再挂到文档 | `db/schema.ts`、`storage.ts` | `tests/storage.test.ts`「独立附件不绑任务也能上传」 |
+| 二进制流式读取：`GET /v1/space/files/:id/content`、`GET /v1/tasks/:id/files/:fileId/content`，支持 `Range`；网页下载不再走 base64 JSON | `routes.ts`、`src/web/app.js` | 同上 + `tests/aicd.test.ts` 房间下载；网页改动仅结构测试，未在浏览器手点 |
+| 房间未读：`task_reads` 每人每任务游标（schema v10），`GET /room` 返回 `unread.messages/questions/mentions`；`POST /v1/tasks/:id/read` 只移动游标，不推进任务版本 | `db/schema.ts`、`collab.ts#unreadFor/markRead` | `tests/room.test.ts`（版本不变、自己的消息不算未读） |
+| 点名提问：消息 `payload.to` 接受字符串或数组，校验收件人后与正文 `@` 合并；`GET /v1/agent/questions` 返回点名问我且未回答的问题 | `collab.ts#addComment/questionsFor`、`routes.ts` | 同上（回答后不再追问、不存在的收件人 400） |
+| 交接包：`GET /v1/tasks/:id/context-pack` 同时返回 markdown 与 manifest，含阶段摘要、未决线程、最近对话、文件下载地址与相关文档 | `collab.ts#contextPack` | 同上（markdown/manifest/下载地址/无权访问） |
+| 跨任务检索：`GET /v1/space/search?q=` 搜消息、文件名与已发布文档，可见性与任务读取规则一致 | `collab.ts#search` | 同上（未参与的任务不出现、空检索 400） |
+| SDK 与 CLI：上传/确认/下载、房间、消息、线程、已读、提问、交接包、检索；CLI 增加 `room/say/ask/handoff/thread/resolve/read/questions/pack/find/upload/download` | `src/sdk/client.ts`、`src/agents/cli.ts` | `tests/room.test.ts` 全程走 SDK；CLI 未做端到端脚本测试 |
+| 监管扩展到 11 条：提问超过 4 小时无人回答、@ 提醒超过 4 小时未读；回答或已读后自动解决 | `services/oversight.ts` | `tests/oversight.test.ts`（超时形成告警、回答与已读后解决） |
+
+测试合计 129 项（本轮新增存储 6 项、房间/交接包/检索 4 项、监管 1 项；其余为既有用例）。`npm run check` 无类型错误；SQLite（`npm test`）与临时 PostgreSQL 实例（`npm run test:postgres`）各 129 项全过。
 
 ## 经验与任务房间（本轮）
 
@@ -21,7 +39,7 @@
 
 测试合计 117 项（本轮新增 `tests/aicd.test.ts` 5 项：生命周期与权限、团队复制矩阵、邀请复制与来源撤销、房间合并时间线、团队任务可见性）。SQLite 与 PostgreSQL 跑同一套用例。
 
-第一阶段边界：手动经验的附件只能从任务产出文件里挑（`space_files.task_id` 非空），经验侧独立上传与对象存储留到第二阶段；时间线过滤在前端完成，房间仍靠轮询刷新。
+第一阶段边界：手动经验的附件只能从任务产出文件里挑（`space_files.task_id` 非空），经验侧独立上传与对象存储留到第二阶段；时间线过滤在前端完成，房间仍靠轮询刷新。（第二阶段已补齐独立附件、对象存储与未读；房间仍是轮询。）
 
 ## 任务材料与智能体经验自提交（上一轮）
 
@@ -141,6 +159,7 @@
 ## 与本机验证的边界
 
 - **管理台**用 DOM 桩 + 真实 HTTP 跑通登录与每个视图（`tests/web.test.ts`），但桩只实现用到的 API：布局、样式与实际浏览器行为仍需人工看一遍。
+- **对象存储**只在本地驱动上验证；S3 分支按接口实现并有预签名路径，但没有连真实桶跑过上传、Range 与生命周期。
 - **钱包插件**在测试里用与插件、CLI 相同的 `signRequest` 代签，等价于验签链路，但不覆盖插件自身的授权弹窗与密钥库。
 - **`anpio-cli` 互通**按 CLI 的语义（401 挑战 + 重签一次 + `Authentication-Info`）验证，没有在 CI 里真的跑 Rust 二进制。
 - **备份恢复**只验证了"备份文件完整"，没有做过真实故障注入（磁盘满、断电、WAL 损坏）。

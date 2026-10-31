@@ -121,6 +121,7 @@ export async function startHarness(
   const workspace = options.workspace ?? 'acme';
   const app = await createApp(db, {
     identity: { workspace, enroll: options.enroll ?? 'open' },
+    storage: { driver: 'fs', root: join(directory, 'blobs') },
   });
   await app.principals.bootstrap(workspace, {
     id: ADMIN_ID,

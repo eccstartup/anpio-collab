@@ -7,6 +7,8 @@
 
 import type { Database } from './db/driver.ts';
 import { migrate } from './db/schema.ts';
+import { createBlobStore, type BlobStore, type StorageSettings } from './storage.ts';
+import { resolve } from 'node:path';
 import { createHttpDidResolver, type DidResolver } from '../anp/resolver.ts';
 import { createContext, type Context } from './context.ts';
 import { AccountService } from './services/accounts.ts';
@@ -57,6 +59,7 @@ export type App = {
   collab: CollabService;
   oversight: OversightService;
   audit: AuditService;
+  storage: BlobStore;
 };
 
 export type AppOptions = {
@@ -66,6 +69,7 @@ export type AppOptions = {
   identity?: Partial<IdentitySettings>;
   oversight?: Partial<OversightThresholds>;
   mail?: Partial<MailSettings>;
+  storage?: Partial<StorageSettings>;
 };
 
 export async function createApp(db: Database, options: AppOptions = {}): Promise<App> {
@@ -110,7 +114,13 @@ export async function createApp(db: Database, options: AppOptions = {}): Promise
     { ticketMinutes: 15, selectionMinutes: 30 },
   );
   const agentAuth = new AgentAuthService(ctx, tenants, identity);
-  const collab = new CollabService(ctx, notifications);
+  const storage = createBlobStore({
+    driver: options.storage?.driver ?? 'fs',
+    root: options.storage?.root ?? process.env.COLLAB_BLOB_DIR ?? resolve(process.cwd(), 'collab-blobs'),
+    s3: options.storage?.s3,
+    maxUploadBytes: options.storage?.maxUploadBytes,
+  });
+  const collab = new CollabService(ctx, notifications, storage);
   const oversight = new OversightService(ctx, options.oversight);
 
   return {
@@ -129,5 +139,6 @@ export async function createApp(db: Database, options: AppOptions = {}): Promise
     collab,
     oversight,
     audit,
+    storage,
   };
 }
