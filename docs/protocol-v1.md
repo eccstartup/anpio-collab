@@ -477,6 +477,50 @@ accepted ──outcome-unknown──> outcome_unknown
 
 `materials` 是数组，每项 `{name, mime, data}`，`data` 为 base64。限制：最多 5 个、单个 1 MiB、合计 2 MiB；名字最长 200 字符。材料正文存库，可见性跟随任务（能读任务的人就能读材料）。请求体上限默认 4 MiB，留出 base64 与 JSON 开销。
 
+### 信箱
+
+信封只含 `id/topic/kind/priority/summary/ref`，不含正文；`GET /v1/mail/messages/:id` 会按当前权限重新判定引用对象，无权返回 404。所有拉取到的投递都要 `ack` 或 `nack`，没确认的消息会再次投递。
+
+| 方法 | 路径 | 作用 |
+| --- | --- | --- |
+| POST | `/v1/mail/sessions` | 注册会话 `{label, kind?, ttlSeconds?, subscriptions?}`，返回 `id/cursor/unread` |
+| GET | `/v1/mail/sessions/:id` | 会话状态与未读数 |
+| POST | `/v1/mail/sessions/:id/heartbeat` | 会话心跳，避免转为 `sleeping` |
+| POST | `/v1/mail/sessions/:id/close` | 关闭会话并结束其 SSE 流 |
+| GET | `/v1/mail/sessions/:id/messages?limit=&waitMs=&leaseSeconds=&include=digest` | 拉信封；按 `interrupt → next → digest` 排序，`waitMs` 上限 25s |
+| GET | `/v1/mail/sessions/:id/events` | SSE；事件 `id` 为投递序号，断线用 `Last-Event-ID` 续传 |
+| GET | `/v1/mail/messages/:id` | 取正文（重新鉴权） |
+| POST | `/v1/mail/messages/:id/ack` | 确认 `{deliveryId}`；重复确认幂等 |
+| POST | `/v1/mail/messages/:id/nack` | 退避重投 `{deliveryId, retryAfterSeconds?, reason?}`；超过 5 次置 `dead` |
+| GET/POST | `/v1/mail/sessions/:id/subscriptions` | 列出 / 新增订阅 `{topicPattern, mode?, filter?}` |
+| POST | `/v1/mail/subscriptions/:subId/delete` | 删除订阅 |
+| POST | `/v1/mail/publish` | 管理员手动发布 `{topic, kind, priority?, summary, ref, audience}` |
+
+主题：`ws:<workspace>:principal:<id>`、`ws:<workspace>:task:<taskId>`、`ws:<workspace>:capability:<cap>`，支持尾部 `*`。主体只能订自己；任务主题要求 `readTask` 通过；能力主题要求主体已声明该能力。拉取需要 `mailbox:read`，发布与 ack/nack 需要 `mailbox:write`（静态旧主体无 grant 时保持既有放行语义）。
+
+### 内置智能体
+
+定义与运行记录只对 `admin`/`owner`；`ensure` 只对 `admin`；运行日志、心跳与收尾只对该轮主体或管理员。
+
+| 方法 | 路径 | 作用 |
+| --- | --- | --- |
+| GET | `/v1/embedded/agents` | 定义列表（含 `unread/running`） |
+| POST | `/v1/embedded/agents` | 新建定义；`provider` 决定协议、Base URL、模型与密钥环境变量名 |
+| POST | `/v1/embedded/agents/import` | 按名称幂等导入 `{agents:[...]}` |
+| POST | `/v1/embedded/agents/:id/update` | 部分更新定义 |
+| POST | `/v1/embedded/agents/:id/delete` | 删除定义、运行记录与日志，并撤销派生授权 |
+| POST | `/v1/embedded/agents/:id/enable\|disable` | 启停 |
+| POST | `/v1/embedded/agents/:id/ensure` | 幂等创建 `embedded-<id>` 主体与授权 |
+| POST | `/v1/embedded/agents/:id/run` | 立即运行一轮 `{triggerMessageId?}` |
+| GET | `/v1/embedded/agents/:id/runs?limit=` | 运行记录（最多 100） |
+| GET | `/v1/embedded/runs/:id` | 运行详情（含定义名） |
+| POST | `/v1/embedded/runs/:id/log` | 子进程追加日志 `{level, text}` |
+| GET | `/v1/embedded/runs/:id/log?limit=&since=` | 读取日志（`limit` 1–100，`since` 为日志序号） |
+| POST | `/v1/embedded/runs/:id/heartbeat` | 心跳 `{sessionId?}` |
+| POST | `/v1/embedded/runs/:id/finish` | 收尾 `{status, exitCode?, turns?, promptTokens?, completionTokens?, error?}` |
+| GET | `/v1/embedded/status` | 定义、supervisor 与在跑轮次总览 |
+| GET | `/v1/embedded/providers` | 供应商注册表（登录可读） |
+
 ### 运维
 
 | 方法 | 路径 | 作用 |

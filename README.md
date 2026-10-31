@@ -2,7 +2,7 @@
 
 企业内多智能体协作的**后端 + 人类控制台**：人定任务与验收条件，协调智能体拆分工，业务智能体在各自授权范围内执行，结果由人验收；只有通过验收的结论才能沉淀为可检索、带范围和有效期的经验。
 
-第三轮把"谁能进来、进来属于谁"讲清楚了：**两种登录**（邮箱一次性链接 / DID 钱包签名）、**租户与成员**（一个账号可以在多个组织里有不同角色）、**智能体授权**（设备批准码，独立主体、最小范围、可单独撤销）。
+第三轮把"谁能进来、进来属于谁"讲清楚了：**两种登录**（邮箱一次性链接 / DID 钱包签名）、**租户与成员**（一个账号可以在多个组织里有不同角色）、**智能体授权**（设备批准码，独立主体、最小范围、可单独撤销）。这一轮补上**消息面**：跨任务信箱、按会话独立的游标与推送（SSE），以及"平台上养着的智能体"——平时睡着，被消息叫醒，在沙箱里跑一轮，把结果发回去再退出。
 
 本仓库是可单机运行的参考实现：一个进程、一个数据库文件、一个无构建的管理台，加上可独立部署的智能体进程。目标与边界见 [plan.md](plan.md)、[第二轮计划](docs/plan-v2.md) 与 [第三轮计划](docs/plan-v3.md)。
 
@@ -118,12 +118,68 @@ Agent  POST /auth/agent/token { deviceCode } → { token, scopes, expiresAt }
 | 经验库 | 已发布与待审核两个页签；检索、分享给团队、修订、调整共享范围、版本历史、撤销、审核发布；候选显示提交者 |
 | 成员 | 当前组织的人与智能体、租户角色、最近登录；邀请（发邮件链接）、改角色、移除、撤销邀请 |
 | 我的智能体 | 批准码批准（选独立主体或共用账号、勾选范围与期限）、授权列表、撤销 |
+| 内置智能体 | 管理员/负责人的平台内智能体：定义列表、按分类选择供应商、启停、立即运行、运行记录与日志 |
 | 参与者 | 人与智能体的目录、类型、角色、能力声明、登记、批准、改角色、停用 |
 | 监管 | 告警（按严重程度）、风险任务、智能体在线表、待批准主体；可一键重新扫描 |
 | 设置 | 个人资料（姓名、头像、头衔、简介）、登录方式（邮箱 + DID）、我的身份、用钱包绑定 DID、绑定邮箱、绑定的 DID、签发绑定码、会话列表与撤销 |
 | 审计 | 写操作、幂等重放、被拒绝的请求与敏感读取；普通轮询式读取不记录 |
 
 界面是无框架的原生 JS：没有构建步骤，只用 DOM 节点拼装（不用 `innerHTML` 渲染服务端内容），并在 CSP 下运行。
+
+## 信箱、订阅与推送
+
+通知是"任务绑定的提醒"，信箱是**跨任务、可推送的收件箱**。两者走同一条投递链路：业务写事务里发布消息，同一事务里写投递记录，因此"任务被退回"和"有人收到退回通知"不会只发生一半。
+
+- **信封与正文分离**：列表与推送只含 `id/topic/kind/priority/summary/ref`，正文要单独 `GET /v1/mail/messages/:id`，并按当时的权限重新判定；撤权之后拿旧链接也读不到内容。
+- **会话彼此独立**：一个主体可以注册多个会话（比如每台设备、每个智能体进程一个），各有游标与投递记录；一个会话读过，不影响另一个。
+- **至少一次**：处理完用 `ack` 确认；拿不准就 `nack` 说明原因，消息退避后重投。没确认的消息会再次投递，所以接消息的动作要幂等。
+- **优先级**：`interrupt`（退回、取消、被点名提问）先于 `next`，`digest`（新线程等）默认不进普通拉取，要 `include=digest`。
+- **订阅**：主题形如 `ws:<workspace>:principal:<id>`、`ws:<workspace>:task:<taskId>`、`ws:<workspace>:capability:<cap>`，尾部可用 `*`。主体只能订自己；任务主题要求能读该任务；能力主题要求主体已声明该能力。
+
+```
+POST /v1/mail/sessions                       注册会话（label、kind、ttlSeconds、subscriptions）
+GET  /v1/mail/sessions/:id/messages          拉信封（limit、waitMs 长轮询、leaseSeconds）
+GET  /v1/mail/messages/:id                   取正文（重新鉴权）
+POST /v1/mail/messages/:id/ack | /nack       确认 / 退避重投
+GET  /v1/mail/sessions/:id/events            SSE；断线用 Last-Event-ID 续传
+```
+
+自动发布的消息包括：受派（`task.assigned`）、退回（`task.returned`，interrupt）、取消（`task.cancelled`，interrupt）、开放子任务被认领、评论 `@`、点名提问（interrupt）、新线程（digest）、子任务全部提交待验收、协作请求，以及内置智能体运行失败（`run.failed`）。管理员也可以用 `POST /v1/mail/publish` 手动发一条做联调。
+
+## 内嵌智能体
+
+平台可以自己"养"智能体：定义存在库里，平时没有任何进程；supervisor 每隔几秒看一次谁有未读，有就 spawn 一个**一次性的 session 子进程**，跑完即退出。
+
+```
+supervisor（常驻，不加载模型）
+  └─ 有未读 → node src/runtime/session.ts
+       ├─ 独立运行目录（0700，默认结束后清理）
+       ├─ 拉信封 → 逐条取正文 → 模型循环 → 调协作工具 → ack
+       └─ 提交结果 → 写运行记录 → 退出
+```
+
+- **身份是派生的**：`ensure` 幂等创建主体 `embedded-<agentId>`，令牌由 `HMAC-SHA256(COLLAB_EMBEDDED_SECRET, 'embedded:<agentId>')` 派生，库里只存摘要；换 secret 即轮换。
+- **令牌不进环境**：supervisor 用 `COLLAB_RUNTIME_TOKEN` 调管理接口；子进程从 **stdin** 收自己的令牌，shell 孙进程的环境只剩 `PATH/HOME/TMPDIR/LANG`，拿不到 `COLLAB_TOKEN`、`*_API_KEY`、`DATABASE_URL`。
+- **沙箱**：工作目录内路径校验（拒绝绝对路径、`..`、符号链接逃逸）；shell 默认 60 秒、输出截断；`COLLAB_SANDBOX_EXEC=1` 时在 macOS 用 `sandbox-exec` 再包一层。它不是容器级隔离，真正的强隔离仍需容器或独立用户。
+- **工具白名单**：`task_get/task_accept/task_progress/task_submit/task_comment/knowledge_search/shell/read_file/write_file/list_files/finish`；定义里勾了哪些才暴露哪些，`shell` 关闭时完全不注册。
+- **崩溃可回收**：运行有 `heartbeat_at`；心跳停滞的 run 会标为 `outcome_unknown` 并把消息退回队列。未 ack 的消息本身就会重投，因此不需要进程内自动重试。
+- **供应商目录**：内置了主流厂商、订阅（Kiro/Codex CLI 适配位）、分发站与自定义协议；Base URL、模型、密钥环境变量名都可覆盖。密钥只按环境变量名引用，不收进数据库。另有一个确定性的 `script` 协议用于演示与测试，不联网。
+
+命令行：
+
+```sh
+# 先起服务（设置 COLLAB_EMBEDDED_SECRET，用于派生内置智能体令牌）
+COLLAB_EMBEDDED_SECRET="$(openssl rand -hex 32)" npm start
+
+# 另一个终端：跑一轮就退出（令牌用管理员令牌）
+COLLAB_RUNTIME_TOKEN=$COLLAB_BOOTSTRAP_TOKEN \
+COLLAB_EMBEDDED_SECRET=... npm run runtime -- --once
+
+# 常驻；也可用 COLLAB_AGENTS_FILE 在启动时同步定义
+COLLAB_AGENTS_FILE=examples/agents.json npm run runtime
+```
+
+`examples/agents.json` 里有一个默认启用的 `script` 演示智能体（会在沙箱里执行 `pwd`、写 `notes.txt` 再收尾），以及两个默认停用、需要密钥的定义。控制台「内置智能体」可以新建、编辑、启停、立即运行，并查看每一轮的日志与状态。
 
 ## 监管与报警
 
@@ -154,14 +210,15 @@ src/
   platform/
     db/                驱动（SQLite / PostgreSQL）、命名参数编译、schema 与迁移、行映射
     services/          领域服务：账号、租户、身份、邮箱登录、Agent 授权、任务、子任务、
-                       协作、知识、通知、监管、审计、邮件
-    http/              路由表、写执行器、服务器（Bearer / ANP 登录、CSP、错误映射）
+                       协作、知识、通知、信件（mailbox）、内置智能体（embedded）、监管、审计、邮件
+    http/              路由表、写执行器、服务器（Bearer / ANP 登录、SSE、CSP、错误映射）
     tools/             备份、超时调度（含告警扫描）
     app.ts/context.ts  组装依赖、注入 now 与 newId
+  runtime/             内置智能体运行时：supervisor、一次运行、沙箱、模型协议适配与供应商目录
   sdk/                 供智能体与外部程序使用的客户端，含写前日志
   agents/              示例智能体：worker、coordinator、命令行桥接、ANP 会话
   web/                 管理台（index.html / login-help.html / app.css / app.js）
-tests/                 109 项测试，同一套用例跑 SQLite 与 PostgreSQL
+tests/                 168 项测试，同一套用例跑 SQLite 与 PostgreSQL
 examples/              一次性纵向演示与示例数据
 scripts/               演示数据填充、PostgreSQL 测试脚本
 ```
@@ -272,11 +329,12 @@ await client.comment(offers[0].taskId, '数量按昨日 18:00 快照，已复核
 | --- | --- |
 | `npm start` | 启动服务（`HOST`/`PORT`/`COLLAB_DB` 等见下表） |
 | `npm run dev` | 同上，文件变化自动重启 |
-| `npm test` | 109 项测试（SQLite，每个用例独立临时库） |
+| `npm test` | 168 项测试（SQLite，每个用例独立临时库） |
 | `npm run test:postgres` | 同一套测试跑在临时 PostgreSQL 实例上，验证方言差异 |
 | `npm run check` | `tsc --noEmit` 类型检查 |
 | `npm run demo` | 一次性纵向演示：智能体 DID 登录 → 建任务 → 分派 → 两个智能体进程执行 → 汇总 → 验收 → 沉淀经验 → 第二个任务引用 |
 | `npm run seed` | 向运行中的实例写入可重复的演示数据（含逾期、开放池、评论、心跳、提案） |
+| `npm run runtime` | 启动内置智能体 supervisor；`-- --once` 只跑一轮，`--agent <id>` 只跑一个定义 |
 | `npm run backup -- <源库> <新文件>` | SQLite 一致性备份（`VACUUM INTO` + 完整性检查） |
 | `npm run scheduler -- --once` | 调用一次超时检查 + 告警扫描；去掉 `--once` 则按间隔轮询，加 `--no-scan` 只跑超时 |
 
@@ -300,6 +358,16 @@ await client.comment(offers[0].taskId, '数量按昨日 18:00 快照，已复核
 | `COLLAB_BODY_LIMIT` | `4194304` | 请求体上限（字节）；默认 4 MiB，容得下随任务提交的材料 |
 | `COLLAB_LOG_REQUESTS` | `0` | 设为 `1` 打印访问日志 |
 | `COLLAB_WEB_ROOT` | `src/web` | 管理台静态文件目录 |
+| `COLLAB_RUNTIME_TOKEN` | 无 | supervisor 调管理接口用的令牌，需要 `admin`（通常就用 `COLLAB_BOOTSTRAP_TOKEN`） |
+| `COLLAB_BASE_URL` | `http://127.0.0.1:<PORT>` | supervisor 连接的平台地址；服务不在默认端口时必填 |
+| `COLLAB_EMBEDDED_SECRET` | 无 | 派生内置智能体令牌的密钥；服务端与 supervisor 必须一致，更换即轮换全部内置智能体令牌 |
+| `COLLAB_RUNTIME_TICK_MS` | `3000` | supervisor 扫描间隔，最小 200 |
+| `COLLAB_RUNTIME_CONCURRENCY` | `2` | supervisor 同时最多跑几轮 |
+| `COLLAB_AGENTS_FILE` | 无 | 启动时同步的定义文件，示例见 `examples/agents.json` |
+| `COLLAB_RUN_ROOT` | `./collab-runs` | 内置智能体每次运行的工作目录根 |
+| `COLLAB_KEEP_RUN` | `0` | 设为 `1` 时保留运行目录，便于排查（默认结束后删除） |
+| `COLLAB_SANDBOX_EXEC` | `0` | 设为 `1` 时在 macOS 用 `sandbox-exec` 再包一层（默认拒绝网络，只允许写运行目录） |
+| `COLLAB_SESSION_IDLE_HOURS` | `24` | 信箱会话多久没心跳转为 `sleeping` |
 
 智能体侧：`COLLAB_URL`、`COLLAB_ANP_KEY`（JWK 文件）或 `COLLAB_TOKEN`、`COLLAB_ANP_HANDLE`（覆盖默认 handle）、`COLLAB_STATE_DIR`（会话缓存目录）、`COLLAB_TIMEOUT_MS`。
 
@@ -313,8 +381,12 @@ await client.comment(offers[0].taskId, '数量按昨日 18:00 快照，已复核
 - 心跳靠智能体自己上报，平台不主动探活；"在线"只表示它还在，不表示它做对了。
 - 知识检索是词法匹配（中文二元组 + 打分 + 字符预算截断），没有向量检索与评测集。
 - 告警由显式扫描产生（`/v1/oversight/scan` 或调度器），不是事件驱动；阈值是常量而非可调策略。
-- 通知是数据库内的拉取式消息，尚未接入外部消息队列。
-- 数据库迁移到 v6（新增账号、租户、邀请、登录票据、Agent 授权、本地发件箱、个人空间、经验分享，以及 `principals.account_id/tenant_role`、`task_materials`）；升级策略见 [运行说明](docs/local-operations.md)。
+- 通知仍是数据库内的拉取式消息；信箱做到了 at-least-once 与 SSE 推送，但没有外部消息队列或跨实例 pub/sub。
+- 内置智能体的沙箱是"路径 + 环境清洗 + 超时 + 工具白名单"，**不是**容器级隔离；`COLLAB_SANDBOX_EXEC=1` 也只在本机 `sandbox-exec` 下多一层限制。真正的强隔离应使用容器或独立用户。
+- 内置智能体每次运行不继承上一次的对话与工作目录；需要长期记忆要自己写到平台（任务、评论、经验）。
+- Kiro / Codex 的订阅协议没有逆向，只有本机 CLI 适配位；没装 CLI 时会明确报错，不会假装可用。
+- 供应商 Base URL 与默认模型会随厂商调整，全部可在定义里覆盖；界面里标了"以文档为准"。
+- 数据库迁移到 v13（新增信箱、内置智能体定义/运行/日志/supervisor 表）；升级策略见 [运行说明](docs/local-operations.md)。
 
 ## 文档
 
@@ -324,3 +396,5 @@ await client.comment(offers[0].taskId, '数量按昨日 18:00 快照，已复核
 - [登录与授权说明](docs/login-and-authorization.md)：两种登录、邀请邮件、Agent 授权与撤销（也挂在 `/help/login`）
 - [第二轮计划](docs/plan-v2.md)：身份、协作、监管三块的设计取舍
 - [第三轮计划](docs/plan-v3.md)：租户模型、邮箱登录、设备授权码的完整设计
+- [第四轮计划](docs/plan-v4.md)：任务房间、对象存储、未读与交接包
+- [第五轮计划](docs/plan-v5.md)：归档、保留期与团队首页

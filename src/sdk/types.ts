@@ -224,6 +224,7 @@ export type Evidence = {
 export type NotificationView = Notification;
 export type PrincipalView = Principal;
 export type { MessageKind, SpaceFile, TaskComment, TaskRoom, TaskThread };
+export type { MailEnvelope, MailMessage, MailSession, MailSubscription } from '../protocol/types.ts';
 export type AuditEntry = {
   seq: number;
   principalId: string;

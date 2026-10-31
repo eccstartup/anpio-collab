@@ -2,7 +2,26 @@
 
 对照 [plan.md](../plan.md)、[第二轮计划](plan-v2.md)、[第三轮计划](plan-v3.md)、[第四轮计划](plan-v4.md) 与 [第五轮计划](plan-v5.md)，说明本仓库现在做到了什么、哪些只是本机验证、哪些还没开始。
 
-> 结论先行：**阶段 1（本地协作闭环）、阶段 3（知识闭环）已实现；第二轮的身份、协作、监管三块已实现；第三轮的租户、两种登录与 Agent 授权已实现；第四轮补上"登录后补绑 DID"；第五轮把 DID 准入改成"必须已注册"，并补上反向绑邮箱；再上一轮加个人资料；上一轮把任务改成"交材料让智能体去做"，并允许受派智能体自提交候选经验；上上轮完成第五轮计划的第一阶段——手动经验生命周期、复制与来源链、任务房间；本轮完成第二阶段——本地对象存储与三步上传、独立附件、流式下载、房间未读与点名提问、交接包与跨任务检索，并补上文件预览与知识版本对比；第三阶段的团队首页「需要你」队列、任务归档、文件保留期回收与审计报表已可用，语义检索仍未开始。** 通过本机测试不等于企业环境验收。
+> 结论先行：**阶段 1（本地协作闭环）、阶段 3（知识闭环）已实现；第二轮的身份、协作、监管三块已实现；第三轮的租户、两种登录与 Agent 授权已实现；第四轮补上"登录后补绑 DID"；第五轮把 DID 准入改成"必须已注册"，并补上反向绑邮箱；之后依次完成个人资料、任务材料与智能体经验自提交、经验生命周期与任务房间、对象存储/未读/交接包、团队首页/归档/保留期/审计报表；本轮补上信箱与 SSE 推送、内置智能体运行时、模型供应商目录与控制台。语义检索仍未开始。** 通过本机测试不等于企业环境验收。
+
+## 本轮：信箱、内置智能体与模型接入
+
+| 能力 | 实现位置 | 验证方式 |
+| --- | --- | --- |
+| 信箱：信封与正文分离、按会话独立游标、at-least-once、ack/nack 退避、租约与长轮询 | `services/mailbox.ts`、`schema.ts`（v13）、`routes.ts` | `tests/mailbox.test.ts`（10 项：游标隔离、信封不含正文、越权 404、ack 幂等、queue 唯一领取、事务回滚等） |
+| 自动发布：受派/退回/取消/认领/@/提问/新线程/待验收/协作请求/运行失败，都在业务写事务内 | `services/notifications.ts`、`collab.ts`、`subtasks.ts`、`participation.ts`、`embedded.ts` | `tests/mailbox.test.ts` + `tests/lifecycle.test.ts` |
+| SSE 推送：`GET /v1/mail/sessions/:id/events`，`Last-Event-ID` 续传、关闭会话结束、shutdown 不被长连接拖住 | `http/server.ts`、`mailbox.ts#closeStreams` | `tests/stream.test.ts`（4 项） |
+| 订阅：主体/任务/能力主题，只允许订自己、可读任务或已声明能力；scope 新增 `mailbox:read|write` | `mailbox.ts#subscribe`、`access.ts`、`protocol/types.ts` | `tests/mailbox.test.ts` + `tests/authorization.test.ts` |
+| 保留期：过期消息、会话、已结算投递与结束超过 N 天的运行/日志；默认预览 | `mailbox.ts#retention`、`routes.ts` | `tests/mailbox.test.ts` |
+| 内嵌定义与身份：定义校验/规范化、`ensure` 幂等创建 `embedded-<id>` 主体、HMAC 派生令牌 | `runtime/definition.ts`、`services/embedded.ts` | `tests/runtime.test.ts`、`tests/providers.test.ts` |
+| supervisor：常驻不加载模型，有未读才 spawn 一次性 session；并发上限、停用不叫醒、接管控制台手动运行、多轮运行日志独立 | `runtime/supervisor.ts`、`services/embedded.ts` | `tests/runtime.test.ts`（5 项，含跨进程 E2E） |
+| 一次运行：拉信封 → 取正文 → 模型循环 → 工具调用 → ack/nack → finish；令牌只走 stdin | `runtime/session.ts`、`runtime/tools.ts` | 同上 |
+| 沙箱：工作目录 0700、路径与符号链接逃逸拒绝、shell 超时杀进程组、环境清洗、输出截断 | `runtime/sandbox.ts` | `tests/sandbox.test.ts`（4 项） |
+| 模型协议：OpenAI Chat/Responses、Anthropic Messages、Gemini Generate、Workers AI、Jev 决策、确定性 script；供应商目录按厂商/订阅/分发/自定义分组 | `runtime/providers.ts`、`runtime/brains/*` | `tests/providers.test.ts`（7 项，mock HTTP，不发真实网络） |
+| 控制台：内置智能体列表、分组供应商选择、编辑/启停/立即运行、运行列表与日志轮询 | `src/web/app.js`、`app.css`、`index.html` | `tests/web.test.ts`（新增 1 项） |
+| 文档与种子：运行说明、配置、`examples/agents.json`（script 默认启用，需密钥的定义默认停用） | `README.md`、`docs/local-operations.md`、`examples/agents.json` | 手工 |
+
+测试合计 168 项（本轮新增信箱 10、SSE 4、运行时 5、沙箱 4、供应商 7、控制台 1，以及既有套件中随新表/新 scope 调整的用例）。`npm run check` 无类型错误；SQLite 与 PostgreSQL 各 168 项全过。
 
 ## 第三阶段：归档、保留期与审计报表（本轮）
 
@@ -182,8 +201,9 @@
 
 ## 与本机验证的边界
 
-- **管理台**用 DOM 桩 + 真实 HTTP 跑通登录与每个视图（`tests/web.test.ts`），但桩只实现用到的 API：布局、样式与实际浏览器行为仍需人工看一遍。
+- **管理台**用 DOM 桩 + 真实 HTTP 跑通登录与每个视图（`tests/web.test.ts`），包括内置智能体的定义列表、启停与日志渲染；但桩只实现用到的 API：布局、样式与实际浏览器行为仍需人工看一遍。
 - **对象存储**只在本地驱动上验证；S3 分支按接口实现并有预签名路径，但没有连真实桶跑过上传、Range 与生命周期。
+- **模型供应商**只用本地 mock HTTP 验证了 URL、请求头/体与工具调用解析，没有对真实厂商发过请求；供应商 URL 会随厂商调整，定义里均可覆盖。
 - **钱包插件**在测试里用与插件、CLI 相同的 `signRequest` 代签，等价于验签链路，但不覆盖插件自身的授权弹窗与密钥库。
 - **`anpio-cli` 互通**按 CLI 的语义（401 挑战 + 重签一次 + `Authentication-Info`）验证，没有在 CI 里真的跑 Rust 二进制。
 - **备份恢复**只验证了"备份文件完整"，没有做过真实故障注入（磁盘满、断电、WAL 损坏）。
@@ -201,7 +221,10 @@
 | 阶段 5：跨组织协作 | 未开始 |
 | 向量检索 / pgvector / 检索评测集 | 未开始。当前是词法匹配 |
 | 事件驱动的告警 | 现在是显式扫描（接口或调度器），不是事件触发；阈值是常量 |
-| 通知的可恢复投递 | 数据库内存量通知 + 拉取确认；没有退避、没有外部队列 |
+| 通知的可恢复投递 | 信箱已做到数据库内 at-least-once、退避与 SSE；仍**没有**外部消息队列、跨实例 pub/sub 或 exactly-once |
+| 内置智能体的强隔离 | 沙箱是路径 + 环境清洗 + 超时 + 工具白名单；`COLLAB_SANDBOX_EXEC=1` 只是 macOS `sandbox-exec` 的额外一层。没有容器、cgroup 或独立用户 |
+| 跨运行记忆 | 每次运行只带本次消息，不继承上次对话与工作目录；长期记忆要显式写回任务/评论/经验 |
+| Kiro / Codex 订阅协议 | 只有本机 CLI 适配位；未安装 CLI 时明确报错，没有逆向私有协议 |
 | 多租户 | 已实现到应用层：租户、成员、角色、跨租户切换与隔离都有测试；**没有**数据库行级安全（管理员可直接读库） |
 | 邮件投递 | 只实现本地发件箱与控制台打印；SMTP、重试、退信、模板管理未做 |
 | 邮箱验证之外的登录方式 | 没有密码、SMS、SSO/SAML/SCIM、社交登录 |
@@ -219,5 +242,8 @@
 - **绑定码填错会悄悄开新账号**：`resolvePrincipal` 在绑定码对不上时继续走自动登记。改为直接拒绝。
 - **嵌套事务自锁**：执行器开事务后服务层再开事务会死锁在 SQLite 互斥上。改用 `AsyncLocalStorage` 传递当前事务。
 - **登录后主体不显示**：组件的 `display: grid` 覆盖了浏览器默认的 `[hidden]{display:none}`，已加全局兜底规则。
-- **PostgreSQL 无法推断裸 NULL 参数**：`(:did IS NOT NULL AND did = :did)` 报 `42P18`，改为按 `did` 是否存在分支查询。
+- **PostgreSQL 无法推断裸 NULL 参数**：`(:did IS NOT NULL AND did = :did)` 报 `42P18`，改为按 `did` 是否存在分支查询。参与校验里同样的 `:account IS NOT NULL` 也改成按账号有无分支，否则"人替自己的智能体回应请求"在 PostgreSQL 上返回 500。
+- **运行日志每次从 1 开始会撞主键**：`embedded_run_logs.seq` 是全局自增主键，但写入时按 `run_id` 取 `MAX(seq)+1`，第二条运行的日志会与第一条冲突。改为由数据库分配 `seq`，并补一条两轮运行日志的用例。
+- **子进程退出会丢最后几条日志**：日志经接口异步写入，`process.exit` 不等待挂起请求。为日志队列加 `flush()`，收尾时先等它清空；同时去掉 stderr 回显，避免 supervisor 转发后每条日志出现两遍。
+- **演示脚本的第一步是纯文本**：模型循环把"没有工具调用"当作最终回答，脚本因此第一轮就结束、消息被退回。示例定义改成以 shell 步骤开头。
 - **演示脚本的 workspace 与身份服务不一致**：`createApp` 按 `COLLAB_WORKSPACE`（默认 `local`）构造身份服务，而 demo 用 `bootstrap('demo', …)` 建主体，绑定码因此在两个 workspace 之间跨不过去。改为显式传 `identity: { workspace: 'demo' }`——这类"隐式默认值 + 显式实参"的错配，只有把登录真的跑一遍才会暴露。

@@ -98,18 +98,33 @@ class SqliteDatabase implements Database {
 
     this.writer = new SqliteConnection(writerHandle);
     this.reader = new SqliteConnection(readerHandle);
-    this.read = this.reader;
+    this.read = {
+      all: (sql, params) => this.all(sql, params),
+      one: (sql, params) => this.one(sql, params),
+      run: (sql, params) => this.run(sql, params),
+    };
+  }
+
+  /** 事务内的读必须走事务连接，否则看不到本事务刚写入的行（读己之写）。 */
+  private active(): Queryable | undefined {
+    return activeTransaction();
   }
 
   async all<T = Row>(sql: string, params: SqlParams = {}): Promise<T[]> {
+    const active = this.active();
+    if (active) return active.all<T>(sql, params);
     return this.reader.all<T>(sql, params);
   }
 
   async one<T = Row>(sql: string, params: SqlParams = {}): Promise<T | undefined> {
+    const active = this.active();
+    if (active) return active.one<T>(sql, params);
     return this.reader.one<T>(sql, params);
   }
 
   async run(sql: string, params: SqlParams = {}): Promise<number> {
+    const active = this.active();
+    if (active) return active.run(sql, params);
     return this.mutex.run(async () => this.writer.run(sql, params));
   }
 

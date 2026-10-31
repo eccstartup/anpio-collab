@@ -1642,3 +1642,19 @@ button.ghost.danger:hover {
   text-decoration: none;
   background: var(--card);
 }
+
+/* 内置智能体的运行日志：等宽、深底、可滚动，长输出不撑破卡片。 */
+.log {
+  margin: 0;
+  padding: 12px 14px;
+  max-height: 420px;
+  overflow: auto;
+  border-radius: 10px;
+  background: #1b1b19;
+  color: #f4f3ee;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

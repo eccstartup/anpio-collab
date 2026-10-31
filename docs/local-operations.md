@@ -40,10 +40,12 @@ curl -s -X POST http://127.0.0.1:8787/v1/principals \
 
 ## 数据库迁移
 
-schema 现在到 v3：新增 `accounts`、`account_links`、`tenants`、`tenant_invites`、
-`login_tickets`、`agent_requests`、`agent_grants`、`mail_outbox`，并给 `principals`
-补了 `account_id` 与 `tenant_role`。迁移在启动时幂等执行：先查现有列，再在同一个事务里
-`CREATE TABLE IF NOT EXISTS` 与必要的 `ALTER TABLE`。
+schema 现在到 v13。v2–v6 引入账号、租户、邀请、登录票据、Agent 授权、本地发件箱、
+个人空间与经验分享；v7–v12 加入任务房间、对象存储、未读、归档与保留期；v13 新增
+`mailbox_messages/sessions/subscriptions/deliveries`、`embedded_agents/runs/run_logs/supervisors`。
+迁移在启动时幂等执行：先查现有列，再在同一个事务里 `CREATE TABLE IF NOT EXISTS`
+与必要的 `ALTER TABLE`。v13 迁移还会给已有 `agent_grants.scopes` 追加
+`mailbox:read`、`mailbox:write`，避免升级后老智能体突然收不到信。
 
 升级既有库时注意两点：
 
@@ -130,6 +132,76 @@ COLLAB_URL=http://127.0.0.1:8787 COLLAB_TOKEN=$ADMIN_TOKEN \
 - 超时标记只改变协作状态，**不推断业务执行失败**——超时后应先与外部系统核对实际结果，再决定是否退回。事件里记的是 `subtask_timed_out`，与"执行失败"是两类结论。
 - 告警扫描是幂等的：按 `(rule, subjectType, subjectId)` 去重累加 `occurrences`，不会一轮刷一堆重复告警；条件消失时自动置 `resolved_by='auto'`，人工确认过的告警**不会**被扫描器重开。
 - 调度器进程挂了没人会发现。生产上把它交给 systemd / launchd / K8s CronJob，并给"连续 N 分钟没有调度轮次"单独做外部探测——平台的在线表只反映智能体心跳，不反映自己是否被扫过。
+
+## 信箱与内置智能体
+
+### 服务端准备
+
+内置智能体的令牌由服务端和 supervisor 共享的密钥派生，两边必须一致：
+
+```sh
+export COLLAB_BOOTSTRAP_TOKEN="$(openssl rand -hex 32)"
+export COLLAB_EMBEDDED_SECRET="$(openssl rand -hex 32)"   # 只放环境变量，不要进库或进 Git
+npm start
+```
+
+管理接口（定义、ensure、运行记录）要求 `admin`；控制台"内置智能体"对 `admin`/`owner` 出现。
+**不要**把 `COLLAB_EMBEDDED_SECRET` 传给 shell 子进程：supervisor 启动 session 时已经把它从子进程环境里删掉，只通过 stdin 传派生后的令牌。
+
+### 跑一轮
+
+```sh
+# 单轮：扫描一次、等本轮结束、退出（适合 cron / 调试）
+COLLAB_RUNTIME_TOKEN=$COLLAB_BOOTSTRAP_TOKEN \
+COLLAB_EMBEDDED_SECRET=... \
+npm run runtime -- --once
+
+# 只跑一个定义
+... npm run runtime -- --once --agent <agentId>
+
+# 常驻；启动时把 examples/agents.json 里的定义按名称 upsert 进去
+COLLAB_AGENTS_FILE=examples/agents.json \
+COLLAB_RUNTIME_TOKEN=$COLLAB_BOOTSTRAP_TOKEN \
+COLLAB_EMBEDDED_SECRET=... \
+npm run runtime
+```
+
+- supervisor 空闲时只是一个定时器，不加载模型；每次有未读才 spawn 一个 `session.ts`。
+- supervisor 默认连 `http://127.0.0.1:<PORT>`；服务不在 8787 时用 `COLLAB_BASE_URL` 指定平台地址。每轮日志写入该运行的记录，控制台「内置智能体 → 运行记录」可直接查看。
+- 运行目录默认在 `./collab-runs/<agentId>/<runId>/`，结束后删除；要排查就设 `COLLAB_KEEP_RUN=1`。保留目录不会被平台自动回收，排查完请手动删。
+- 控制台点「立即运行」会先建一条运行记录；supervisor 会接管这种还没有心跳的运行，不需要再点一次。
+- 定义里的 `enabled=false` 时不会被叫起来；`concurrency` 控制同一个定义同时跑几轮，supervisor 另有全局上限 `COLLAB_RUNTIME_CONCURRENCY`。
+- 模型密钥只写环境变量名（如 `ANTHROPIC_API_KEY`），值由运行 supervisor 的那台机器提供；数据库只存名字。
+
+### 运行记录与回收
+
+`POST /v1/maintenance/retention` 同时处理软删除文件、过期的信箱消息/会话/投递，以及已结束超过保留期的 `embedded_runs` 与日志。默认 `apply=false` 只给预览：
+
+```sh
+curl -s -X POST http://127.0.0.1:8787/v1/maintenance/retention \
+  -H "authorization: Bearer $ADMIN_TOKEN" \
+  -H "content-type: application/json" \
+  -H "idempotency-key: retention-preview-$(date +%s)" \
+  -d '{"days":30}' | jq
+```
+
+确认后再加 `"apply":true`。`running` 状态的运行不会被删；心跳停滞的运行由 supervisor 的 `recover` 先标成 `outcome_unknown`，消息退回队列。
+
+### 沙箱边界
+
+`COLLAB_SANDBOX_EXEC=1` 只在 macOS 上用 `sandbox-exec` 多包一层（默认拒绝网络、只允许写运行目录），起不来会让这一轮失败而不是静默降级。它不是容器：需要强隔离时，把 supervisor 放进容器或独立用户下运行，并限制网络出口。
+
+### 常见问题
+
+**supervisor 报"需要 COLLAB_RUNTIME_TOKEN"**：它用管理员令牌调平台接口，不能拿内置智能体的派生令牌代替。
+
+**报"服务器未配置 COLLAB_EMBEDDED_SECRET" / 子进程 401**：服务端与 supervisor 的 `COLLAB_EMBEDDED_SECRET` 不一致，或服务端没设。两边改成同一个值，重启服务后重新 `ensure`（下一次运行会自动做）。
+
+**运行记录一直 `running`**：先看 supervisor 是否在跑、日志里有没有 `▶`/`■`。心跳超过阈值后，`recover` 会把它标成 `outcome_unknown`。
+
+**控制台点「立即运行」后没动静**：需要有一个启用的 supervisor 连着同一平台；控制台只负责建运行记录。
+
+**想换模型供应商**：控制台「内置智能体 → 编辑」里按分类选，或导入 `examples/agents.json` 改 `provider`；自定义供应商必须填 `baseUrl` 与 `protocol`。
 
 ## 智能体密钥与登录
 

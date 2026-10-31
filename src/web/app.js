@@ -196,6 +196,7 @@ const NAV = [
   // 经验库对所有人开放：普通成员要能看到团队经验，也才能看到分享进来的个人经验。
   { id: 'knowledge', label: '经验库', show: () => isAgentSide() || !isGuest() },
   { id: 'agents', label: '我的智能体', show: () => !isAgentOnly() },
+  { id: 'embedded', label: '内置智能体', show: () => hasRole('admin', 'owner') },
   { id: 'directory', label: '团队', show: () => !isAgentOnly() },
   { id: 'oversight', label: '监管', show: () => canSupervise() },
   { id: 'audit', label: '审计', show: () => hasRole('admin') },
@@ -209,6 +210,7 @@ const TITLES = {
   mentions: ['提醒', '有人在评论里提到了你'],
   knowledge: ['经验库', '经验可手动编写、审核、发布与复制；复制时选择目标团队'],
   agents: ['我的智能体', '你请进来的智能体，和它们正在做的事'],
+  embedded: ['内置智能体', '平台自己养着的智能体：睡着、被消息叫醒、跑一轮就退出'],
   directory: ['团队', '你和谁一起工作'],
   oversight: ['监管', '哪里不对：卡住、失联、积压与被反复拒绝'],
   audit: ['审计', '谁在何时做了什么，结果如何'],
@@ -265,6 +267,13 @@ const state = {
   pendingAgents: [],
   pendingCode: '',
   tenantDetail: null,
+  embeddedStatus: null,
+  embeddedProviders: [],
+  embeddedAgentId: '',
+  embeddedRunId: '',
+  embeddedRun: null,
+  embeddedRuns: [],
+  embeddedLogs: [],
 };
 
 // ---------------------------------------------------------------- 基础工具
@@ -436,10 +445,30 @@ function openDialog({ title, description, fields = [], submitLabel = '确认', o
       if (field.accept) input.accept = field.accept;
     } else if (field.type === 'select') {
       input = el('select', { id });
-      for (const option of field.options) {
+      const addOption = (option) => {
         const node = el('option', { value: option.value }, option.label);
         if (option.value === field.value) node.selected = true;
         input.append(node);
+      };
+      if (field.groups) {
+        for (const group of field.groups) {
+          const node = el('optgroup', { label: group.label });
+          for (const option of group.options) {
+            const optionNode = el('option', { value: option.value }, option.label);
+            if (option.value === field.value) optionNode.selected = true;
+            node.append(optionNode);
+          }
+          input.append(node);
+        }
+      } else {
+        for (const option of field.options ?? []) addOption(option);
+      }
+      // 浏览器里 select.value 取的是选中项；测试用的极简 DOM 不会自己同步，
+      // 这里显式赋一次，保证提交时读到的是界面上看到的值。
+      if (field.value !== undefined) input.value = field.value;
+      else {
+        const first = field.groups?.[0]?.options?.[0] ?? field.options?.[0];
+        if (first) input.value = first.value;
       }
     } else {
       input = el('input', {
@@ -770,6 +799,7 @@ function renderNav() {
         'button',
         {
           type: 'button',
+          id: `nav-${view.id}`,
           'aria-current': state.view === view.id ? 'true' : 'false',
           onclick: () => {
             state.view = view.id;
@@ -861,6 +891,33 @@ async function refresh() {
       state.grants = await api('agents');
       state.pendingAgents = canManageTenant() ? await api('agents/pending').catch(() => []) : [];
     }
+    if (state.view === 'embedded') {
+      state.embeddedProviders = await api('embedded/providers').catch(() => []);
+      state.embeddedStatus = await api('embedded/status');
+      const agents = state.embeddedStatus.agents ?? [];
+      if (!agents.some((agent) => agent.id === state.embeddedAgentId)) {
+        state.embeddedAgentId = agents[0]?.id ?? '';
+        state.embeddedRunId = '';
+      }
+      if (state.embeddedAgentId) {
+        const id = encodeURIComponent(state.embeddedAgentId);
+        state.embeddedRuns = await api(`embedded/agents/${id}/runs?limit=20`).catch(() => []);
+        if (!state.embeddedRuns.some((run) => run.id === state.embeddedRunId)) {
+          state.embeddedRunId = state.embeddedRuns[0]?.id ?? '';
+        }
+      } else {
+        state.embeddedRuns = [];
+        state.embeddedRunId = '';
+      }
+      if (state.embeddedRunId) {
+        const runId = encodeURIComponent(state.embeddedRunId);
+        state.embeddedRun = await api(`embedded/runs/${runId}`).catch(() => null);
+        state.embeddedLogs = await api(`embedded/runs/${runId}/log?limit=100`).catch(() => []);
+      } else {
+        state.embeddedRun = null;
+        state.embeddedLogs = [];
+      }
+    }
     if (state.view === 'settings') {
       state.identities = await api('me/identities').catch(() => []);
       state.links = await api('me/links')
@@ -880,6 +937,7 @@ async function refresh() {
 function render() {
   // 401 会先 signOut 再抛出；这时仍在路上的刷新已经无关紧要，别往登录页里渲染。
   if (!state.me) return;
+  if (state.view !== 'embedded') stopEmbeddedPolling();
   const view = document.getElementById('view');
   const topbar = document.getElementById('topbar');
   const [title, subtitle] = TITLES[state.view] ?? ['工作台', ''];
@@ -893,6 +951,7 @@ function render() {
   else if (state.view === 'knowledge') content = renderKnowledge();
   else if (state.view === 'directory') content = renderDirectory();
   else if (state.view === 'agents') content = renderAgents();
+  else if (state.view === 'embedded') content = renderEmbedded();
   else if (state.view === 'oversight') content = renderOversight();
   else if (state.view === 'settings') content = renderSettings();
   else content = renderAudit();
@@ -4430,6 +4489,405 @@ function skillHandoff() {
       type: 'button',
       onclick: () => copyText(agentHandoffText(), '已复制，发给智能体即可'),
     }, '复制'));
+}
+
+// ---------------------------------------------------------------- 内置智能体
+
+const PROTOCOL_LABEL = {
+  'openai-chat': 'OpenAI Chat',
+  'openai-responses': 'OpenAI Responses',
+  'anthropic-messages': 'Anthropic Messages',
+  'gemini-generate': 'Gemini Generate',
+  'gemini-interactions': 'Gemini Interactions',
+  'workers-ai': 'Workers AI',
+  'decision-jev': 'Jev 决策',
+  'subscription-cli': '订阅 CLI',
+  script: '脚本（演示）',
+};
+
+const EMBEDDED_TOOL_LABEL = {
+  task_get: '读取任务',
+  task_accept: '接受子任务',
+  task_progress: '记录进度',
+  task_submit: '提交结果',
+  task_comment: '发表评论',
+  knowledge_search: '检索经验',
+  shell: '执行 shell',
+  read_file: '读文件',
+  write_file: '写文件',
+  list_files: '列目录',
+  finish: '结束本轮',
+};
+
+const EMBEDDED_DEFAULT_TOOLS = [
+  'task_get', 'task_accept', 'task_progress', 'task_submit', 'task_comment',
+  'knowledge_search', 'read_file', 'list_files', 'finish',
+];
+
+const RUN_LABEL = {
+  running: '运行中',
+  succeeded: '成功',
+  failed: '失败',
+  timeout: '超时',
+  outcome_unknown: '结果未知',
+};
+const RUN_TONE = {
+  running: 'info',
+  succeeded: 'ok',
+  failed: 'danger',
+  timeout: 'warn',
+  outcome_unknown: 'warn',
+};
+
+/** 自定义供应商没有默认端点，协议要让用户自己选，否则会落到 OpenAI Chat。 */
+function customProtocol(providerId) {
+  return {
+    'custom-openai-chat': 'openai-chat',
+    'custom-openai-responses': 'openai-responses',
+    'custom-anthropic': 'anthropic-messages',
+    'custom-gemini': 'gemini-generate',
+    'custom-gemini-interactions': 'gemini-interactions',
+    'custom-jev': 'decision-jev',
+  }[providerId] ?? 'openai-chat';
+}
+
+function embeddedProviderGroups() {
+  const categories = ['厂商', '订阅', '分发站', '自定义'];
+  const groups = categories.map((category) => ({
+    label: category,
+    options: state.embeddedProviders
+      .filter((provider) => provider.category === category)
+      .map((provider) => ({
+        value: provider.id,
+        label: provider.vendor === provider.label ? provider.label : `${provider.label} · ${provider.vendor}`,
+      })),
+  }));
+  return groups.filter((group) => group.options.length);
+}
+
+function agentState(agent) {
+  if (agent.running > 0) return ['info', '运行中'];
+  if (!agent.enabled) return ['muted', '已停用'];
+  if (agent.lastError) return ['danger', '上次失败'];
+  return ['ok', '睡着'];
+}
+
+function durationText(run) {
+  if (!run?.startedAt) return '—';
+  const start = Date.parse(run.startedAt);
+  const end = run.finishedAt ? Date.parse(run.finishedAt) : Date.now();
+  if (Number.isNaN(start) || Number.isNaN(end)) return '—';
+  const seconds = Math.max(0, Math.round((end - start) / 1000));
+  if (seconds < 60) return `${seconds} 秒`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes} 分 ${seconds % 60} 秒`;
+}
+
+const embeddedLogText = (logs) =>
+  logs.length
+    ? logs.map((entry) => `${entry.at} ${entry.level.toUpperCase()} ${entry.text}`).join('\n')
+    : '（还没有日志）';
+
+let embeddedTimer = null;
+
+function stopEmbeddedPolling() {
+  if (embeddedTimer !== null) {
+    clearInterval(embeddedTimer);
+    embeddedTimer = null;
+  }
+}
+
+/** 运行中每 2.5 秒补一次日志；跑完就停，不在后台空转。 */
+function startEmbeddedPolling() {
+  if (embeddedTimer !== null) return;
+  embeddedTimer = setInterval(() => void pollEmbeddedRun(), 2500);
+  embeddedTimer?.unref?.();
+}
+
+async function pollEmbeddedRun() {
+  const runId = state.embeddedRunId;
+  if (!runId) return;
+  try {
+    const [run, logs] = await Promise.all([
+      api(`embedded/runs/${encodeURIComponent(runId)}`),
+      api(`embedded/runs/${encodeURIComponent(runId)}/log?limit=100`),
+    ]);
+    if (state.embeddedRunId !== runId) return;
+    state.embeddedRun = run;
+    state.embeddedLogs = logs;
+    const pre = document.getElementById('embedded-run-log');
+    if (pre) pre.textContent = embeddedLogText(logs);
+    const status = document.getElementById('embedded-run-status');
+    if (status) {
+      status.replaceChildren(toneBadge(RUN_TONE[run.status] ?? 'muted', RUN_LABEL[run.status] ?? run.status));
+    }
+    if (run.status !== 'running') {
+      stopEmbeddedPolling();
+      await refresh();
+    }
+  } catch {
+    stopEmbeddedPolling();
+  }
+}
+
+function selectEmbeddedAgent(agentId) {
+  state.embeddedAgentId = agentId;
+  state.embeddedRunId = '';
+  state.embeddedRun = null;
+  state.embeddedLogs = [];
+  void refresh();
+}
+
+function selectEmbeddedRun(runId) {
+  state.embeddedRunId = runId;
+  state.embeddedRun = null;
+  state.embeddedLogs = [];
+  void refresh();
+}
+
+async function toggleEmbeddedAgent(agent) {
+  await act(async () => {
+    await api(`embedded/agents/${encodeURIComponent(agent.id)}/${agent.enabled ? 'disable' : 'enable'}`, {
+      body: {},
+    });
+  }, agent.enabled ? '已停用' : '已启用');
+}
+
+async function runEmbeddedAgent(agent) {
+  await act(async () => {
+    const run = await api(`embedded/agents/${encodeURIComponent(agent.id)}/run`, {
+      body: {},
+      operationId: `ui-run:${agent.id}:${Date.now()}`,
+    });
+    state.embeddedAgentId = agent.id;
+    state.embeddedRunId = run.id;
+  }, '已创建一轮运行，supervisor 会来接管');
+}
+
+function openEmbeddedEditor(agent) {
+  const providers = state.embeddedProviders;
+  const fallback = providers.find((provider) => provider.id === 'script') ?? providers[0];
+  const providerId = agent?.provider.id ?? fallback?.id ?? 'script';
+  const provider = providers.find((item) => item.id === providerId);
+  const protocol = agent?.provider.protocol ?? provider?.endpoints[0]?.protocol ?? customProtocol(providerId);
+  const apiKeyEnv = agent ? (agent.provider.apiKeyEnv ?? '') : (provider?.keyEnv ?? '');
+
+  openDialog({
+    title: agent ? `编辑「${agent.name}」` : '新建内置智能体',
+    description: '定义只保存模型与密钥的环境变量名，密钥本身留在运行时的环境里。',
+    submitLabel: agent ? '保存' : '创建',
+    fields: [
+      { name: 'name', label: '名称', value: agent?.name ?? '', required: true },
+      { name: 'description', label: '描述', type: 'textarea', value: agent?.description ?? '' },
+      {
+        name: 'capabilities',
+        label: '能力（逗号分隔）',
+        value: (agent?.capabilities ?? []).join(', '),
+        placeholder: 'inventory:read, supplier:contact',
+      },
+      { name: 'provider', label: '供应商', type: 'select', groups: embeddedProviderGroups(), value: providerId },
+      {
+        name: 'protocol',
+        label: '协议',
+        type: 'select',
+        options: Object.entries(PROTOCOL_LABEL).map(([value, label]) => ({ value, label })),
+        value: protocol,
+      },
+      { name: 'model', label: '模型', value: agent?.provider.model ?? provider?.defaultModel ?? '' },
+      {
+        name: 'baseUrl',
+        label: 'Base URL（自定义必填；留空使用默认地址）',
+        value: agent?.provider.baseUrl ?? provider?.endpoints[0]?.baseUrl ?? '',
+      },
+      { name: 'apiKeyEnv', label: '密钥环境变量名（只存名字）', value: apiKeyEnv },
+      { name: 'systemPrompt', label: '系统提示', type: 'textarea', value: agent?.systemPrompt ?? '' },
+      {
+        name: 'tools',
+        label: '可用工具',
+        type: 'checkbox-group',
+        options: Object.entries(EMBEDDED_TOOL_LABEL).map(([value, label]) => ({ value, label })),
+        value: agent?.tools ?? EMBEDDED_DEFAULT_TOOLS,
+      },
+      { name: 'maxTurns', label: '最多轮次', type: 'number', value: agent?.limits.maxTurns ?? 8 },
+      { name: 'timeoutMs', label: '超时（毫秒）', type: 'number', value: agent?.limits.timeoutMs ?? 120000 },
+      { name: 'concurrency', label: '并发', type: 'number', value: agent?.concurrency ?? 1 },
+    ],
+    onSubmit: async (values) => {
+      const tools = values.tools ?? [];
+      const body = {
+        name: values.name.trim(),
+        description: values.description ?? '',
+        capabilities: String(values.capabilities ?? '')
+          .split(/[,，\s]+/)
+          .map((item) => item.trim())
+          .filter(Boolean),
+        provider: {
+          id: values.provider,
+          protocol: values.protocol,
+          model: values.model.trim(),
+          ...(values.baseUrl.trim() ? { baseUrl: values.baseUrl.trim() } : {}),
+          apiKeyEnv: values.apiKeyEnv.trim() || null,
+        },
+        systemPrompt: values.systemPrompt ?? '',
+        tools,
+        limits: {
+          maxTurns: Number(values.maxTurns),
+          timeoutMs: Number(values.timeoutMs),
+        },
+        sandbox: { shell: tools.includes('shell') },
+        concurrency: Number(values.concurrency),
+      };
+      await act(async () => {
+        if (agent) {
+          await api(`embedded/agents/${encodeURIComponent(agent.id)}/update`, { body });
+        } else {
+          const created = await api('embedded/agents', { body });
+          state.embeddedAgentId = created.id;
+          state.embeddedRunId = '';
+        }
+      }, agent ? '已保存' : '已创建');
+    },
+  });
+
+  // 换供应商时把默认协议、地址、模型、密钥变量名带出来，少让人查文档。
+  const dialog = document.getElementById('dialog');
+  const select = dialog.querySelector('#field-provider');
+  if (!select) return;
+  select.addEventListener('change', () => {
+    const chosen = providers.find((item) => item.id === select.value);
+    if (!chosen) return;
+    const endpoint = chosen.endpoints[0];
+    dialog.querySelector('#field-protocol').value = endpoint?.protocol ?? customProtocol(chosen.id);
+    dialog.querySelector('#field-model').value = chosen.defaultModel ?? '';
+    dialog.querySelector('#field-baseUrl').value = endpoint?.baseUrl ?? '';
+    dialog.querySelector('#field-apiKeyEnv').value = chosen.keyEnv ?? '';
+  });
+}
+
+function renderEmbedded() {
+  if (!hasRole('admin', 'owner')) return el('div', { class: 'empty' }, '只有管理员或负责人可以管理内置智能体。');
+
+  const status = state.embeddedStatus ?? { agents: [], supervisors: [], activeRuns: 0 };
+  const agents = status.agents ?? [];
+  const taken = new Set(agents.map((agent) => agent.id));
+  if (state.embeddedAgentId && !taken.has(state.embeddedAgentId)) state.embeddedAgentId = agents[0]?.id ?? '';
+  const selected = agents.find((agent) => agent.id === state.embeddedAgentId) ?? null;
+  const supervisor = status.supervisors?.[0];
+  const running = state.embeddedRun;
+  if (running?.status === 'running') startEmbeddedPolling();
+  else stopEmbeddedPolling();
+
+  const agentRow = (agent) => {
+    const [tone, label] = agentState(agent);
+    const active = agent.id === state.embeddedAgentId;
+    return el('tr', {},
+      el('td', {},
+        el('button', {
+          type: 'button',
+          class: 'link',
+          style: 'text-align:left',
+          onclick: () => selectEmbeddedAgent(agent.id),
+          'aria-current': active ? 'true' : 'false',
+        }, el('strong', {}, agent.name)),
+        agent.description
+          ? el('div', { class: 'muted small', title: agent.description }, agent.description.slice(0, 80))
+          : null),
+      el('td', {},
+        el('div', {}, agent.provider.model || '—'),
+        el('div', { class: 'muted small' }, `${agent.provider.id} · ${PROTOCOL_LABEL[agent.provider.protocol] ?? agent.provider.protocol}`)),
+      el('td', { class: 'muted small' }, (agent.capabilities ?? []).join('、') || '—'),
+      el('td', {}, toneBadge(tone, label)),
+      el('td', {}, agent.unread > 0 ? toneBadge('warn', `${agent.unread} 封`) : el('span', { class: 'muted' }, '0')),
+      el('td', { class: 'muted small nowrap' }, agent.lastRunAt ? formatTime(agent.lastRunAt) : '还没跑过'),
+      el('td', {},
+        el('div', { class: 'row', style: 'gap:6px;flex-wrap:wrap' },
+          el('button', {
+            type: 'button',
+            class: 'ghost small',
+            disabled: !agent.enabled || agent.running > 0,
+            onclick: () => runEmbeddedAgent(agent),
+          }, '立即运行'),
+          el('button', {
+            type: 'button',
+            class: 'ghost small',
+            onclick: () => openEmbeddedEditor(agent),
+          }, '编辑'),
+          el('button', {
+            type: 'button',
+            class: 'ghost small',
+            onclick: () => toggleEmbeddedAgent(agent),
+          }, agent.enabled ? '停用' : '启用'))),
+    );
+  };
+
+  const runs = state.embeddedRuns ?? [];
+  const runRow = (run) => el('tr', {},
+    el('td', {},
+      el('button', {
+        type: 'button',
+        class: 'link mono',
+        onclick: () => selectEmbeddedRun(run.id),
+      }, run.id.slice(0, 12))),
+    el('td', {}, toneBadge(RUN_TONE[run.status] ?? 'muted', RUN_LABEL[run.status] ?? run.status)),
+    el('td', { class: 'muted small nowrap' }, formatTime(run.startedAt)),
+    el('td', { class: 'muted small nowrap' }, durationText(run)),
+    el('td', { class: 'muted small' }, `${run.turns} 步`),
+    el('td', { class: 'muted small' }, `${run.promptTokens + run.completionTokens} tok`));
+
+  const runsCard = selected
+    ? el('div', { class: 'card' },
+      el('div', { class: 'card-head' },
+        el('h3', {}, `${selected.name} 的运行记录`),
+        el('span', { class: 'muted' }, runs.length ? `最近 ${runs.length} 次` : '还没有运行')),
+      runs.length
+        ? el('div', { class: 'table-wrap' }, el('table', {},
+            el('thead', {}, el('tr', {},
+              el('th', {}, '运行'), el('th', {}, '状态'), el('th', {}, '开始'),
+              el('th', {}, '耗时'), el('th', {}, '步数'), el('th', {}, 'token'))),
+            el('tbody', {}, runs.map(runRow))))
+        : el('div', { class: 'empty' }, '还没有运行记录。收到任务或信箱消息后会自己醒来。'),
+      running
+        ? el('div', { style: 'margin-top:16px' },
+            el('div', { class: 'card-head' },
+              el('h3', {}, '本轮日志'),
+              el('span', { id: 'embedded-run-status' },
+                toneBadge(RUN_TONE[running.status] ?? 'muted', RUN_LABEL[running.status] ?? running.status))),
+            el('div', { class: 'muted small', style: 'margin:6px 0' },
+              `${running.id} · ${durationText(running)} · ${running.turns} 步 · ` +
+              `${running.promptTokens + running.completionTokens} token` +
+              (running.exitCode === null ? '' : ` · 退出码 ${running.exitCode}`)),
+            running.error ? el('p', { class: 'error' }, running.error) : null,
+            el('pre', { id: 'embedded-run-log', class: 'log' }, embeddedLogText(state.embeddedLogs ?? [])))
+        : null)
+    : null;
+
+  return frag(
+    el('div', { class: 'card' },
+      el('div', { class: 'card-head' },
+        el('h3', {}, '内置智能体'),
+        el('div', { class: 'row', style: 'gap:8px' },
+          el('button', { id: 'embedded-new', type: 'button', class: 'primary small', onclick: () => openEmbeddedEditor(null) }, '新建'),
+          el('button', {
+            id: 'embedded-refresh',
+            type: 'button',
+            class: 'ghost small',
+            onclick: () => act(async () => undefined, '已刷新'),
+          }, '刷新'))),
+      el('p', { class: 'muted small', style: 'margin-bottom:12px' },
+        `${agents.filter((agent) => agent.enabled).length} 个启用 · ${status.activeRuns ?? 0} 轮在跑 · ` +
+        (supervisor
+          ? `supervisor 最近心跳 ${formatTime(supervisor.lastSeenAt)}（${supervisor.host}）`
+          : '还没有 supervisor 连接；运行 npm run runtime 后，有未读消息的智能体会被叫醒。')),
+      agents.length
+        ? el('div', { class: 'table-wrap' }, el('table', {},
+            el('thead', {}, el('tr', {},
+              el('th', {}, '定义'), el('th', {}, '模型'), el('th', {}, '能力'),
+              el('th', {}, '状态'), el('th', {}, '未读'), el('th', {}, '最近运行'), el('th', {}, ''))),
+            el('tbody', {}, agents.map(agentRow))))
+        : el('div', { class: 'empty' }, '还没有内置智能体定义。新建一个，或用 agents.json 导入。')),
+
+    runsCard,
+  );
 }
 
 // ---------------------------------------------------------------- 审计

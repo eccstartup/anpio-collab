@@ -49,19 +49,32 @@ class PostgresDatabase implements Database {
   constructor(url: string) {
     this.pool = new pg.Pool({ connectionString: url, max: 10 });
     this.queryable = new PgQueryable(this.pool);
-    this.read = this.queryable;
+    this.read = {
+      all: (sql, params) => this.all(sql, params),
+      one: (sql, params) => this.one(sql, params),
+      run: (sql, params) => this.run(sql, params),
+    };
+  }
+
+  /** 事务内的读必须走事务连接，否则看不到本事务刚写入的行。 */
+  private active(): Queryable | undefined {
+    const active = activeTransaction();
+    return active === this.queryable ? undefined : active;
   }
 
   all<T = Row>(sql: string, params: SqlParams = {}): Promise<T[]> {
-    return this.queryable.all<T>(sql, params);
+    const active = this.active();
+    return active ? active.all<T>(sql, params) : this.queryable.all<T>(sql, params);
   }
 
   one<T = Row>(sql: string, params: SqlParams = {}): Promise<T | undefined> {
-    return this.queryable.one<T>(sql, params);
+    const active = this.active();
+    return active ? active.one<T>(sql, params) : this.queryable.one<T>(sql, params);
   }
 
   run(sql: string, params: SqlParams = {}): Promise<number> {
-    return this.queryable.run(sql, params);
+    const active = this.active();
+    return active ? active.run(sql, params) : this.queryable.run(sql, params);
   }
 
   async transaction<T>(fn: (tx: Queryable) => Promise<T>): Promise<T> {

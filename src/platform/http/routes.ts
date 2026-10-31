@@ -10,7 +10,7 @@
 
 import { forbidden, invalid } from '../../protocol/errors.ts';
 import { asBoolean, asEnum, asInteger, asObject, asString } from '../../protocol/parse.ts';
-import { TASK_STATUSES } from '../../protocol/types.ts';
+import { MAIL_PRIORITIES, TASK_STATUSES } from '../../protocol/types.ts';
 import {
   agentSubtask,
   assertCoordinator,
@@ -1028,6 +1028,301 @@ export const routes: Route[] = [
     },
   },
 
+  // ------------------------------------------------------------ 信箱
+  {
+    method: 'POST',
+    path: '/v1/mail/sessions',
+    description: '注册信箱会话（可带订阅），返回游标与未读数',
+    write: {
+      execute: async ({ app, principal, body }) => app.mailbox.register(principal, body),
+    },
+  },
+  {
+    method: 'GET',
+    path: '/v1/mail/sessions/:id',
+    description: '会话状态与未读数',
+    read: async ({ app, principal, params }) => app.mailbox.getSession(principal, params.id ?? ''),
+  },
+  {
+    method: 'POST',
+    path: '/v1/mail/sessions/:id/heartbeat',
+    description: '会话心跳，避免转为 sleeping',
+    write: {
+      execute: async ({ app, principal, params }) => app.mailbox.heartbeat(principal, params.id ?? ''),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/mail/sessions/:id/close',
+    description: '关闭会话并结束其 SSE 流',
+    write: {
+      execute: async ({ app, principal, params }) => app.mailbox.close(principal, params.id ?? ''),
+    },
+  },
+  {
+    method: 'GET',
+    path: '/v1/mail/sessions/:id/messages',
+    description: '拉取信封（长轮询、租约、按优先级排序）',
+    read: async ({ app, principal, params, query }) => {
+      const waitMs = Math.min(25_000, Math.max(0, Number(query.get('waitMs') ?? 0) || 0));
+      const options = {
+        limit: parseLimit(query, 50),
+        leaseSeconds: Math.min(3600, Math.max(0, Number(query.get('leaseSeconds') ?? 0) || 0)),
+        includeDigest: query.get('include') === 'digest',
+        since: Math.max(0, Number(query.get('since') ?? 0) || 0),
+      };
+      const deadline = Date.now() + waitMs;
+      for (;;) {
+        const result = await app.mailbox.pull(principal, params.id ?? '', options);
+        if (result.items.length > 0 || Date.now() >= deadline) return result;
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+    },
+  },
+  {
+    method: 'GET',
+    path: '/v1/mail/messages/:id',
+    description: '按引用回源读取正文，并重新判定当前权限',
+    read: async ({ app, principal, params }) => app.mailbox.message(principal, params.id ?? ''),
+  },
+  {
+    method: 'POST',
+    path: '/v1/mail/messages/:id/ack',
+    description: '确认一条投递；重复确认幂等',
+    write: {
+      execute: async ({ app, principal, params, body }) =>
+        app.mailbox.ack(principal, params.id ?? '', body),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/mail/messages/:id/nack',
+    description: '退避重试；达到上限后标记 dead 并通知负责人',
+    write: {
+      execute: async ({ app, principal, params, body }) =>
+        app.mailbox.nack(principal, params.id ?? '', body),
+    },
+  },
+  {
+    method: 'GET',
+    path: '/v1/mail/sessions/:id/subscriptions',
+    description: '会话与主体级订阅',
+    read: async ({ app, principal, params }) => app.mailbox.subscriptions(principal, params.id ?? ''),
+  },
+  {
+    method: 'POST',
+    path: '/v1/mail/sessions/:id/subscriptions',
+    description: '新增订阅；主题必须属于自己、可读任务或已声明能力',
+    write: {
+      execute: async ({ app, principal, params, body }) =>
+        app.mailbox.subscribe(principal, params.id ?? '', body),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/mail/subscriptions/:subId/delete',
+    description: '删除订阅（POST 兼容现有执行器，无 DELETE 方法）',
+    write: {
+      execute: async ({ app, principal, params }) =>
+        app.mailbox.unsubscribe(principal, params.subId ?? ''),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/mail/publish',
+    description: '管理员手动发布一条消息（测试与运维）',
+    write: {
+      execute: async ({ app, principal, body }) => {
+        if (!principal.roles.includes('admin')) throw forbidden('只有管理员可以手动发布');
+        const input = asObject(body);
+        const audience = asObject(input.audience ?? {}, 'audience');
+        return app.ctx.db.transaction(tx =>
+          app.mailbox.publish(tx, {
+            workspace: principal.workspace,
+            topic: asString(input.topic, 'topic', { max: 200 }),
+            kind: asString(input.kind ?? 'manual', 'kind', { max: 80 }),
+            priority: asEnum(input.priority ?? 'next', 'priority', MAIL_PRIORITIES),
+            summary: asString(input.summary, 'summary', { max: 200 }),
+            ref: {
+              type: asString(input.refType ?? 'manual', 'refType', { max: 40 }),
+              id: asString(input.refId ?? 'manual', 'refId', { max: 128 }),
+              taskId: typeof input.taskId === 'string' ? input.taskId : null,
+            },
+            publisherId: principal.id,
+            audience: {
+              principals: Array.isArray(audience.principals)
+                ? audience.principals.filter((item): item is string => typeof item === 'string')
+                : undefined,
+              capability: typeof audience.capability === 'string' ? audience.capability : undefined,
+              taskId: typeof audience.taskId === 'string' ? audience.taskId : undefined,
+            },
+          }),
+        );
+      },
+    },
+  },
+
+  // ------------------------------------------------------------ 内嵌智能体
+  {
+    method: 'GET',
+    path: '/v1/embedded/providers',
+    description: '模型供应商目录：分类、协议、默认地址与密钥环境变量名',
+    read: async ({ app }) => app.embedded.providers(),
+  },
+  {
+    method: 'GET',
+    path: '/v1/embedded/agents',
+    description: '内嵌智能体定义、未读数与在跑轮次（管理员/负责人）',
+    read: async ({ app, principal }) => app.embedded.list(principal),
+  },
+  {
+    method: 'GET',
+    path: '/v1/embedded/status',
+    description: '内嵌智能体、supervisor 与在跑轮次总览',
+    read: async ({ app, principal }) => app.embedded.status(principal),
+  },
+  {
+    method: 'POST',
+    path: '/v1/embedded/agents',
+    description: '新建内嵌智能体定义',
+    write: {
+      execute: async ({ app, principal, body }) => app.embedded.create(principal, body),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/embedded/agents/import',
+    description: '按名称幂等导入一批定义（supervisor 启动时同步 agents.json）',
+    write: {
+      execute: async ({ app, principal, body }) => app.embedded.import(principal, body),
+    },
+  },
+  {
+    method: 'GET',
+    path: '/v1/embedded/agents/:id',
+    description: '内嵌智能体定义详情',
+    read: async ({ app, principal, params }) => app.embedded.get(principal, params.id ?? ''),
+  },
+  {
+    method: 'POST',
+    path: '/v1/embedded/agents/:id/update',
+    description: '部分更新定义（POST 兼容现有执行器）',
+    write: {
+      execute: async ({ app, principal, params, body }) =>
+        app.embedded.update(principal, params.id ?? '', body),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/embedded/agents/:id/delete',
+    description: '删除定义、运行记录与派生身份',
+    write: {
+      execute: async ({ app, principal, params }) => app.embedded.remove(principal, params.id ?? ''),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/embedded/agents/:id/enable',
+    description: '启用内嵌智能体',
+    write: {
+      execute: async ({ app, principal, params }) =>
+        app.embedded.setEnabled(principal, params.id ?? '', true),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/embedded/agents/:id/disable',
+    description: '停用内嵌智能体',
+    write: {
+      execute: async ({ app, principal, params }) =>
+        app.embedded.setEnabled(principal, params.id ?? '', false),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/embedded/agents/:id/ensure',
+    description: '幂等创建主体、写入派生令牌摘要与授权（supervisor 启动时调用）',
+    write: {
+      execute: async ({ app, principal, params }) => app.embedded.ensure(principal, params.id ?? ''),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/embedded/agents/:id/run',
+    description: '立即创建一轮运行（同一智能体只允许一轮在跑）',
+    write: {
+      execute: async ({ app, principal, params, body }) =>
+        app.embedded.startRun(principal, params.id ?? '', body),
+    },
+  },
+  {
+    method: 'GET',
+    path: '/v1/embedded/agents/:id/runs',
+    description: '最近运行记录',
+    read: async ({ app, principal, params, query }) =>
+      app.embedded.runs(principal, params.id ?? '', parseLimit(query, 30)),
+  },
+  {
+    method: 'GET',
+    path: '/v1/embedded/runs/:id',
+    description: '运行详情',
+    read: async ({ app, principal, params }) => app.embedded.runDetail(principal, params.id ?? ''),
+  },
+  {
+    method: 'GET',
+    path: '/v1/embedded/runs/:id/log',
+    description: '运行日志（增量）',
+    read: async ({ app, principal, params, query }) =>
+      app.embedded.logs(principal, params.id ?? '', {
+        limit: parseLimit(query, 200),
+        since: Math.max(0, Number(query.get('since') ?? 0) || 0),
+      }),
+  },
+  {
+    method: 'POST',
+    path: '/v1/embedded/runs/:id/log',
+    description: '子进程追加运行日志',
+    write: {
+      execute: async ({ app, principal, params, body }) =>
+        app.embedded.appendLog(principal, params.id ?? '', body),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/embedded/runs/:id/heartbeat',
+    description: '子进程心跳',
+    write: {
+      execute: async ({ app, principal, params, body }) =>
+        app.embedded.heartbeatRun(principal, params.id ?? '', body),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/embedded/runs/:id/finish',
+    description: '子进程收尾：状态、步数、token 与错误',
+    write: {
+      execute: async ({ app, principal, params, body }) =>
+        app.embedded.finishRun(principal, params.id ?? '', body),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/embedded/recover',
+    description: '回收心跳停滞的运行并释放其投递',
+    write: {
+      execute: async ({ app, principal, body }) => app.embedded.recover(principal, body),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/embedded/supervisors/heartbeat',
+    description: 'supervisor 存活上报',
+    write: {
+      execute: async ({ app, principal, body }) =>
+        app.embedded.supervisorHeartbeat(principal, body),
+    },
+  },
+
   // ------------------------------------------------------------ 知识
   {
     method: 'GET',
@@ -1483,13 +1778,14 @@ export const routes: Route[] = [
   {
     method: 'POST',
     path: '/v1/maintenance/retention',
-    description: '回收超过保留期的软删除文件对象（管理员；默认只预览）',
+    description: '回收超过保留期的软删除文件对象、信箱消息与运行记录（管理员；默认只预览）',
     write: {
       execute: async ({ app, principal, body }) => {
         const input = asObject(body ?? {});
         const days = asInteger(Number(input.days ?? 30), 'days', { min: 1, max: 3650 });
         const apply = input.apply === undefined ? false : asBoolean(input.apply, 'apply');
-        return app.collab.retention(principal, days, apply);
+        const files = await app.collab.retention(principal, days, apply);
+        return { ...files, mailbox: await app.mailbox.retention(principal, days, apply) };
       },
     },
   },

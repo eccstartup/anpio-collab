@@ -13,5 +13,8 @@ node_modules/
 __pycache__/
 *.py[cod]
 
+# 内置智能体运行时的一次性工作目录
+collab-runs/
+
 # 智能体的 ANP 会话缓存（含令牌，不要提交）
 .anpio-collab/

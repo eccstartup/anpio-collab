@@ -28,6 +28,7 @@ import { encode } from '../db/mappers.ts';
 import { activeTransaction } from '../db/transaction.ts';
 import { assertCoordinator, assertOwner, loadTask, readTask } from './access.ts';
 import { appendEvent } from './events.ts';
+import type { MailboxService } from './mailbox.ts';
 
 const OPEN_TASK_STATUSES: TaskStatus[] = ['pending', 'running', 'review'];
 const KIND_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
@@ -91,9 +92,11 @@ function toRequestView(row: Row): TaskRequestView {
 
 export class ParticipationService {
   private readonly ctx: Context;
+  private readonly mailbox: MailboxService;
 
-  constructor(ctx: Context) {
+  constructor(ctx: Context, mailbox: MailboxService) {
     this.ctx = ctx;
+    this.mailbox = mailbox;
   }
 
   // ---------------------------------------------------------------- 参与人
@@ -378,6 +381,18 @@ export class ParticipationService {
         type: 'request_proposed',
         payload: { requestId: id, to, role, kind: payload.kind ?? null },
       });
+      await this.mailbox.publish(tx, {
+        workspace: actor.workspace,
+        topic: `ws:${actor.workspace}:principal:${to}`,
+        kind: 'request.created',
+        priority: 'next',
+        summary: role === 'coordinate'
+          ? `协作请求：请你协调「${task.title}」`
+          : `协作请求：请你承担「${task.title}」的子任务`,
+        ref: { type: 'request', id, taskId: task.id },
+        publisherId: actor.id,
+        audience: { principals: [to] },
+      });
     });
     return this.requestById(id, actor.workspace);
   }
@@ -607,16 +622,18 @@ export class ParticipationService {
    * 只按“同一租户里的智能体”放行会让被邀请人把别人的智能体拉进任务。
    */
   private async ownsAgent(human: Principal, agentId: string): Promise<boolean> {
+    // 不用 `:account IS NOT NULL AND p.account_id = :account`：命名参数每次出现都会
+    // 单独编译成 $n，PostgreSQL 无法推断裸 NULL 那个参数的类型。按有没有账号分支。
+    const sameAccount = human.accountId ? ' OR p.account_id = :account' : '';
     const row = await this.ctx.db.read.one(
       `SELECT 1 AS present FROM principals p
        LEFT JOIN agent_grants g
          ON g.agent_principal_id = p.id AND g.tenant_id = p.workspace AND g.status = 'active'
        WHERE p.id = :id AND p.workspace = :workspace
          AND p.kind = 'agent' AND p.active = 1
-         AND (g.owner_principal_id = :human
-              OR (p.account_id IS NOT NULL AND :account IS NOT NULL AND p.account_id = :account))
+         AND (g.owner_principal_id = :human${sameAccount})
        LIMIT 1`,
-      { id: agentId, workspace: human.workspace, human: human.id, account: human.accountId },
+      { id: agentId, workspace: human.workspace, human: human.id, ...(human.accountId ? { account: human.accountId } : {}) },
     );
     return row !== undefined;
   }

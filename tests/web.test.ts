@@ -399,7 +399,7 @@ test('用钱包插件登录：领取挑战、签名、换令牌、按角色生�
     assert.deepEqual(me.roles, ['owner'], '人类钱包首次登录应按 owner 自动登记');
 
     // 纯负责人没有监管与审计，导航必须如实反映权限。
-    assert.deepEqual(navLabels(mounted.document), ['工作台', '任务', '提醒', '经验库', '我的智能体', '团队', '设置']);
+    assert.deepEqual(navLabels(mounted.document), ['工作台', '任务', '提醒', '经验库', '我的智能体', '内置智能体', '团队', '设置']);
 
     // 侧栏只留姓名与角色：主体 ID 与 DID 的细节在设置页，不在左下角堆五行。
     const who = text(element(mounted.document, 'identity'));
@@ -585,7 +585,7 @@ test('监管者看板：列异常、看在线表、能触发扫描', async () =>
       `管理员登录后没有进入工作台：${text(element(mounted.document, 'login-error'))}`,
     );
 
-    assert.deepEqual(navLabels(mounted.document), ['工作台', '任务', '提醒', '经验库', '我的智能体', '团队', '监管', '审计', '设置']);
+    assert.deepEqual(navLabels(mounted.document), ['工作台', '任务', '提醒', '经验库', '我的智能体', '内置智能体', '团队', '监管', '审计', '设置']);
 
     await visit(mounted.document, '监管');
     const view = text(element(mounted.document, 'view'));
@@ -600,6 +600,103 @@ test('监管者看板：列异常、看在线表、能触发扫描', async () =>
   } finally {
     await sleep(80);
     mounted.dispose();
+    await harness.close();
+  }
+});
+
+test('内置智能体：管理员看到定义、启停按钮与运行日志', async () => {
+  const harness = await startHarness();
+  try {
+    const create = await realFetch(`${harness.url}/v1/embedded/agents`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${ADMIN_TOKEN}`,
+        'content-type': 'application/json',
+        'idempotency-key': 'web-embedded-create',
+      },
+      body: JSON.stringify({
+        name: '库存巡检',
+        description: '收到缺料消息后核对库存并回报',
+        capabilities: ['inventory:read'],
+        provider: { id: 'script', protocol: 'script', baseUrl: '', model: 'script' },
+        tools: ['task_get', 'task_submit', 'finish'],
+      }),
+    });
+    assert.ok(create.ok, `创建定义失败：${await create.clone().text()}`);
+    const agent = (await create.json()) as { id: string };
+
+    const runResponse = await realFetch(`${harness.url}/v1/embedded/agents/${agent.id}/run`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${ADMIN_TOKEN}`,
+        'content-type': 'application/json',
+        'idempotency-key': 'web-embedded-run',
+      },
+      body: '{}',
+    });
+    assert.ok(runResponse.ok, `创建运行失败：${await runResponse.clone().text()}`);
+    const run = (await runResponse.json()) as { id: string };
+
+    const call = async (path: string, body: unknown, key: string) => {
+      const response = await realFetch(`${harness.url}${path}`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${ADMIN_TOKEN}`,
+          'content-type': 'application/json',
+          'idempotency-key': key,
+        },
+        body: JSON.stringify(body),
+      });
+      assert.ok(response.ok, `${path} 失败：${await response.clone().text()}`);
+    };
+    await call(`/v1/embedded/runs/${run.id}/log`, { level: 'info', text: '脚本开始核对库存' }, 'web-embedded-log');
+    await call(
+      `/v1/embedded/runs/${run.id}/finish`,
+      { status: 'succeeded', exitCode: 0, turns: 2, promptTokens: 10, completionTokens: 5 },
+      'web-embedded-finish',
+    );
+
+    const mounted = await mount({ url: harness.url });
+    try {
+      element(mounted.document, 'token').value = ADMIN_TOKEN;
+      await element(mounted.document, 'login-form').fire('submit');
+      await waitFor(
+        () => text(element(mounted.document, 'topbar')).includes('工作台'),
+        `管理员登录后没有进入工作台：${text(element(mounted.document, 'login-error'))}`,
+      );
+      assert.ok(element(mounted.document, 'nav-embedded'), '导航缺少内置智能体入口');
+
+      await visit(mounted.document, '内置智能体');
+      const view = element(mounted.document, 'view');
+      assert.ok(text(view).includes('库存巡检'), `定义列表没有渲染：${text(view).slice(0, 300)}`);
+      assert.ok(text(view).includes('脚本（演示）'), '供应商协议没有显示出来');
+      assert.ok(text(view).includes('运行记录'), '缺少运行记录区');
+
+      const log = element(mounted.document, 'embedded-run-log');
+      assert.ok(text(log).includes('脚本开始核对库存'), `日志没有渲染：${text(log)}`);
+      assert.ok(text(element(mounted.document, 'embedded-run-status')).includes('成功'), '运行状态不是成功');
+
+      await buttonByText(mounted.document, '停用').fire('click');
+      await waitFor(() => text(element(mounted.document, 'view')).includes('已停用'), '停用后状态没有更新');
+      const afterDisable = await (await realFetch(`${harness.url}/v1/embedded/agents/${agent.id}`, {
+        headers: { authorization: `Bearer ${ADMIN_TOKEN}` },
+      })).json() as { enabled: boolean };
+      assert.equal(afterDisable.enabled, false);
+
+      await buttonByText(mounted.document, '启用').fire('click');
+      await waitFor(
+        () => text(element(mounted.document, 'toast')).includes('已启用'),
+        `启用没有回执：${text(element(mounted.document, 'toast'))}`,
+      );
+      const afterEnable = await (await realFetch(`${harness.url}/v1/embedded/agents/${agent.id}`, {
+        headers: { authorization: `Bearer ${ADMIN_TOKEN}` },
+      })).json() as { enabled: boolean };
+      assert.equal(afterEnable.enabled, true);
+    } finally {
+      await sleep(80);
+      mounted.dispose();
+    }
+  } finally {
     await harness.close();
   }
 });

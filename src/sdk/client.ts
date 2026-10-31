@@ -16,6 +16,10 @@ import type {
   InboxItem,
   KnowledgeSearch,
   KnowledgeSummary,
+  MailEnvelope,
+  MailMessage,
+  MailSession,
+  MailSubscription,
   MaterialContent,
   MaterialMeta,
   MessageKind,
@@ -44,6 +48,10 @@ export type {
   InboxItem,
   KnowledgeSearch,
   KnowledgeSummary,
+  MailEnvelope,
+  MailMessage,
+  MailSession,
+  MailSubscription,
   MaterialContent,
   MaterialMeta,
   MessageKind,
@@ -938,6 +946,142 @@ export class CollabClient {
     return this.request<{ principalId: string; displayName: string; state: string; silentSeconds: number | null }[]>(
       'agent/presence',
     );
+  }
+
+  // ------------------------------------------------------------ 信箱
+  createMailSession(
+    input: {
+      label?: string;
+      kind?: 'external' | 'embedded';
+      ttlSeconds?: number;
+      subscriptions?: { topic: string; mode?: 'fanout' | 'queue' }[];
+    },
+    operationId: string,
+  ) {
+    return this.request<MailSession>('mail/sessions', { body: input, operationId });
+  }
+
+  mailSession(sessionId: string) {
+    return this.request<MailSession>(`mail/sessions/${encodeURIComponent(sessionId)}`);
+  }
+
+  heartbeatMailSession(sessionId: string) {
+    return this.request<MailSession>(`mail/sessions/${encodeURIComponent(sessionId)}/heartbeat`, {
+      body: {},
+      operationId: `mail:heartbeat:${sessionId}:${Date.now()}`,
+    });
+  }
+
+  closeMailSession(sessionId: string) {
+    return this.request<{ id: string; status: 'closed' }>(
+      `mail/sessions/${encodeURIComponent(sessionId)}/close`,
+      { body: {}, operationId: `mail:close:${sessionId}:${Date.now()}` },
+    );
+  }
+
+  pullMail(
+    sessionId: string,
+    options: { limit?: number; leaseSeconds?: number; includeDigest?: boolean; since?: number; waitMs?: number } = {},
+  ) {
+    const params = new URLSearchParams();
+    if (options.limit !== undefined) params.set('limit', String(options.limit));
+    if (options.leaseSeconds !== undefined) params.set('leaseSeconds', String(options.leaseSeconds));
+    if (options.includeDigest) params.set('include', 'digest');
+    if (options.since !== undefined) params.set('since', String(options.since));
+    if (options.waitMs !== undefined) params.set('waitMs', String(options.waitMs));
+    const suffix = params.size ? `?${params}` : '';
+    return this.request<{ items: MailEnvelope[]; cursor: number; session: MailSession }>(
+      `mail/sessions/${encodeURIComponent(sessionId)}/messages${suffix}`,
+    );
+  }
+
+  mailMessage(messageId: string) {
+    return this.request<MailMessage>(`mail/messages/${encodeURIComponent(messageId)}`);
+  }
+
+  ackMail(messageId: string, deliveryId: string, operationId = `mail:ack:${messageId}:${deliveryId}`) {
+    return this.request<{ id: string; state: string; duplicate: boolean }>(
+      `mail/messages/${encodeURIComponent(messageId)}/ack`,
+      { body: { deliveryId }, operationId },
+    );
+  }
+
+  nackMail(
+    messageId: string,
+    input: { deliveryId: string; retryAfterSeconds?: number; reason?: string },
+    operationId = `mail:nack:${messageId}:${input.deliveryId}:${Date.now()}`,
+  ) {
+    return this.request<{ id: string; state: string; attempts: number }>(
+      `mail/messages/${encodeURIComponent(messageId)}/nack`,
+      { body: input, operationId },
+    );
+  }
+
+  mailSubscriptions(sessionId: string) {
+    return this.request<MailSubscription[]>(`mail/sessions/${encodeURIComponent(sessionId)}/subscriptions`);
+  }
+
+  subscribeMail(
+    sessionId: string,
+    input: { topic: string; mode?: 'fanout' | 'queue' },
+    operationId: string,
+  ) {
+    return this.request<MailSubscription>(`mail/sessions/${encodeURIComponent(sessionId)}/subscriptions`, {
+      body: input,
+      operationId,
+    });
+  }
+
+  unsubscribeMail(subscriptionId: string, operationId: string) {
+    return this.request<{ id: string; removed: true }>(
+      `mail/subscriptions/${encodeURIComponent(subscriptionId)}/delete`,
+      { body: {}, operationId },
+    );
+  }
+
+  /** SSE 长连接：逐个信封产出；会话关闭时结束。调用方负责 abort。 */
+  async *streamMail(
+    sessionId: string,
+    options: { lastEventId?: string; signal?: AbortSignal } = {},
+  ): AsyncGenerator<MailEnvelope> {
+    const headers: Record<string, string> = {
+      authorization: `Bearer ${this.token}`,
+      accept: 'text/event-stream',
+    };
+    if (options.lastEventId) headers['last-event-id'] = options.lastEventId;
+    const response = await fetch(
+      new URL(`/v1/mail/sessions/${encodeURIComponent(sessionId)}/events`, this.baseUrl),
+      { headers, signal: options.signal },
+    );
+    if (!response.ok || !response.body) {
+      throw new CollabError(`信箱推送连接失败（HTTP ${response.status}）`, { status: response.status });
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      buffer += decoder.decode(value, { stream: true });
+      let index = buffer.indexOf('\n\n');
+      while (index >= 0) {
+        const chunk = buffer.slice(0, index);
+        buffer = buffer.slice(index + 2);
+        let event = 'message';
+        const data: string[] = [];
+        for (const line of chunk.split('\n')) {
+          if (!line || line.startsWith(':') || line.startsWith('retry:')) continue;
+          const colon = line.indexOf(':');
+          const field = colon < 0 ? line : line.slice(0, colon);
+          const value = colon < 0 ? '' : line.slice(colon + 1).replace(/^ /, '');
+          if (field === 'event') event = value;
+          else if (field === 'data') data.push(value);
+        }
+        if (event === 'closed') return;
+        if (event === 'mail' && data.length > 0) yield JSON.parse(data.join('\n')) as MailEnvelope;
+        index = buffer.indexOf('\n\n');
+      }
+    }
   }
 
   // ------------------------------------------------------------ 监管

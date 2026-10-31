@@ -13,7 +13,7 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { conflict, forbidden, invalid, notFound } from '../../protocol/errors.ts';
 import { asEnum, asObject, asString } from '../../protocol/parse.ts';
-import { PRINCIPAL_KINDS, TENANT_ROLES } from '../../protocol/types.ts';
+import { PRINCIPAL_KINDS, AGENT_SCOPES, TENANT_ROLES } from '../../protocol/types.ts';
 import type { AgentScope, Principal, PrincipalKind, Role, Tenant, TenantInvite, TenantMember, TenantRole } from '../../protocol/types.ts';
 import type { Context } from '../context.ts';
 import type { Queryable } from '../db/driver.ts';
@@ -583,17 +583,9 @@ export class TenantService {
   parseScopes(raw: unknown, fallback: AgentScope[]): AgentScope[] {
     if (raw === undefined) return fallback;
     if (!Array.isArray(raw) || raw.length === 0) throw invalid('scopes 不能为空');
-    const allowed: AgentScope[] = [
-      'tasks:read',
-      'tasks:submit',
-      'offers:claim',
-      'knowledge:read',
-      'comments:write',
-      'presence:write',
-    ];
     return raw.map(item => {
       const scope = String(item);
-      if (!allowed.includes(scope as AgentScope)) throw invalid(`未知授权范围：${scope}`);
+      if (!(AGENT_SCOPES as readonly string[]).includes(scope)) throw invalid(`未知授权范围：${scope}`);
       return scope as AgentScope;
     });
   }

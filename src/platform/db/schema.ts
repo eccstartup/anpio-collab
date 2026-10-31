@@ -16,6 +16,7 @@
  *  - v10 房间已读游标：未读按每人每任务记录，不改变任务版本。
  *  - v11 任务归档：归档只加时间戳，不改状态，也不删版本与文件。
  *  - v12 任务参与人与智能体协商：人先入队并选定智能体，分工再由智能体之间协商。
+ *  - v13 跨任务信箱与平台内嵌智能体：信封与正文分离，会话各有游标与投递。
  *
  * 补列必须先于事务探测（只读连接看不到未提交的 DDL），
  * 因此 `ensureColumns` 在事务外查现有列，事务内只做 CREATE 与 ALTER。
@@ -743,6 +744,159 @@ function statements(dialect: 'sqlite' | 'postgres'): string[] {
        ON task_requests(to_principal, status, created_at)`,
     `CREATE INDEX IF NOT EXISTS task_requests_outbox
        ON task_requests(from_principal, status, created_at)`,
+
+    // ---- v13：信箱 ----
+    // 消息只存信封与引用，正文永远回源读取并按调用方当前权限重新判定。
+    // 这样撤权、归档或任务删除之后，旧信件不会变成第二条越权通道。
+    `CREATE TABLE IF NOT EXISTS mailbox_messages (
+      seq ${seq},
+      id TEXT NOT NULL UNIQUE,
+      workspace TEXT NOT NULL,
+      publisher_id TEXT NOT NULL REFERENCES principals(id),
+      topic TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      priority TEXT NOT NULL DEFAULT 'next',
+      summary TEXT NOT NULL DEFAULT '',
+      ref_type TEXT NOT NULL,
+      ref_id TEXT NOT NULL,
+      task_id TEXT,
+      thread_id TEXT,
+      dedupe_key TEXT,
+      expires_at TEXT,
+      created_at TEXT NOT NULL,
+      UNIQUE(workspace, dedupe_key)
+    )`,
+    `CREATE INDEX IF NOT EXISTS mailbox_messages_workspace ON mailbox_messages(workspace, seq)`,
+    `CREATE INDEX IF NOT EXISTS mailbox_messages_topic ON mailbox_messages(workspace, topic, seq)`,
+    `CREATE INDEX IF NOT EXISTS mailbox_messages_task ON mailbox_messages(workspace, task_id, seq)`,
+    `CREATE INDEX IF NOT EXISTS mailbox_messages_expiry ON mailbox_messages(expires_at)`,
+
+    // 会话是"一台设备/一条运行"的收件箱：游标与投递彼此独立。
+    `CREATE TABLE IF NOT EXISTS mailbox_sessions (
+      id TEXT PRIMARY KEY,
+      workspace TEXT NOT NULL,
+      principal_id TEXT NOT NULL REFERENCES principals(id),
+      kind TEXT NOT NULL DEFAULT 'external',
+      label TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'active',
+      cursor_seq INTEGER NOT NULL DEFAULT 0,
+      expires_at TEXT,
+      last_seen_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      closed_at TEXT
+    )`,
+    `CREATE INDEX IF NOT EXISTS mailbox_sessions_principal
+       ON mailbox_sessions(workspace, principal_id, status)`,
+    `CREATE INDEX IF NOT EXISTS mailbox_sessions_expiry ON mailbox_sessions(expires_at)`,
+
+    // session_id='' 表示主体级订阅；queue 模式由会话租约领取，fanout 每个会话一份。
+    `CREATE TABLE IF NOT EXISTS mailbox_subscriptions (
+      id TEXT PRIMARY KEY,
+      workspace TEXT NOT NULL,
+      principal_id TEXT NOT NULL REFERENCES principals(id),
+      session_id TEXT NOT NULL DEFAULT '',
+      topic_pattern TEXT NOT NULL,
+      mode TEXT NOT NULL DEFAULT 'fanout',
+      filter TEXT NOT NULL DEFAULT '{}',
+      paused INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      expires_at TEXT,
+      UNIQUE(workspace, principal_id, session_id, topic_pattern)
+    )`,
+
+    // 一行 = 一个收件人去重后的一次投递；owner_key 让"谁还没看"成为一次唯一约束。
+    `CREATE TABLE IF NOT EXISTS mailbox_deliveries (
+      seq ${seq},
+      id TEXT NOT NULL UNIQUE,
+      workspace TEXT NOT NULL,
+      subscription_id TEXT,
+      message_id TEXT NOT NULL REFERENCES mailbox_messages(id),
+      principal_id TEXT NOT NULL,
+      session_id TEXT,
+      owner_key TEXT NOT NULL,
+      mode TEXT NOT NULL DEFAULT 'fanout',
+      state TEXT NOT NULL DEFAULT 'pending',
+      attempts INTEGER NOT NULL DEFAULT 0,
+      available_at TEXT NOT NULL,
+      lease_until TEXT,
+      last_error TEXT,
+      delivered_at TEXT,
+      acked_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(owner_key, message_id)
+    )`,
+    `CREATE INDEX IF NOT EXISTS mailbox_deliveries_session
+       ON mailbox_deliveries(session_id, state, available_at)`,
+    `CREATE INDEX IF NOT EXISTS mailbox_deliveries_principal
+       ON mailbox_deliveries(principal_id, state, available_at)`,
+    `CREATE INDEX IF NOT EXISTS mailbox_deliveries_lease
+       ON mailbox_deliveries(state, lease_until)`,
+
+    // ---- v13：平台内嵌智能体 ----
+    `CREATE TABLE IF NOT EXISTS embedded_agents (
+      id TEXT PRIMARY KEY,
+      workspace TEXT NOT NULL,
+      principal_id TEXT,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      capabilities TEXT NOT NULL DEFAULT '[]',
+      provider TEXT NOT NULL DEFAULT '{}',
+      system_prompt TEXT NOT NULL DEFAULT '',
+      tools TEXT NOT NULL DEFAULT '[]',
+      scopes TEXT NOT NULL DEFAULT '[]',
+      limits TEXT NOT NULL DEFAULT '{}',
+      sandbox TEXT NOT NULL DEFAULT '{}',
+      enabled INTEGER NOT NULL DEFAULT 1,
+      concurrency INTEGER NOT NULL DEFAULT 1,
+      created_by TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      last_run_at TEXT,
+      last_error TEXT,
+      UNIQUE(workspace, name)
+    )`,
+
+    `CREATE TABLE IF NOT EXISTS embedded_runs (
+      id TEXT PRIMARY KEY,
+      workspace TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      principal_id TEXT,
+      session_id TEXT,
+      trigger_message_id TEXT,
+      status TEXT NOT NULL DEFAULT 'running',
+      workdir TEXT,
+      started_at TEXT NOT NULL,
+      finished_at TEXT,
+      heartbeat_at TEXT,
+      exit_code INTEGER,
+      turns INTEGER NOT NULL DEFAULT 0,
+      prompt_tokens INTEGER NOT NULL DEFAULT 0,
+      completion_tokens INTEGER NOT NULL DEFAULT 0,
+      outcome_unknown INTEGER NOT NULL DEFAULT 0,
+      error TEXT
+    )`,
+    `CREATE INDEX IF NOT EXISTS embedded_runs_agent ON embedded_runs(agent_id, started_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS embedded_runs_status ON embedded_runs(status, heartbeat_at)`,
+
+    `CREATE TABLE IF NOT EXISTS embedded_run_logs (
+      seq ${seq},
+      run_id TEXT NOT NULL,
+      at TEXT NOT NULL,
+      level TEXT NOT NULL DEFAULT 'info',
+      text TEXT NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS embedded_run_logs_run ON embedded_run_logs(run_id, seq)`,
+
+    `CREATE TABLE IF NOT EXISTS embedded_supervisors (
+      id TEXT PRIMARY KEY,
+      workspace TEXT NOT NULL,
+      host TEXT NOT NULL,
+      pid INTEGER NOT NULL,
+      last_seen_at TEXT NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS embedded_supervisors_seen
+       ON embedded_supervisors(workspace, last_seen_at)`,
   ];
 }
 
@@ -784,7 +938,7 @@ const ADDED_COLUMNS: { table: string; column: string; definition: string }[] = [
   { table: 'task_requests', column: 'response_note', definition: 'TEXT' },
 ];
 
-export const SCHEMA_VERSION = 12;
+export const SCHEMA_VERSION = 13;
 
 async function existingColumns(db: Database, table: string): Promise<Set<string> | null> {
   try {
@@ -1036,6 +1190,26 @@ export async function migrate(db: Database, now: () => string): Promise<void> {
          ) WHERE title = ''`,
       );
       await backfillSpaceFiles(tx);
+      // v13：已授权的智能体不必重新批准就能收发信件。
+      const grants = await tx.all<{ id: string; scopes: string }>('SELECT id, scopes FROM agent_grants');
+      for (const grant of grants) {
+        let scopes: string[] = [];
+        try {
+          scopes = JSON.parse(String(grant.scopes)) as string[];
+        } catch {
+          scopes = [];
+        }
+        const next = [...scopes];
+        for (const scope of ['mailbox:read', 'mailbox:write']) {
+          if (!next.includes(scope)) next.push(scope);
+        }
+        if (next.length !== scopes.length) {
+          await tx.run('UPDATE agent_grants SET scopes = :scopes WHERE id = :id', {
+            scopes: JSON.stringify(next),
+            id: String(grant.id),
+          });
+        }
+      }
       // v3 升级回填：老库没有 tenant_role，默认值 'member' 会让原来的管理员
       // 突然管不了成员。按既有能力角色把管理员补回来；每个租户保证有一个所有者。
       await tx.run(

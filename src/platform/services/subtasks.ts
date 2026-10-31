@@ -17,6 +17,7 @@ import { encode, toSubtask } from '../db/mappers.ts';
 import { agentSubtask, assertOwner, loadSubtask, readTask, requireAgentScope, requireRole } from './access.ts';
 import { appendEvent } from './events.ts';
 import { NotificationService } from './notifications.ts';
+import type { MailboxService } from './mailbox.ts';
 
 const DEPENDENCIES_PENDING = `EXISTS (
   SELECT 1 FROM subtask_dependencies d JOIN subtasks p ON p.id = d.depends_on
@@ -64,10 +65,12 @@ function parseResult(value: unknown): SubtaskResult {
 export class SubtaskService {
   private readonly ctx: Context;
   private readonly notifications: NotificationService;
+  private readonly mailbox: MailboxService;
 
-  constructor(ctx: Context, notifications: NotificationService) {
+  constructor(ctx: Context, notifications: NotificationService, mailbox: MailboxService) {
     this.ctx = ctx;
     this.notifications = notifications;
+    this.mailbox = mailbox;
   }
 
   /** 智能体待办：已邀请、已接受、被退回，且依赖已满足的子任务。 */
@@ -155,6 +158,31 @@ export class SubtaskService {
         type: options.event,
         payload: { subtaskId: subtask.id, ...(options.payload ?? {}) },
       });
+      if (next === 'submitted') {
+        const remaining = await tx.one<{ total: number }>(
+          `SELECT COUNT(*) AS total FROM subtasks
+           WHERE task_id = :taskId AND status NOT IN ('submitted', 'verified')`,
+          { taskId: subtask.taskId },
+        );
+        if (Number(remaining?.total ?? 0) === 0) {
+          const task = await tx.one<{ title: string; owner_id: string }>(
+            'SELECT title, owner_id FROM tasks WHERE id = :id',
+            { id: subtask.taskId },
+          );
+          if (task) {
+            await this.mailbox.publish(tx, {
+              workspace: actor.workspace,
+              topic: `ws:${actor.workspace}:principal:${String(task.owner_id)}`,
+              kind: 'task.review_needed',
+              priority: 'next',
+              summary: `「${String(task.title)}」的子任务都已提交，待验收`,
+              ref: { type: 'task', id: subtask.taskId, taskId: subtask.taskId },
+              publisherId: actor.id,
+              audience: { principals: [String(task.owner_id)] },
+            });
+          }
+        }
+      }
       return { id: subtask.id, status: next, version: subtask.version + 1 };
     });
   }

@@ -1,19 +1,17 @@
 /**
  * 通知投递。
  *
- * 当前实现是平台内的持久队列：通知与触发它的状态变更写在同一事务，
- * 智能体通过 HTTP 拉取并确认。投递成功只表示"平台已记录通知"，
- * 不代表智能体已经执行；执行结果仍以子任务状态为准。
- *
- * 后续接入 ANP（anpio-cli 的 AnpioAgent）时，替换这里的 deliver 实现，
- * 保持"投递状态与业务状态分离"的语义即可。
+ * 通知是"任务绑定的提醒"，信箱是"跨任务、可推送的信"。
+ * 两者写在同一事务里：状态变了就两者都有，回滚就两者都没有。
+ * 通知表保持原样，现有控制台与接口不受影响。
  */
 
 import { notFound } from '../../protocol/errors.ts';
-import type { Notification, Principal } from '../../protocol/types.ts';
+import type { MailPriority, Notification, Principal } from '../../protocol/types.ts';
 import type { Context } from '../context.ts';
 import type { Queryable } from '../db/driver.ts';
 import { toNotification } from '../db/mappers.ts';
+import type { MailboxService } from './mailbox.ts';
 
 export type DeliveryInput = {
   workspace: string;
@@ -21,17 +19,37 @@ export type DeliveryInput = {
   taskId: string;
   subtaskId: string;
   type: 'invited' | 'returned' | 'cancelled' | 'claimed';
+  /** 覆盖默认的邮件摘要与优先级（可选）。 */
+  summary?: string;
+  priority?: MailPriority;
+};
+
+const MAIL_KIND: Record<DeliveryInput['type'], string> = {
+  invited: 'task.assigned',
+  returned: 'task.returned',
+  cancelled: 'task.cancelled',
+  claimed: 'offer.claimed',
+};
+
+const MAIL_PRIORITY: Record<DeliveryInput['type'], MailPriority> = {
+  invited: 'next',
+  returned: 'interrupt',
+  cancelled: 'interrupt',
+  claimed: 'next',
 };
 
 export class NotificationService {
   private readonly ctx: Context;
+  private readonly mailbox: MailboxService;
 
-  constructor(ctx: Context) {
+  constructor(ctx: Context, mailbox: MailboxService) {
     this.ctx = ctx;
+    this.mailbox = mailbox;
   }
 
-  /** 在业务事务内写入通知，保证"状态变了就有通知"或两者都不发生。 */
+  /** 在业务事务内写入通知与信箱消息，保证"状态变了就有提醒"或两者都不发生。 */
   async deliver(tx: Queryable, input: DeliveryInput): Promise<void> {
+    const at = this.ctx.now();
     await tx.run(
       `INSERT INTO notifications(id, workspace, recipient_id, task_id, subtask_id, type, created_at, acknowledged_at)
        VALUES(:id, :workspace, :recipientId, :taskId, :subtaskId, :type, :at, NULL)`,
@@ -42,9 +60,35 @@ export class NotificationService {
         taskId: input.taskId,
         subtaskId: input.subtaskId,
         type: input.type,
-        at: this.ctx.now(),
+        at,
       },
     );
+
+    const task = await tx.one<{ title: string; owner_id: string }>(
+      'SELECT title, owner_id FROM tasks WHERE id = :id',
+      { id: input.taskId },
+    );
+    const title = task ? String(task.title) : '任务';
+    const summary =
+      input.summary ??
+      (input.type === 'invited'
+        ? `新任务：${title}`
+        : input.type === 'returned'
+          ? `任务被退回：${title}`
+          : input.type === 'cancelled'
+            ? `任务已取消：${title}`
+            : `开放子任务已被认领：${title}`);
+
+    await this.mailbox.publish(tx, {
+      workspace: input.workspace,
+      topic: `ws:${input.workspace}:principal:${input.recipientId}`,
+      kind: MAIL_KIND[input.type],
+      priority: input.priority ?? MAIL_PRIORITY[input.type],
+      summary,
+      ref: { type: 'subtask', id: input.subtaskId, taskId: input.taskId },
+      publisherId: task ? String(task.owner_id) : input.recipientId,
+      audience: { principals: [input.recipientId] },
+    });
   }
 
   async list(principal: Principal): Promise<Notification[]> {

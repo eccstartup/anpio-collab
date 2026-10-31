@@ -101,6 +101,8 @@ export const AGENT_SCOPES = [
   'knowledge:read',
   'comments:write',
   'presence:write',
+  'mailbox:read',
+  'mailbox:write',
 ] as const;
 export type AgentScope = (typeof AGENT_SCOPES)[number];
 
@@ -380,6 +382,77 @@ export type Notification = {
   createdAt: string;
   acknowledgedAt: string | null;
 };
+
+// ---------------------------------------------------------------- 信箱
+
+export const MAIL_PRIORITIES = ['interrupt', 'next', 'digest', 'silent'] as const;
+export type MailPriority = (typeof MAIL_PRIORITIES)[number];
+
+export const MAIL_SESSION_STATUSES = ['active', 'sleeping', 'closed'] as const;
+export type MailSessionStatus = (typeof MAIL_SESSION_STATUSES)[number];
+
+export const MAIL_MODES = ['fanout', 'queue'] as const;
+export type MailMode = (typeof MAIL_MODES)[number];
+
+/** 信封：推送与列表只带这些字段，正文必须再取一次。 */
+export type MailRef = {
+  type: string;
+  id: string;
+  taskId: string | null;
+  threadId: string | null;
+};
+
+export type MailEnvelope = {
+  id: string;
+  /** 投递序号；SSE 的 id 与 Last-Event-ID 用它。 */
+  seq: number;
+  deliveryId: string;
+  topic: string;
+  kind: string;
+  priority: MailPriority;
+  summary: string;
+  ref: MailRef;
+  publisherId: string;
+  createdAt: string;
+  expiresAt: string | null;
+};
+
+export type MailSession = {
+  id: string;
+  kind: string;
+  label: string;
+  status: MailSessionStatus;
+  cursorSeq: number;
+  unread: number;
+  createdAt: string;
+  lastSeenAt: string;
+  expiresAt: string | null;
+  closedAt: string | null;
+};
+
+export type MailMessage = {
+  id: string;
+  topic: string;
+  kind: string;
+  priority: MailPriority;
+  summary: string;
+  ref: MailRef;
+  publisherId: string;
+  createdAt: string;
+  expiresAt: string | null;
+  content: unknown;
+};
+
+export type MailSubscription = {
+  id: string;
+  sessionId: string;
+  topicPattern: string;
+  mode: MailMode;
+  paused: boolean;
+  createdAt: string;
+  expiresAt: string | null;
+};
+
 
 /** 任务事件类型。用于事件时间线的展示与审计检索。 */
 export type EventType =

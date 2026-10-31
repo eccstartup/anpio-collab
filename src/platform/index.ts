@@ -78,6 +78,8 @@ export async function start(): Promise<void> {
     if (closing) return;
     closing = true;
     console.log(`收到 ${signal}，正在关闭…`);
+    // 先结束 SSE 长连接，否则 server.close() 会一直等它们自然断开。
+    app.mailbox.closeStreams();
     await new Promise<void>(resolve => server.close(() => resolve()));
     await app.ctx.db.close();
     process.exit(0);

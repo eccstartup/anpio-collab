@@ -47,7 +47,11 @@ const USAGE = `用法:
   submit <subtaskId> < result.json
   progress <subtaskId> <说明>
   outcome-unknown <subtaskId> <原因> <外部操作编号>
-  ack <notificationId>`;
+  ack <notificationId>
+  session create [label] | session heartbeat <id> | session close <id>
+  mailbox <sessionId> [limit] | mail <messageId>
+  mail-ack <messageId> <deliveryId> | mail-nack <messageId> <deliveryId> [原因]
+  watch <sessionId> [--last-event-id <seq>]`;
 
 /** 从参数里取出 `--to <id>`，剩下的按空格拼回正文。 */
 function splitRecipients(argv: string[]): { to: string[]; text: string } {
@@ -240,6 +244,50 @@ async function run(client: CollabClient, argv: string[]): Promise<unknown> {
     case 'ack':
       if (!first) throw new Error('需要 notificationId');
       return client.acknowledge(first, `cli:ack:${first}`);
+    case 'session': {
+      if (first === 'create') {
+        return client.createMailSession(
+          { label: rest.join(' ') || 'cli', kind: 'external', ttlSeconds: 7 * 86_400 },
+          `cli:session:${Date.now()}`,
+        );
+      }
+      if (!rest[0]) throw new Error('需要 sessionId');
+      if (first === 'heartbeat') return client.heartbeatMailSession(rest[0]);
+      if (first === 'close') return client.closeMailSession(rest[0]);
+      throw new Error('session create / session heartbeat <id> / session close <id>');
+    }
+    case 'mailbox':
+      if (!first) throw new Error('需要 sessionId');
+      return client.pullMail(first, { limit: Number(rest[0] ?? 20), leaseSeconds: 60 });
+    case 'mail':
+      if (!first) throw new Error('需要 messageId');
+      return client.mailMessage(first);
+    case 'mail-ack':
+      if (!first || !rest[0]) throw new Error('需要 messageId 与 deliveryId');
+      return client.ackMail(first, rest[0]);
+    case 'mail-nack':
+      if (!first || !rest[0]) throw new Error('需要 messageId 与 deliveryId');
+      return client.nackMail(first, {
+        deliveryId: rest[0],
+        ...(rest.length > 1 ? { reason: rest.slice(1).join(' ') } : {}),
+        retryAfterSeconds: 300,
+      });
+    case 'watch': {
+      if (!first) throw new Error('需要 sessionId');
+      const index = rest.indexOf('--last-event-id');
+      const lastEventId = index >= 0 ? rest[index + 1] : undefined;
+      let interrupted = false;
+      for await (const envelope of client.streamMail(first, { lastEventId })) {
+        console.log(JSON.stringify(envelope));
+        if (envelope.priority === 'interrupt') {
+          interrupted = true;
+          break;
+        }
+      }
+      // 收到打断级消息就退出码 2，外层脚本可以据此重新起一轮处理。
+      if (interrupted) process.exitCode = 2;
+      return { watched: true, interrupted };
+    }
     default:
       throw new Error(USAGE);
   }

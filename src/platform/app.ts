@@ -16,9 +16,11 @@ import { AgentAuthService } from './services/agentAuth.ts';
 import { AuditService } from './services/audit.ts';
 import { CollabService } from './services/collab.ts';
 import { EmailAuthService } from './services/emailAuth.ts';
+import { EmbeddedService } from './services/embedded.ts';
 import { IdentityService, type EnrollMode } from './services/identity.ts';
 import { KnowledgeService } from './services/knowledge.ts';
 import { MailService, type MailMode } from './services/mail.ts';
+import { MailboxService } from './services/mailbox.ts';
 import { NotificationService } from './services/notifications.ts';
 import { OversightService, type OversightThresholds } from './services/oversight.ts';
 import { ParticipationService } from './services/participation.ts';
@@ -58,6 +60,8 @@ export type App = {
   participation: ParticipationService;
   knowledge: KnowledgeService;
   notifications: NotificationService;
+  mailbox: MailboxService;
+  embedded: EmbeddedService;
   collab: CollabService;
   oversight: OversightService;
   audit: AuditService;
@@ -79,7 +83,9 @@ export async function createApp(db: Database, options: AppOptions = {}): Promise
   await migrate(db, ctx.now);
 
   const audit = new AuditService(ctx);
-  const notifications = new NotificationService(ctx);
+  const mailbox = new MailboxService(ctx);
+  const embedded = new EmbeddedService(ctx, mailbox);
+  const notifications = new NotificationService(ctx, mailbox);
   const principals = new PrincipalService(ctx);
   const workspace = process.env.COLLAB_WORKSPACE ?? 'local';
 
@@ -95,8 +101,8 @@ export async function createApp(db: Database, options: AppOptions = {}): Promise
   const tenants = new TenantService(ctx, accounts, mail);
   const knowledge = new KnowledgeService(ctx, tenants, accounts);
   const tasks = new TaskService(ctx, notifications, knowledge);
-  const subtasks = new SubtaskService(ctx, notifications);
-  const participation = new ParticipationService(ctx);
+  const subtasks = new SubtaskService(ctx, notifications, mailbox);
+  const participation = new ParticipationService(ctx, mailbox);
 
   const identity = new IdentityService(
     ctx,
@@ -123,7 +129,7 @@ export async function createApp(db: Database, options: AppOptions = {}): Promise
     s3: options.storage?.s3,
     maxUploadBytes: options.storage?.maxUploadBytes,
   });
-  const collab = new CollabService(ctx, notifications, storage);
+  const collab = new CollabService(ctx, notifications, storage, mailbox);
   const oversight = new OversightService(ctx, options.oversight);
 
   return {
@@ -140,6 +146,8 @@ export async function createApp(db: Database, options: AppOptions = {}): Promise
     participation,
     knowledge,
     notifications,
+    mailbox,
+    embedded,
     collab,
     oversight,
     audit,

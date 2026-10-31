@@ -595,6 +595,102 @@ async function handleAnpAuth(
   return false;
 }
 
+/**
+ * 信箱推送。
+ *
+ * 不用进程内广播：每秒按会话查一次数据库，多实例与 PostgreSQL 下语义一致。
+ * 断开后客户端带 `Last-Event-ID` 重连，只补发缺失的投递。
+ */
+async function handleMailStream(
+  app: App,
+  principal: Principal,
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  url: URL,
+): Promise<boolean> {
+  if (req.method !== 'GET') return false;
+  const match = /^\/v1\/mail\/sessions\/([^/]+)\/events$/.exec(url.pathname);
+  if (!match) return false;
+  const sessionId = decodeURIComponent(match[1] ?? '');
+
+  let session;
+  try {
+    session = await app.mailbox.getSession(principal, sessionId);
+  } catch (error) {
+    sendError(res, toAppError(error));
+    return true;
+  }
+
+  res.writeHead(200, {
+    ...SECURITY_HEADERS,
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.write('retry: 3000\n\n');
+
+  const headerId = req.headers['last-event-id'];
+  const requested = Array.isArray(headerId) ? headerId[0] : headerId;
+  let last = Math.max(
+    0,
+    Number(requested ?? url.searchParams.get('since') ?? session.cursorSeq) || 0,
+  );
+  let closed = false;
+  let polling = false;
+
+  const finish = (reason: 'closed' | 'shutdown' | null) => {
+    if (closed) return;
+    closed = true;
+    clearInterval(timer);
+    clearInterval(ping);
+    unregister();
+    try {
+      if (reason === 'closed') res.write('event: closed\ndata: {}\n\n');
+      res.end();
+    } catch {
+      // 连接已经断开，不需要再做什么。
+    }
+  };
+  const unregister = app.mailbox.addStream(sessionId, finish);
+
+  const poll = async () => {
+    if (closed || polling) return;
+    polling = true;
+    try {
+      const current = await app.mailbox.getSession(principal, sessionId);
+      if (current.status === 'closed') {
+        finish('closed');
+        return;
+      }
+      const result = await app.mailbox.pull(principal, sessionId, {
+        limit: 50,
+        leaseSeconds: 0,
+        includeDigest: true,
+        since: last,
+      });
+      for (const item of result.items) {
+        if (item.seq <= last) continue;
+        last = item.seq;
+        res.write(`id: ${item.seq}\nevent: mail\ndata: ${JSON.stringify(item)}\n\n`);
+      }
+    } catch {
+      // 会话被关闭或撤权：结束流，让客户端重新建会话。
+      finish(null);
+    } finally {
+      polling = false;
+    }
+  };
+
+  const timer = setInterval(() => void poll(), 1000);
+  const ping = setInterval(() => {
+    if (!closed) res.write(': ping\n\n');
+  }, 15_000);
+  req.on('close', () => finish(null));
+  void poll();
+  return true;
+}
+
 export function createServer(options: ServerOptions): http.Server {
   const { app, webRoot, bodyLimit, logRequests = false } = options;
   const router = new Router(routes);
@@ -640,6 +736,7 @@ export function createServer(options: ServerOptions): http.Server {
       }
       const token = header.slice(7).trim();
       principal = await app.principals.authenticate(token);
+      if (await handleMailStream(app, principal, req, res, url)) return;
       if (await handleFileContent(app, principal, req, res, url)) return;
       const match = router.match(req.method ?? 'GET', url.pathname);
       if (!match) throw notFound('接口不存在');

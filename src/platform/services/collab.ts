@@ -34,6 +34,7 @@ import { encode } from '../db/mappers.ts';
 import { hasAnyRole, loadTask, readTask, requireAgentScope } from './access.ts';
 import { appendEvent } from './events.ts';
 import { NotificationService } from './notifications.ts';
+import type { MailboxService } from './mailbox.ts';
 import type { BlobStore } from '../storage.ts';
 
 const MENTION = /@([A-Za-z0-9][A-Za-z0-9._:-]{0,63})/g;
@@ -250,11 +251,13 @@ function toOffer(row: Record<string, unknown>): TaskOffer {  return {
 export class CollabService {
   private readonly ctx: Context;
   private readonly notifications: NotificationService;
+  private readonly mailbox: MailboxService;
   private readonly storage: BlobStore;
 
-  constructor(ctx: Context, notifications: NotificationService, storage: BlobStore) {
+  constructor(ctx: Context, notifications: NotificationService, storage: BlobStore, mailbox: MailboxService) {
     this.ctx = ctx;
     this.notifications = notifications;
+    this.mailbox = mailbox;
     this.storage = storage;
   }
 
@@ -386,6 +389,20 @@ export class CollabService {
           preview: text.slice(0, 120),
         },
       });
+      for (const recipient of recipients) {
+        await this.mailbox.publish(tx, {
+          workspace: actor.workspace,
+          topic: `ws:${actor.workspace}:principal:${recipient.id}`,
+          kind: kind === 'question' ? 'question.asked' : 'comment.mention',
+          priority: kind === 'question' ? 'interrupt' : 'next',
+          summary: kind === 'question'
+            ? `${actor.displayName} 在「${task.title}」向你提问`
+            : `${actor.displayName} 在「${task.title}」提到你`,
+          ref: { type: 'comment', id: commentId, taskId: task.id, threadId },
+          publisherId: actor.id,
+          audience: { principals: [recipient.id] },
+        });
+      }
     });
 
     return {
@@ -486,6 +503,16 @@ export class CollabService {
         actorId: actor.id,
         type: 'thread_opened',
         payload: { threadId: id, topic, assigneeId },
+      });
+      await this.mailbox.publish(tx, {
+        workspace: actor.workspace,
+        topic: `ws:${actor.workspace}:task:${task.id}`,
+        kind: 'thread.opened',
+        priority: 'digest',
+        summary: `新线程：${topic}（${task.title}）`,
+        ref: { type: 'task', id: task.id, taskId: task.id, threadId: id },
+        publisherId: actor.id,
+        audience: { taskId: task.id },
       });
     });
     return {

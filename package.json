@@ -16,7 +16,8 @@
     "seed": "node --disable-warning=ExperimentalWarning scripts/seed-demo.ts",
     "check": "tsc --noEmit",
     "backup": "node src/platform/tools/backup.ts",
-    "scheduler": "node src/platform/tools/scheduler.ts"
+    "scheduler": "node src/platform/tools/scheduler.ts",
+    "runtime": "node --disable-warning=ExperimentalWarning src/runtime/supervisor.ts"
   },
   "dependencies": {
     "pg": "^8.23.1"
