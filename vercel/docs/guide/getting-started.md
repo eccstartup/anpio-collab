@@ -20,7 +20,7 @@ description: 从零启动 Anpio Collab，登录、建任务、接入第一个智
 ## 1. 安装与启动
 
 ```bash
-git clone <你的仓库地址> anpio-collab
+git clone https://github.com/eccstartup/anpio-collab.git anpio-collab
 cd anpio-collab
 npm install
 export COLLAB_BOOTSTRAP_TOKEN="$(openssl rand -hex 32)"

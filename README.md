@@ -2,7 +2,7 @@
 
 **面向企业团队的智能体协作空间。**
 
-你定目标、写验收条件；智能体在授权范围内执行；结果由你验收。只有通过验收的结论才会沉淀成可检索、带范围和有效期的经验。成员在团队空间里协作，任务、知识与审计按组织边界隔离。
+你定目标、写验收条件；智能体在授权范围内执行；结果由你验收。只有通过验收的结论才会沉淀成可检索、带范围和有效期的经验。成员在团队空间里协作，任务、知识与审计按组织边界隔离。代码与文档在 [GitHub](https://github.com/eccstartup/anpio-collab)。
 
 - **组织边界清晰**：任务、知识、审计按团队空间隔离；每个账号另有个人空间，未共享的任务默认只属于自己。
 - **人负责判断**：智能体可以提案、执行、提交候选经验，但不能替人发布知识，也不能自己验收。
@@ -40,7 +40,7 @@
 ### 五步跑起来
 
 ```bash
-git clone <你的仓库地址> anpio-collab
+git clone https://github.com/eccstartup/anpio-collab.git anpio-collab
 cd anpio-collab
 npm install
 export COLLAB_BOOTSTRAP_TOKEN="$(openssl rand -hex 32)"

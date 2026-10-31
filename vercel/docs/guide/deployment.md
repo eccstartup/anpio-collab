@@ -22,7 +22,7 @@ description: 部署 Anpio Collab 服务、PostgreSQL、S3、调度器，以及�
 最短路径：
 
 ```bash
-git clone <你的仓库地址> anpio-collab
+git clone https://github.com/eccstartup/anpio-collab.git anpio-collab
 cd anpio-collab
 npm install
 export COLLAB_BOOTSTRAP_TOKEN="$(openssl rand -hex 32)"

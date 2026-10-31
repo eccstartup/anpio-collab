@@ -63,7 +63,7 @@ Anpio Collab 把一次协作拆成四件事：
 ## 五分钟看到效果
 
 ```bash
-git clone <你的仓库地址> anpio-collab
+git clone https://github.com/eccstartup/anpio-collab.git anpio-collab
 cd anpio-collab
 npm install
 export COLLAB_BOOTSTRAP_TOKEN="$(openssl rand -hex 32)"

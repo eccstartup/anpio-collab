@@ -62,7 +62,9 @@ export default defineConfig({
         }
       ]
     },
-    socialLinks: [],
+    socialLinks: [
+      { icon: 'github', link: 'https://github.com/eccstartup/anpio-collab' }
+    ],
     outline: { level: [2, 3], label: '本页目录' },
     search: {
       provider: 'local',
