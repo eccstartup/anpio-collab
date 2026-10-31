@@ -10,6 +10,8 @@
  *  - v2 新增身份、协作与监管结构，并给既有表补列；
  *  - v3 账号、租户与 Agent 设备授权；
  *  - v4 个人资料：姓名、头像、头衔、简介。
+ *  - v7 知识文档与任务房间。
+ *  - v8 AICD 视为普通文档：默认 kind=document，版本有效期可空。
  *
  * 补列必须先于事务探测（只读连接看不到未提交的 DDL），
  * 因此 `ensureColumns` 在事务外查现有列，事务内只做 CREATE 与 ALTER。
@@ -41,7 +43,7 @@ const KNOWLEDGE_TABLE = `CREATE TABLE IF NOT EXISTS knowledge (
       access_mode TEXT NOT NULL DEFAULT 'restricted',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      kind TEXT NOT NULL DEFAULT 'experience',
+      kind TEXT NOT NULL DEFAULT 'document',
       title TEXT NOT NULL DEFAULT '',
       summary TEXT NOT NULL DEFAULT '',
       tags TEXT NOT NULL DEFAULT '[]',
@@ -53,6 +55,24 @@ const KNOWLEDGE_TABLE = `CREATE TABLE IF NOT EXISTS knowledge (
 const KNOWLEDGE_INDEXES = [
   'CREATE INDEX IF NOT EXISTS knowledge_workspace_state ON knowledge(workspace, state, expires_at)',
 ];
+
+/**
+ * 发布快照。AICD 是普通文档，expires_at 可空——没有有效期并不等于永久有效，
+ * 只是不按时间自动失效；撤销与归档仍然由人决定。
+ */
+const KNOWLEDGE_VERSIONS_TABLE = `CREATE TABLE IF NOT EXISTS knowledge_versions (
+      knowledge_id TEXT NOT NULL REFERENCES knowledge(id),
+      version INTEGER NOT NULL,
+      content TEXT NOT NULL,
+      conditions TEXT NOT NULL,
+      reviewer_id TEXT NOT NULL,
+      expires_at TEXT,
+      published_at TEXT NOT NULL,
+      title TEXT NOT NULL DEFAULT '',
+      summary TEXT NOT NULL DEFAULT '',
+      tags TEXT NOT NULL DEFAULT '[]',
+      PRIMARY KEY (knowledge_id, version)
+    )`;
 
 /**
  * 依赖 v7 新列的索引必须等补列之后再做：升级库里这些列此刻还不存在，
@@ -68,7 +88,7 @@ const LEGACY_KNOWLEDGE_DEFAULTS: Record<string, string> = {
   reviewer_id: 'NULL',
   expires_at: 'NULL',
   access_mode: "'restricted'",
-  kind: "'experience'",
+  kind: "'document'",
   title: "''",
   summary: "''",
   tags: "'[]'",
@@ -214,19 +234,7 @@ function statements(dialect: 'sqlite' | 'postgres'): string[] {
     KNOWLEDGE_TABLE,
     ...KNOWLEDGE_INDEXES,
 
-    `CREATE TABLE IF NOT EXISTS knowledge_versions (
-      knowledge_id TEXT NOT NULL REFERENCES knowledge(id),
-      version INTEGER NOT NULL,
-      content TEXT NOT NULL,
-      conditions TEXT NOT NULL,
-      reviewer_id TEXT NOT NULL,
-      expires_at TEXT NOT NULL,
-      published_at TEXT NOT NULL,
-      title TEXT NOT NULL DEFAULT '',
-      summary TEXT NOT NULL DEFAULT '',
-      tags TEXT NOT NULL DEFAULT '[]',
-      PRIMARY KEY (knowledge_id, version)
-    )`,
+    KNOWLEDGE_VERSIONS_TABLE,
 
     `CREATE TABLE IF NOT EXISTS knowledge_grants (
       knowledge_id TEXT NOT NULL REFERENCES knowledge(id),
@@ -650,8 +658,8 @@ const ADDED_COLUMNS: { table: string; column: string; definition: string }[] = [
   { table: 'accounts', column: 'avatar', definition: "TEXT NOT NULL DEFAULT ''" },
   { table: 'accounts', column: 'title', definition: "TEXT NOT NULL DEFAULT ''" },
   { table: 'accounts', column: 'bio', definition: "TEXT NOT NULL DEFAULT ''" },
-  // v7经验：旧知识条目一律视为来自任务验收的经验。
-  { table: 'knowledge', column: 'kind', definition: "TEXT NOT NULL DEFAULT 'experience'" },
+  // v8 文档：旧条目保留原有 kind 语义，新条目默认通用文档。
+  { table: 'knowledge', column: 'kind', definition: "TEXT NOT NULL DEFAULT 'document'" },
   { table: 'knowledge', column: 'title', definition: "TEXT NOT NULL DEFAULT ''" },
   { table: 'knowledge', column: 'summary', definition: "TEXT NOT NULL DEFAULT ''" },
   { table: 'knowledge', column: 'tags', definition: "TEXT NOT NULL DEFAULT '[]'" },
@@ -669,7 +677,7 @@ const ADDED_COLUMNS: { table: string; column: string; definition: string }[] = [
   { table: 'task_comments', column: 'edited_at', definition: 'TEXT' },
 ];
 
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 
 async function existingColumns(db: Database, table: string): Promise<Set<string> | null> {
   try {
@@ -761,6 +769,39 @@ async function postgresTaskIdNullable(db: Database): Promise<boolean> {
   return !row || String(row.is_nullable) === 'YES';
 }
 
+/**
+ * v8：知识条目已经允许没有有效期，但 SQLite 改不了列约束，
+ * 旧库的 knowledge_versions.expires_at NOT NULL 只能靠重建去掉。
+ */
+async function sqliteNeedsVersionsRebuild(db: Database): Promise<boolean> {
+  const rows = await db.read.all<{ name: string; notnull: number }>('PRAGMA table_info(knowledge_versions)');
+  if (rows.length === 0) return false;
+  const expiresAt = rows.find(row => String(row.name) === 'expires_at');
+  return !expiresAt || Number(expiresAt.notnull) === 1;
+}
+
+async function rebuildSqliteKnowledgeVersions(tx: Queryable): Promise<void> {
+  await tx.run('ALTER TABLE knowledge_versions RENAME TO knowledge_versions_v7_rebuild');
+  await tx.run(KNOWLEDGE_VERSIONS_TABLE);
+  await tx.run(
+    `INSERT INTO knowledge_versions(knowledge_id, version, content, conditions, reviewer_id,
+                                    expires_at, published_at, title, summary, tags)
+     SELECT knowledge_id, version, content, conditions, reviewer_id,
+            expires_at, published_at, title, summary, tags
+     FROM knowledge_versions_v7_rebuild`,
+  );
+  await tx.run('DROP TABLE knowledge_versions_v7_rebuild');
+}
+
+async function postgresVersionsExpiryNullable(db: Database): Promise<boolean> {
+  const row = await db.read.one<{ is_nullable: string }>(
+    `SELECT is_nullable FROM information_schema.columns
+     WHERE table_schema = current_schema() AND table_name = 'knowledge_versions'
+       AND column_name = 'expires_at'`,
+  );
+  return !row || String(row.is_nullable) === 'YES';
+}
+
 /** v7 回填：把旧 task_materials 搬进 space_files，字节不丢、来源可追。 */
 async function backfillSpaceFiles(tx: Queryable): Promise<void> {
   const rows = await tx.all<Record<string, unknown>>(
@@ -810,7 +851,9 @@ export async function migrate(db: Database, now: () => string): Promise<void> {
     if (columns && !columns.has(item.column)) pending.push(item);
   }
   const rebuildKnowledge = db.dialect === 'sqlite' && (await sqliteNeedsKnowledgeRebuild(db));
+  const rebuildVersions = db.dialect === 'sqlite' && (await sqliteNeedsVersionsRebuild(db));
   const dropNotNull = db.dialect === 'postgres' && !(await postgresTaskIdNullable(db));
+  const dropVersionsNotNull = db.dialect === 'postgres' && !(await postgresVersionsExpiryNullable(db));
 
   if (db.dialect === 'sqlite') {
     await db.exec('PRAGMA legacy_alter_table=ON; PRAGMA foreign_keys=OFF');
@@ -829,7 +872,14 @@ export async function migrate(db: Database, now: () => string): Promise<void> {
       if (dropNotNull) {
         await tx.run('ALTER TABLE knowledge ALTER COLUMN task_id DROP NOT NULL');
       }
+      if (dropVersionsNotNull) {
+        await tx.run('ALTER TABLE knowledge_versions ALTER COLUMN expires_at DROP NOT NULL');
+      }
+      if (db.dialect === 'postgres') {
+        await tx.run("ALTER TABLE knowledge ALTER COLUMN kind SET DEFAULT 'document'");
+      }
       if (rebuildKnowledge) await rebuildSqliteKnowledge(tx);
+      if (rebuildVersions) await rebuildSqliteKnowledgeVersions(tx);
       for (const statement of POST_COLUMN_STATEMENTS) {
         await tx.run(statement);
       }
@@ -887,7 +937,7 @@ export async function migrate(db: Database, now: () => string): Promise<void> {
       await db.exec('PRAGMA legacy_alter_table=OFF; PRAGMA foreign_keys=ON');
     }
   }
-  if (db.dialect === 'sqlite' && rebuildKnowledge) {
+  if (db.dialect === 'sqlite' && (rebuildKnowledge || rebuildVersions)) {
     const broken = await db.read.all<Record<string, unknown>>('PRAGMA foreign_key_check');
     if (broken.length > 0) {
       throw new Error(`knowledge 重建后存在外键不一致：${JSON.stringify(broken.slice(0, 5))}`);

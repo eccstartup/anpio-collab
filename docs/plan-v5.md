@@ -8,7 +8,7 @@
 2. **经验可以复制到团队或个人**：分享是只读实时链接，复制是独立快照；两者分开，来源撤销不会误伤团队里的副本，团队经验也不会被悄悄带出团队。
 3. **团队需要一个"任务房间"**：每个任务的进展、智能体之间通过平台说的话、以及过程中产生的文件，都按任务保存下来，人能看、智能体能续接、经验能从里面长出来。
 
-> **名词说明**：控制台里这个分区叫 **经验库**，一条记录叫一条**经验**——可发布、可管理、可引用的知识条目。默认 `kind=experience`，做法、清单、决策记录、报告、交接说明等只是可选类型。若你原本指的是 AIGC（生成内容），数据模型不变，只是增加 `kind=image/video/report`，发布与权限链路完全复用。
+> **名词说明**：AICD 是平台里的**普通文档**：一条记录可以新建、读取、编辑、删除、发布、修订、归档、复制与分享。默认 `kind=document`；`experience/playbook/checklist/decision/report/handoff` 只是可选的用途标签，不附带额外的必填条件或过期规则。长期有效的文档不必设置有效期。若你原本指的是 AIGC（生成内容），数据模型不变，只是增加 `kind=image/video/report`，发布与权限链路完全复用。
 
 ---
 
@@ -30,8 +30,8 @@
 
 | 概念 | 定义 | 存在范围 |
 | --- | --- | --- |
-| 经验 | 一份可发布、可引用、可版本化的知识条目；做法、清单、决策记录都是它的 `kind` | 租户，可复制到个人空间 |
-| 经验库 | 控制台入口：新建、编辑、发布、复制、归档、删除经验 | 个人空间 / 团队 |
+| AICD 文档 | 一份可发布、可引用、可版本化的普通文档；做法、清单、决策记录都只是可选 `kind` | 租户，可复制到个人空间 |
+| AICD 列表 | 控制台入口：新建、读取、编辑、删除、发布、复制、归档文档 | 个人空间 / 团队 |
 | 团队空间 | 团队租户内所有任务房间的集合；不是网盘目录树 | 租户 |
 | 任务房间 | 一个任务的概览、进展、对话、文件、相关经验的统一视图 | 任务 |
 | 对话 | 平台内留下的消息流；人、智能体、系统共用一张表，用 `kind` 区分 | 任务 |
@@ -129,23 +129,22 @@
 | --- | --- |
 | `title` | 一句话标题，列表与检索首先看它 |
 | `summary` | 80–200 字摘要，给人和智能体快速判断 |
-| `content` | 正文；经验类 kind 仍是"做法 + 结论" |
-| `conditions` | 适用条件；经验类 kind 必填 |
-| `expires_at` | 有效期；经验类 kind 必填，其他 kind 可空 |
+| `content` | 正文；任何 kind 都只是文档内容，不强制"做法 + 结论"结构 |
+| `conditions` | 可选的适用范围说明；不要求任何 kind 必填 |
+| `expires_at` | 可选的有效期；为空表示不按时间自动失效，仍需人撤销或归档 |
 | `tags` | 最多 10 个，用于筛选 |
-| `kind` | `experience / playbook / checklist / decision / report / handoff` |
+| `kind` | `document / experience / playbook / checklist / decision / report / handoff`，默认 `document` |
 | `attachments` | 截图、日志、数据文件，走团队空间的文件存储 |
-| `expires_at` | 有效期；经验类 kind 必填，其他 kind 可空 |
-| `source_task_id` | 可空；手动经验不绑任务 |
+| `source_task_id` | 可空；手动文档不绑任务 |
 | `evidence_level` | 见上 |
 
-### 3.5 数据模型（schema v7）
+### 3.5 数据模型（schema v8）
 
 现有 `knowledge` 表做**增量改造**，不另起一套：
 
 ```sql
 -- knowledge 增加
-ALTER knowledge ADD COLUMN kind TEXT NOT NULL DEFAULT 'experience';
+ALTER knowledge ADD COLUMN kind TEXT NOT NULL DEFAULT 'document';
 ALTER knowledge ADD COLUMN title TEXT NOT NULL DEFAULT '';
 ALTER knowledge ADD COLUMN summary TEXT NOT NULL DEFAULT '';
 ALTER knowledge ADD COLUMN tags TEXT NOT NULL DEFAULT '[]';       -- JSON 数组
@@ -154,6 +153,7 @@ ALTER knowledge ADD COLUMN evidence_level TEXT NOT NULL DEFAULT 'task_verified';
 ALTER knowledge ADD COLUMN archived_at TEXT;
 
 -- task_id 改为可空（SQLite 需要重建表；PostgreSQL 直接 DROP NOT NULL）
+-- knowledge_versions.expires_at 也改为可空（v8；SQLite 同样重建表）
 -- 迁移步骤：建新表 → 复制 → 校验行数 → 换名 → 重建索引。
 ```
 
@@ -216,30 +216,32 @@ CREATE INDEX knowledge_copy_invites_target ON knowledge_copy_invites(target_prin
 ### 3.6 接口
 
 ```text
-GET    /v1/aicds?q=&state=&kind=&tag=&scope=     列表；分页
-POST   /v1/aicds                                新建草稿
-GET    /v1/aicds/:id                            详情（含版本、附件、引用次数）
-POST   /v1/aicds/:id                            更新草稿（If-Match）
+GET    /v1/aicds?q=&state=&kind=&scope=         列表；分页
+POST   /v1/aicds                                新建草稿；kind 默认 document
+GET    /v1/aicds/:id                            详情（含来源、附件、复制关系）
+POST   /v1/aicds/:id                            更新草稿（If-Match；/edit 同义）
 POST   /v1/aicds/:id/submit                     草稿 → 候选
-POST   /v1/aicds/:id/publish                    { expiresAt?, audience, evidenceLevel? }
-POST   /v1/aicds/:id/revise                     生成新版本草稿
+POST   /v1/aicds/:id/publish                    { expiresAt?, audience?, evidenceLevel? }
+POST   /v1/aicds/:id/revise                     生成新版本候选
 POST   /v1/aicds/:id/archive                    归档
 POST   /v1/aicds/:id/revoke                     { reason }
+POST   /v1/aicds/:id/access                     调整共享范围
 GET    /v1/aicds/:id/versions                   版本历史（含 diff 所需字段）
-POST   /v1/aicds/:id/shares                     个人经验分享到团队（整单替换，只读实时）
-POST   /v1/aicds/:id/copy                       { target: { kind: team|personal|principal, id }, includeAssets }
-                                                 → 团队/自己：立即生成草稿
-                                                 → 他人：生成复制邀请，待对方接受
+GET    /v1/aicds/:id/evidence                   当前有效版本的证据包
+POST   /v1/aicds/:id/shares                     个人文档分享到团队（整单替换，只读实时）
+GET    /v1/aicds/:id/shares                     已分享到的团队
+POST   /v1/aicds/:id/copy                       { targetWorkspace }  立即在目标团队生成独立草稿
+POST   /v1/aicds/:id/invite                     { targetPrincipal }  邀请他人复制到其个人空间
 POST   /v1/aicds/:id/assets                     绑定团队空间文件
 GET    /v1/aicds/:id/usage                      被哪些任务引用、引用的是哪一版
 GET    /v1/aicds/:id/copies                     被复制到哪些空间（来源空间可见）
 GET    /v1/aicds/:id/lineage                    来源链（副本详情里也能看）
-GET    /v1/me/copy-invites                      别人复制给我的经验邀请
+GET    /v1/me/copy-invites                      别人复制给我的文档邀请
 POST   /v1/me/copy-invites/:id/accept           接受后落为目标个人空间的草稿
 POST   /v1/me/copy-invites/:id/decline          拒绝，不产生数据
 ```
 
-兼容策略：`/v1/knowledge/*` 保留一个版本，内部转调经验服务；控制台与 SDK 先切到 `/v1/aicds`。这样老测试与老客户端不会一夜失效。
+兼容策略：`/v1/knowledge/*` 保留一个版本，内部转调文档服务；控制台与 SDK 先切到 `/v1/aicds`。这样老测试与老客户端不会一夜失效。
 
 ### 3.7 界面
 
@@ -358,30 +360,34 @@ CREATE TABLE space_files (
   created_at TEXT NOT NULL,
   deleted_at TEXT
 );
-CREATE UNIQUE INDEX space_files_object ON space_files(workspace, sha256);
+CREATE INDEX space_files_hash ON space_files(workspace, sha256);
 CREATE INDEX space_files_task ON space_files(task_id, created_at DESC);
 ```
 
 要点：
 
-- **内容寻址**：同一团队内相同 `sha256` 只存一份对象，元数据可以多行（不同文件名/版本）。
+- **内容寻址**：同一团队内相同 `sha256` 只存一份对象；`space_files` 的元数据可以多行（不同文件名/版本），所以按 `(workspace, sha256)` 建普通索引，不建唯一索引。
 - **来源可追**：每个文件都能回答"谁在哪个子任务/哪条消息里产生的"。
-- **输入与成果分开**：`kind` 区分 `input / intermediate / output / evidence`；只有 `output` 可以被"提升"为经验附件或成果。
+- **输入与成果分开**：`kind` 区分 `input / intermediate / output / evidence`；只有 `output` 可以被"提升"为文档附件或成果。
 - **版本**：同名文件再次上传生成 `version + 1`，`supersedes_id` 指向旧行；旧版本不物理删除。
 - **迁移**：v7 把 `task_materials` 复制进 `space_files`（`storage=inline`，`kind=input`），`materials.ts` 改为读新表；旧表保留一个版本用于回滚。
 
-上传流程（生产）：
+上传流程（本地优先，S3 可选）：
 
 ```text
-1. POST /v1/space/files/upload-url  { taskId, name, mime, size, sha256 }
-   → { fileId, uploadUrl, expiresAt }        # S3/MinIO 预签名
-2. 客户端 PUT 到 uploadUrl
+1. POST /v1/space/files/upload-url  { taskId?, name, mime, size, sha256 }
+   → 本地驱动：{ fileId, uploadUrl: "/v1/space/uploads/<一次性 token>", expiresAt }
+   → S3 驱动：  { fileId, uploadUrl: <预签名 PUT>, expiresAt }
+2. 客户端 PUT 到 uploadUrl（本地驱动也走同一个 PUT 契约，可流式接收）
 3. POST /v1/space/files/:id/complete { sha256 }
    → { file }                                # 校验大小与哈希，置 ready
 4. 发消息时带 fileIds，文件与消息同事务绑定
 ```
 
-本地开发没有对象存储时，走 `storage=inline`（≤256 KiB）或 `storage=fs`（写 `COLLAB_BLOB_DIR/<sha256>`），接口不变。
+本地驱动默认开启，不需要任何云服务：字节写到 `COLLAB_BLOB_DIR/<workspace>/<sha256 前两位>/<sha256>`，
+临时文件 + fsync + rename 原子落盘；元数据仍在 `space_files`（`storage='fs'`）。
+`COLLAB_STORAGE=s3` 时才启用 S3/MinIO，并复用同一套 `upload-url → PUT → complete` 接口。
+`storage=inline`（≤256 KiB）保留给演示与随库备份的极小文件。
 
 ### 4.5 权限
 
@@ -600,7 +606,7 @@ GET    /v1/space/search?q=&kind=                跨任务检索消息 / 文件 /
 | 病毒扫描 | 预留 `quarantined` 状态与扫描钩子，接入企业杀毒后再启用 |
 | 跨租户团队空间 | 现有隔离是天然边界；跨团队只走经验分享 |
 | 跨租户复制 | 不允许。个人空间之间的复制也限定在同一租户内，走"邀请—接受"；不提供任何跨租户搬运通道 |
-| 语义检索 | 词法基线先跑；embedding 涉及模型、成本与评估 |
+| 语义检索 | 本阶段不做；第四阶段用 `pgvector` 做可选召回/重排，词法结果始终保留 |
 | 自动把对话变成经验 | 先保留"人一键转候选经验"，不让模型自动发布 |
 
 ---

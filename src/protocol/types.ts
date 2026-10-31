@@ -212,8 +212,8 @@ export type TaskEvent = {
 export const KNOWLEDGE_STATES = ['draft', 'candidate', 'published', 'archived', 'revoked'] as const;
 export type KnowledgeState = (typeof KNOWLEDGE_STATES)[number];
 
-/** 知识条目的类型；经验是第一种 kind，其余 kind 表示更具体的用途。 */
-export const AICD_KINDS = ['experience', 'playbook', 'checklist', 'decision', 'report', 'handoff'] as const;
+/** AICD 的普通文档类型；其余 kind 只是可选的用途标签，不附带额外生命周期。 */
+export const AICD_KINDS = ['document', 'experience', 'playbook', 'checklist', 'decision', 'report', 'handoff'] as const;
 export type AicdKind = (typeof AICD_KINDS)[number];
 
 /** 来路：任务验收沉淀、人手动编写、智能体候选。 */
@@ -290,7 +290,7 @@ export type KnowledgeVersion = {
   conditions: string;
   tags: string[];
   reviewerId: string;
-  expiresAt: string;
+  expiresAt: string | null;
   publishedAt: string;
 };
 

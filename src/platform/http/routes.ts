@@ -629,7 +629,7 @@ export const routes: Route[] = [
   {
     method: 'GET',
     path: '/v1/tasks/:id/room',
-    description: '任务房间：进展、对话、文件与经验合并时间线',
+    description: '任务房间：进展、对话、文件与文档合并时间线',
     read: async ({ app, principal, params }) => app.collab.room(principal, params.id ?? ''),
   },
   {
@@ -690,7 +690,7 @@ export const routes: Route[] = [
   {
     method: 'POST',
     path: '/v1/tasks/:id/files/:fileId/promote',
-    description: '把成果文件提升为经验证据附件',
+    description: '把成果文件提升为文档证据附件',
     write: {
       execute: async ({ app, principal, params, body }) => {
         const input = asObject(body);
@@ -736,7 +736,7 @@ export const routes: Route[] = [
   {
     method: 'POST',
     path: '/v1/tasks/:id/knowledge',
-    description: '沉淀候选经验：负责人需已验收，受派智能体提交结果后即可',
+    description: '沉淀候选文档：负责人需已验收，受派智能体提交结果后即可',
     write: {
       authorize: async ctx => {
         const task = await readTask(ctx.app.ctx, ctx.principal, ctx.params.id ?? '');
@@ -749,7 +749,7 @@ export const routes: Route[] = [
   {
     method: 'POST',
     path: '/v1/tasks/:id/references',
-    description: '任务引用一条有效经验（负责人）',
+    description: '任务引用一条有效文档（负责人）',
     write: {
       authorize: ctx => onTask(ctx, 'owner'),
       execute: async ({ app, principal, params, body }) => app.knowledge.reference(principal, params.id ?? '', body),
@@ -861,7 +861,7 @@ export const routes: Route[] = [
   {
     method: 'GET',
     path: '/v1/knowledge',
-    description: '已发布且未过期、对当前主体可见的经验',
+    description: '已发布且未过期、对当前主体可见的文档',
     read: async ({ app, principal, query }) =>
       app.knowledge.list(principal, parseQuery(query), parseLimit(query, 100)),
   },
@@ -881,7 +881,7 @@ export const routes: Route[] = [
   {
     method: 'GET',
     path: '/v1/knowledge/candidates',
-    description: '待审核候选经验（审核人或管理员）',
+    description: '待审核候选文档（审核人或管理员）',
     read: async ({ app, principal }) => app.knowledge.candidates(principal),
   },
   {
@@ -900,7 +900,7 @@ export const routes: Route[] = [
   {
     method: 'POST',
     path: '/v1/knowledge/:id/publish',
-    description: '发布候选经验（审核人或管理员）',
+    description: '发布候选文档（审核人或管理员）',
     write: {
       execute: async ({ app, principal, params, body }) =>
         app.knowledge.publish(principal, params.id ?? '', body),
@@ -909,7 +909,7 @@ export const routes: Route[] = [
   {
     method: 'POST',
     path: '/v1/knowledge/:id/revoke',
-    description: '撤销已发布经验（审核人或管理员）',
+    description: '撤销已发布文档（审核人或管理员）',
     write: {
       execute: async ({ app, principal, params, body }) => app.knowledge.revoke(principal, params.id ?? '', body),
     },
@@ -934,24 +934,24 @@ export const routes: Route[] = [
   {
     method: 'GET',
     path: '/v1/knowledge/:id/shares',
-    description: '个人经验分享到的团队（仅来源空间）',
+    description: '个人文档分享到的团队（仅来源空间）',
     read: async ({ app, principal, params }) => app.knowledge.shares(principal, params.id ?? ''),
   },
   {
     method: 'POST',
     path: '/v1/knowledge/:id/shares',
-    description: '把个人经验分享给一个或多个团队（整单替换）',
+    description: '把个人文档分享给一个或多个团队（整单替换）',
     write: {
       execute: async ({ app, principal, params, body }) =>
         app.knowledge.setShares(principal, params.id ?? '', body),
     },
   },
 
-  // ------------------------------------------------------------经验（手动发布与管理）
+  // ------------------------------------------------------------文档（手动发布与管理）
   {
     method: 'GET',
     path: '/v1/aicds',
-    description: '经验列表：本人稿、团队已发布稿与审核人可见的全部状态',
+    description: '文档列表：本人稿、团队已发布稿与审核人可见的全部状态',
     read: async ({ app, principal, query }) =>
       app.knowledge.listAicds(principal, {
         state: query.get('state') ?? undefined,
@@ -963,7 +963,7 @@ export const routes: Route[] = [
   {
     method: 'POST',
     path: '/v1/aicds',
-    description: '新建经验草稿（真人，可关联任务）',
+    description: '新建文档草稿（真人，可关联任务）',
     write: {
       execute: async ({ app, principal, body }) => app.knowledge.create(principal, body),
     },
@@ -971,7 +971,7 @@ export const routes: Route[] = [
   {
     method: 'GET',
     path: '/v1/aicds/:id',
-    description: '经验详情（含来源与复制关系）',
+    description: '文档详情（含来源与复制关系）',
     read: async ({ app, principal, params }) => app.knowledge.detail(principal, params.id ?? ''),
   },
   {
@@ -1000,7 +1000,7 @@ export const routes: Route[] = [
   {
     method: 'POST',
     path: '/v1/aicds/:id/publish',
-    description: '发布经验（个人空间本人；团队需审核人或管理员）',
+    description: '发布文档（个人空间本人；团队需审核人或管理员）',
     write: {
       execute: async ({ app, principal, params, body }) =>
         app.knowledge.publish(principal, params.id ?? '', body),
@@ -1009,7 +1009,7 @@ export const routes: Route[] = [
   {
     method: 'POST',
     path: '/v1/aicds/:id/archive',
-    description: '归档经验',
+    description: '归档文档',
     write: {
       authorize: async ctx => ({
         version: (await ctx.app.knowledge.detail(ctx.principal, ctx.params.id ?? '')).version,
@@ -1021,7 +1021,7 @@ export const routes: Route[] = [
   {
     method: 'POST',
     path: '/v1/aicds/:id/delete',
-    description: '删除经验（仅无副本、未被引用的草稿或待审核稿）',
+    description: '删除文档（仅无副本、未被引用的草稿或待审核稿）',
     write: {
       authorize: async ctx => ({
         version: (await ctx.app.knowledge.detail(ctx.principal, ctx.params.id ?? '')).version,
@@ -1043,7 +1043,7 @@ export const routes: Route[] = [
   {
     method: 'GET',
     path: '/v1/aicds/:id/copies',
-    description: '该经验的复制去向',
+    description: '该文档的复制去向',
     read: async ({ app, principal, params }) => app.knowledge.copies(principal, params.id ?? ''),
   },
   {
@@ -1067,7 +1067,7 @@ export const routes: Route[] = [
   {
     method: 'GET',
     path: '/v1/aicds/:id/assets',
-    description: '经验证据附件',
+    description: '文档证据附件',
     read: async ({ app, principal, params }) => app.knowledge.assets(principal, params.id ?? ''),
   },
   {
@@ -1080,6 +1080,79 @@ export const routes: Route[] = [
       }),
       execute: async ({ app, principal, params, body }) =>
         app.knowledge.attachAsset(principal, params.id ?? '', body),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/aicds/:id',
+    description: '编辑草稿或候选稿（/edit 的别名）',
+    write: {
+      authorize: async ctx => ({
+        version: (await ctx.app.knowledge.detail(ctx.principal, ctx.params.id ?? '')).version,
+      }),
+      execute: async ({ app, principal, params, body }) =>
+        app.knowledge.updateDraft(principal, params.id ?? '', body),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/aicds/:id/revise',
+    description: '生成新版本候选',
+    write: {
+      execute: async ({ app, principal, params, body }) =>
+        app.knowledge.revise(principal, params.id ?? '', body),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/aicds/:id/revoke',
+    description: '撤销已发布文档',
+    write: {
+      execute: async ({ app, principal, params, body }) =>
+        app.knowledge.revoke(principal, params.id ?? '', body),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/aicds/:id/access',
+    description: '调整共享范围',
+    write: {
+      execute: async ({ app, principal, params, body }) =>
+        app.knowledge.changeAccess(principal, params.id ?? '', body),
+    },
+  },
+  {
+    method: 'GET',
+    path: '/v1/aicds/:id/versions',
+    description: '已发布版本快照（审核人或管理员）',
+    read: async ({ app, principal, params }) => app.knowledge.versions(principal, params.id ?? ''),
+  },
+  {
+    method: 'GET',
+    path: '/v1/aicds/:id/usage',
+    description: '文档被任务引用的使用记录',
+    read: async ({ app, principal, params }) => app.knowledge.usage(principal, params.id ?? ''),
+  },
+  {
+    method: 'GET',
+    path: '/v1/aicds/:id/evidence',
+    description: '当前有效版本的证据包',
+    auditRead: true,
+    read: async ({ app, principal, params }) => app.knowledge.currentEvidence(principal, params.id ?? ''),
+  },
+  {
+    method: 'GET',
+    path: '/v1/aicds/:id/shares',
+    description: '个人文档分享到的团队（仅来源空间）',
+    read: async ({ app, principal, params }) => app.knowledge.shares(principal, params.id ?? ''),
+  },
+  {
+    method: 'POST',
+    path: '/v1/aicds/:id/shares',
+    description: '把个人文档分享给一个或多个团队（整单替换）',
+    write: {
+      execute: async ({ app, principal, params, body }) =>
+        app.knowledge.setShares(principal, params.id ?? '', body),
     },
   },
   {

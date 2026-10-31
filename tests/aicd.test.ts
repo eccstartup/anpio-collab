@@ -11,6 +11,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import test from 'node:test';
+import { migrate } from '../src/platform/db/schema.ts';
 import {
   ADMIN_TOKEN,
   emailLogin,
@@ -63,11 +64,10 @@ type Item = {
 };
 
 const draft = (overrides: Record<string, unknown> = {}) => ({
-  kind: 'experience',
+  kind: 'document',
   title: '缺料先查库存快照',
   summary: '避免重复下单',
   content: '先查库存快照，再确认供应商可供量和交期。',
-  conditions: '物料 M-100 缺料',
   tags: ['库存', '补货'],
   ...overrides,
 });
@@ -138,21 +138,15 @@ test('经验手动生命周期：草稿可编辑、提交后发布，智能体�
       403,
     );
 
-    const missingExpiry = await call(
-      harness,
-      'POST',
-      `/v1/aicds/${created.id}/publish`,
-      alice.token,
-      {},
-    );
-    assert.equal(missingExpiry.status, 400, '经验必须给出有效期');
-
     const published = await json<Item>(
-      await call(harness, 'POST', `/v1/aicds/${created.id}/publish`, alice.token, {
-        expiresAt: FUTURE,
-      }),
+      await call(harness, 'POST', `/v1/aicds/${created.id}/publish`, alice.token, {}),
     );
     assert.equal(published.state, 'published');
+    const noExpiry = await json<Item & { expiresAt: string | null; conditions: string }>(
+      await call(harness, 'GET', `/v1/aicds/${created.id}`, alice.token),
+    );
+    assert.equal(noExpiry.expiresAt, null, '普通文档可以不设有效期');
+    assert.equal(noExpiry.conditions, '', '普通文档不要求适用条件');
 
     const deletePublished = await call(
       harness,
@@ -523,6 +517,61 @@ test('团队任务对真人成员可见，访客与团队外主体仍受限', as
     );
     const guestView = await call(harness, 'GET', `/v1/tasks/${created.id}/room`, guest.token);
     assert.equal(guestView.status, 403, '访客不能读整个团队任务');
+  } finally {
+    await harness.close();
+  }
+});
+
+test('v8 迁移：旧版本表的有效期 NOT NULL 被放宽，且迁移可重复执行', async () => {
+  const harness = await startHarness({ workspace: 'acme' });
+  try {
+    // 模拟 v7 结构：knowledge_versions.expires_at NOT NULL。
+    if (harness.db.dialect === 'sqlite') {
+      await harness.db.exec('PRAGMA foreign_keys=OFF');
+      await harness.db.exec('ALTER TABLE knowledge_versions RENAME TO knowledge_versions_v7_old');
+      await harness.db.exec(`CREATE TABLE knowledge_versions (
+        knowledge_id TEXT NOT NULL REFERENCES knowledge(id),
+        version INTEGER NOT NULL,
+        content TEXT NOT NULL,
+        conditions TEXT NOT NULL,
+        reviewer_id TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        published_at TEXT NOT NULL,
+        title TEXT NOT NULL DEFAULT '',
+        summary TEXT NOT NULL DEFAULT '',
+        tags TEXT NOT NULL DEFAULT '[]',
+        PRIMARY KEY (knowledge_id, version)
+      )`);
+      await harness.db.exec('DROP TABLE knowledge_versions_v7_old');
+      await harness.db.exec('PRAGMA foreign_keys=ON');
+    } else {
+      await harness.db.transaction(tx =>
+        tx.run('ALTER TABLE knowledge_versions ALTER COLUMN expires_at SET NOT NULL'),
+      );
+    }
+
+    await migrate(harness.db, harness.app.ctx.now);
+    await migrate(harness.db, harness.app.ctx.now);
+
+    const nullable =
+      harness.db.dialect === 'sqlite'
+        ? !Number(
+            (
+              await harness.db.read.all<{ name: string; notnull: number }>(
+                'PRAGMA table_info(knowledge_versions)',
+              )
+            ).find(row => String(row.name) === 'expires_at')?.notnull,
+          )
+        : String(
+            (
+              await harness.db.read.one<{ is_nullable: string }>(
+                `SELECT is_nullable FROM information_schema.columns
+                 WHERE table_schema = current_schema() AND table_name = 'knowledge_versions'
+                   AND column_name = 'expires_at'`,
+              )
+            )?.is_nullable,
+          ) === 'YES';
+    assert.equal(nullable, true, '迁移后普通文档的版本可以不设有效期');
   } finally {
     await harness.close();
   }

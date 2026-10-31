@@ -1,7 +1,7 @@
 /**
  * 知识服务：候选 → 审核 → 发布 → 引用 → 修订 / 撤销。
  *
- * 平台区分事实、任务成果、经验和业务规则。这里只处理"经验"：
+ * 平台区分事实、任务成果、文档和业务规则。这里只处理"文档"：
  * 它必须来自一个已验收的任务，必须有人审核，必须有适用条件和有效期，
  * 不能被智能体自动升级成强制规则，也不会自动进入模型训练。
  */
@@ -239,7 +239,7 @@ export class KnowledgeService {
 
   private async assertManage(actor: Principal, item: Knowledge): Promise<void> {
     if (!(await this.canManage(actor, item))) {
-      throw forbidden('只有作者、审核人或管理员可以管理这条经验');
+      throw forbidden('只有作者、审核人或管理员可以管理这条文档');
     }
   }
 
@@ -248,7 +248,7 @@ export class KnowledgeService {
     return asStringArray(value, 'tags', { max: MAX_TAGS, maxLength: MAX_TAG_LENGTH });
   }
 
-  /** 经验审计走自己的表；绑定了任务时再向任务事件流补一条。 */
+  /** 文档审计走自己的表；绑定了任务时再向任务事件流补一条。 */
   private async record(
     tx: Queryable,
     actor: Principal,
@@ -363,12 +363,12 @@ export class KnowledgeService {
     return items;
   }
 
-  /** 新建经验：默认草稿，人手动编辑后再提交审核。 */
+  /** 新建文档：默认草稿，人手动编辑后再提交审核。 */
   async create(actor: Principal, body: unknown): Promise<Knowledge> {
-    if (actor.kind !== 'human') throw forbidden('只有人可以创建经验');
-    if (actor.tenantRole === 'guest') throw forbidden('访客不能创建经验');
+    if (actor.kind !== 'human') throw forbidden('只有人可以创建文档');
+    if (actor.tenantRole === 'guest') throw forbidden('访客不能创建文档');
     const input = asObject(body);
-    const kind = input.kind === undefined ? 'experience' : asEnum(input.kind, 'kind', AICD_KINDS);
+    const kind = input.kind === undefined ? 'document' : asEnum(input.kind, 'kind', AICD_KINDS);
     const title = asString(input.title, 'title', { max: 200 });
     const content = asString(input.content, 'content', { max: 8000 });
     const summary = asOptionalString(input.summary, 'summary', { max: 500 }) ?? '';
@@ -429,7 +429,7 @@ export class KnowledgeService {
       );
       return this.loadTx(tx, actor.workspace, id);
     });
-    if (!created) throw notFound('经验创建失败');
+    if (!created) throw notFound('文档创建失败');
     return {
       ...created,
       authorName: actor.displayName,
@@ -443,7 +443,7 @@ export class KnowledgeService {
     const item = await this.requireItem(actor, id);
     await this.assertManage(actor, item);
     if (item.state !== 'draft' && item.state !== 'candidate') {
-      throw conflict('只有草稿或待审核的经验可以直接编辑');
+      throw conflict('只有草稿或待审核的文档可以直接编辑');
     }
     const input = asObject(body);
     const next = {
@@ -482,7 +482,7 @@ export class KnowledgeService {
       await this.record(tx, actor, item, 'aicd_updated', { title: next.title }, 'aicd_updated');
       return this.loadTx(tx, item.workspace, item.id);
     });
-    if (!updated) throw notFound('经验不存在');
+    if (!updated) throw notFound('文档不存在');
     return updated;
   }
 
@@ -493,7 +493,6 @@ export class KnowledgeService {
     if (item.state !== 'draft') throw conflict('只有草稿可以提交审核');
     if (!item.title.trim()) throw invalid('提交前必须填写标题');
     if (!item.content.trim()) throw invalid('提交前必须填写正文');
-    if (item.kind === 'experience' && !item.conditions.trim()) throw invalid('经验必须写明适用条件');
     const updated = await this.ctx.db.transaction(async tx => {
       await tx.run("UPDATE knowledge SET state = 'candidate', updated_at = :at WHERE id = :id", {
         at: this.ctx.now(),
@@ -502,7 +501,7 @@ export class KnowledgeService {
       await this.record(tx, actor, item, 'aicd_submitted', { version: item.version }, 'aicd_submitted');
       return this.loadTx(tx, item.workspace, item.id);
     });
-    if (!updated) throw notFound('经验不存在');
+    if (!updated) throw notFound('文档不存在');
     return updated;
   }
 
@@ -521,29 +520,29 @@ export class KnowledgeService {
       await this.record(tx, actor, item, 'aicd_archived', { reason }, 'aicd_archived');
       return this.loadTx(tx, item.workspace, item.id);
     });
-    if (!updated) throw notFound('经验不存在');
+    if (!updated) throw notFound('文档不存在');
     return updated;
   }
 
   /** 删除：只允许没有副本、也没有被任务引用的草稿或待审核稿；已发布的请先归档或撤销。 */
   async delete(actor: Principal, id: string): Promise<{ id: string; deleted: true }> {
-    if (actor.kind !== 'human') throw forbidden('只有人可以删除经验');
-    if (actor.tenantRole === 'guest') throw forbidden('访客不能删除经验');
+    if (actor.kind !== 'human') throw forbidden('只有人可以删除文档');
+    if (actor.tenantRole === 'guest') throw forbidden('访客不能删除文档');
     const item = await this.requireItem(actor, id);
     await this.assertManage(actor, item);
     if (item.state !== 'draft' && item.state !== 'candidate') {
-      throw conflict('只有草稿或待审核的经验可以删除；已发布的请先归档或撤销');
+      throw conflict('只有草稿或待审核的文档可以删除；已发布的请先归档或撤销');
     }
     const copy = await this.ctx.db.read.one(
       'SELECT 1 AS present FROM knowledge_lineage WHERE parent_id = :id',
       { id: item.id },
     );
-    if (copy) throw conflict('已有副本的经验不能删除');
+    if (copy) throw conflict('已有副本的文档不能删除');
     const referenced = await this.ctx.db.read.one(
       'SELECT 1 AS present FROM knowledge_refs WHERE knowledge_id = :id',
       { id: item.id },
     );
-    if (referenced) throw conflict('已被任务引用的经验不能删除');
+    if (referenced) throw conflict('已被任务引用的文档不能删除');
     await this.ctx.db.transaction(async tx => {
       await tx.run('DELETE FROM knowledge_assets WHERE knowledge_id = :id', { id: item.id });
       await tx.run('DELETE FROM knowledge_versions WHERE knowledge_id = :id', { id: item.id });
@@ -567,12 +566,12 @@ export class KnowledgeService {
   async detail(actor: Principal, id: string): Promise<Knowledge> {
     await requireAgentScope(this.ctx, actor, 'knowledge:read');
     const item = await this.loadReadable(actor, id);
-    if (!item) throw notFound('经验不存在');
+    if (!item) throw notFound('文档不存在');
     const [decorated] = await this.decorate([item]);
     return decorated;
   }
 
-  /** 经验列表：本人稿、团队已发布稿与（审核人）全部候选。 */
+  /** 文档列表：本人稿、团队已发布稿与（审核人）全部候选。 */
   async listAicds(
     actor: Principal,
     options: { state?: string; kind?: string; query?: string; limit?: number } = {},
@@ -618,7 +617,7 @@ export class KnowledgeService {
     return this.decorate(items);
   }
 
-  /** 把同一团队里的成果文件挂到经验上；只有 output 可以提升为证据。 */
+  /** 把同一团队里的成果文件挂到文档上；只有 output 可以提升为证据。 */
   async attachAsset(actor: Principal, id: string, body: unknown): Promise<Record<string, unknown>> {
     const item = await this.requireItem(actor, id);
     await this.assertManage(actor, item);
@@ -650,7 +649,7 @@ export class KnowledgeService {
   async assets(actor: Principal, id: string): Promise<Record<string, unknown>[]> {
     const item = await this.requireItem(actor, id);
     const visible = await this.loadReadable(actor, id);
-    if (!visible) throw notFound('经验不存在');
+    if (!visible) throw notFound('文档不存在');
     const rows = await this.ctx.db.read.all(
       `SELECT a.id AS asset_id, a.file_id, a.role, a.created_at AS attached_at, f.*
        FROM knowledge_assets a JOIN space_files f ON f.id = a.file_id
@@ -662,7 +661,7 @@ export class KnowledgeService {
       id: String(row.asset_id),
       role: String(row.role),
       fileId: String(row.file_id),
-      taskId: String(row.task_id),
+      taskId: row.task_id === null || row.task_id === undefined ? null : String(row.task_id),
       name: String(row.name),
       mime: String(row.mime),
       size: Number(row.size),
@@ -672,27 +671,27 @@ export class KnowledgeService {
     }));
   }
 
-  /** 从任务提取候选经验：负责人要求已验收；受派智能体提交结果后即可沉淀。 */
+  /** 从任务提取候选文档：负责人要求已验收；受派智能体提交结果后即可沉淀。 */
   async createCandidate(actor: Principal, taskId: string, body: unknown): Promise<Knowledge> {    const task = await readTask(this.ctx, actor, taskId);
     const owner = task.ownerId === actor.id || hasAnyRole(actor, 'admin');
     if (owner) {
-      if (task.status !== 'completed') throw conflict('只有已验收的任务可以沉淀经验');
+      if (task.status !== 'completed') throw conflict('只有已验收的任务可以沉淀文档');
     } else {
       if (actor.kind !== 'agent' && actor.kind !== 'service') {
-        throw forbidden('只有任务负责人或已提交结果的智能体可以沉淀经验');
+        throw forbidden('只有任务负责人或已提交结果的智能体可以沉淀文档');
       }
-      if (task.status === 'cancelled') throw conflict('任务已取消，无法沉淀经验');
+      if (task.status === 'cancelled') throw conflict('任务已取消，无法沉淀文档');
       const submitted = await this.ctx.db.read.one(
         `SELECT 1 AS present FROM subtasks
          WHERE task_id = :taskId AND agent_id = :agent AND status IN ('submitted','verified') LIMIT 1`,
         { taskId, agent: actor.id },
       );
-      if (!submitted) throw forbidden('只有已提交结果的受派智能体可以沉淀经验');
+      if (!submitted) throw forbidden('只有已提交结果的受派智能体可以沉淀文档');
     }
     const input = asObject(body);
-    const kind = input.kind === undefined ? 'experience' : asEnum(input.kind, 'kind', AICD_KINDS);
+    const kind = input.kind === undefined ? 'document' : asEnum(input.kind, 'kind', AICD_KINDS);
     const content = asString(input.content, 'content', { max: 8000 });
-    const conditions = asString(input.conditions, 'conditions', { max: 4000 });
+    const conditions = asOptionalString(input.conditions, 'conditions', { max: 4000 }) ?? '';
     const title =
       input.title === undefined ? content.slice(0, 60) : asString(input.title, 'title', { max: 200 });
     const summary = asOptionalString(input.summary, 'summary', { max: 500 }) ?? '';
@@ -765,12 +764,12 @@ export class KnowledgeService {
 
   /** 发布：审核人显式给出有效期与共享范围，平台写入版本快照。 */
   async publish(actor: Principal, id: string, body: unknown): Promise<{ id: string; state: string; version: number }> {
-    if (actor.kind !== 'human') throw forbidden('智能体不能发布经验');
-    if (actor.tenantRole === 'guest') throw forbidden('访客不能发布经验');
+    if (actor.kind !== 'human') throw forbidden('智能体不能发布文档');
+    if (actor.tenantRole === 'guest') throw forbidden('访客不能发布文档');
     const item = await this.requireItem(actor, id);
     await this.assertManage(actor, item);
     if (item.state !== 'candidate' && item.state !== 'draft') {
-      throw conflict('只有草稿或待审核的经验可以发布');
+      throw conflict('只有草稿或待审核的文档可以发布');
     }
     const input = asObject(body);
     const title = input.title === undefined ? item.title : asString(input.title, 'title', { max: 200 });
@@ -786,14 +785,12 @@ export class KnowledgeService {
     const kind = input.kind === undefined ? item.kind : asEnum(input.kind, 'kind', AICD_KINDS);
     if (!title.trim()) throw invalid('发布前必须填写标题');
     if (!item.content.trim()) throw invalid('发布前必须填写正文');
-    if (kind === 'experience' && !conditions.trim()) throw invalid('经验必须写明适用条件');
 
     let expiresAt: string | null = null;
     if (input.expiresAt !== undefined && input.expiresAt !== null) {
       expiresAt = asTimestamp(input.expiresAt, 'expiresAt');
       if (Date.parse(expiresAt) <= Date.parse(this.ctx.now())) throw invalid('expiresAt 必须晚于当前时间');
     }
-    if (kind === 'experience' && !expiresAt) throw invalid('经验必须给出有效期');
     const audience = this.parseAudience(input.audience);
     const evidenceLevel =
       input.evidenceLevel === undefined
@@ -852,7 +849,7 @@ export class KnowledgeService {
   }
 
   async revoke(actor: Principal, id: string, body: unknown): Promise<{ id: string; state: string; version: number }> {
-    if (actor.kind !== 'human') throw forbidden('智能体不能撤销经验');
+    if (actor.kind !== 'human') throw forbidden('智能体不能撤销文档');
     const item = await this.requireItem(actor, id);
     await this.assertManage(actor, item);
     if (item.state !== 'published') throw conflict('只有已发布的知识可以撤销');
@@ -867,15 +864,18 @@ export class KnowledgeService {
     return { id: item.id, state: 'revoked', version: item.version };
   }
 
-  /** 修订：生成新版本候选，重新审核前不再作为有效经验返回。 */
+  /** 修订：生成新版本候选，重新审核前不再作为有效文档返回。 */
   async revise(actor: Principal, id: string, body: unknown): Promise<{ id: string; state: string; version: number }> {
-    if (actor.kind !== 'human') throw forbidden('智能体不能修订经验');
+    if (actor.kind !== 'human') throw forbidden('智能体不能修订文档');
     const item = await this.requireItem(actor, id);
     await this.assertManage(actor, item);
     if (!['published', 'revoked'].includes(item.state)) throw conflict('只有已发布或已撤销的知识可以修订');
     const input = asObject(body);
     const content = asString(input.content, 'content', { max: 8000 });
-    const conditions = asString(input.conditions, 'conditions', { max: 4000 });
+    const conditions =
+      input.conditions === undefined
+        ? item.conditions
+        : (asOptionalString(input.conditions, 'conditions', { max: 4000 }) ?? '');
     const reason = asString(input.reason, 'reason', { max: 2000 });
     const title = input.title === undefined ? item.title : asString(input.title, 'title', { max: 200 });
     const summary =
@@ -981,7 +981,7 @@ export class KnowledgeService {
     };
   }
 
-  /** 个人经验分享给团队：整单替换，只有来源空间里本人能改。 */
+  /** 个人文档分享给团队：整单替换，只有来源空间里本人能改。 */
   async setShares(
     actor: Principal,
     id: string,
@@ -989,7 +989,7 @@ export class KnowledgeService {
   ): Promise<{ id: string; teamIds: string[] }> {
     const item = await this.requireItem(actor, id);
     const accountId = actor.accountId;
-    if (actor.kind !== 'human' || !accountId) throw forbidden('只有人可以分享经验');
+    if (actor.kind !== 'human' || !accountId) throw forbidden('只有人可以分享文档');
 
     const source = await this.ctx.db.read.one(
       `SELECT t.personal, t.status, p.account_id
@@ -1003,7 +1003,7 @@ export class KnowledgeService {
       String(source.status) !== 'active' ||
       String(source.account_id ?? '') !== accountId
     ) {
-      throw forbidden('团队经验不能分享到团队之外');
+      throw forbidden('团队文档不能分享到团队之外');
     }
 
     const teamIds = asStringArray(asObject(body).teamIds, 'teamIds', { max: 50, maxLength: 128 });
@@ -1014,9 +1014,9 @@ export class KnowledgeService {
     const current = new Set(currentRows.map(row => String(row.id)));
     const requested = new Set(teamIds);
 
-    // 非发布状态只能撤回已有分享；新增分享必须先把经验发布出去。
+    // 非发布状态只能撤回已有分享；新增分享必须先把文档发布出去。
     if (item.state !== 'published' && teamIds.some(teamId => !current.has(teamId))) {
-      throw conflict('只有已发布的经验可以分享');
+      throw conflict('只有已发布的文档可以分享');
     }
 
     // 只校验新增目标：人退出团队后仍要能撤回已有分享。
@@ -1056,7 +1056,7 @@ export class KnowledgeService {
     return { id: item.id, teamIds };
   }
 
-  /** 已发布、未过期、且对调用方可见的经验（含分享给当前团队的个人经验）。 */
+  /** 已发布、未过期、且对调用方可见的文档（含分享给当前团队的个人文档）。 */
   async list(actor: Principal, query = '', limit = 100): Promise<Knowledge[]> {
     if (query.length > 200) throw invalid('查询过长');
     await requireAgentScope(this.ctx, actor, 'knowledge:read');
@@ -1188,9 +1188,29 @@ export class KnowledgeService {
       content: String(row.content),
       conditions: String(row.conditions),
       reviewerId: String(row.reviewer_id),
-      expiresAt: String(row.expires_at),
+      expiresAt: row.expires_at === null || row.expires_at === undefined ? null : String(row.expires_at),
       publishedAt: String(row.published_at),
     }));
+  }
+
+  /** 使用记录：谁在哪个任务里引用过哪个版本。 */
+  async usage(actor: Principal, id: string): Promise<Record<string, unknown>> {
+    const item = await this.requireItem(actor, id);
+    await this.assertManage(actor, item);
+    const rows = await this.ctx.db.read.all(
+      `SELECT task_id, version, used_at FROM knowledge_usage
+       WHERE knowledge_id = :id ORDER BY used_at DESC`,
+      { id: item.id },
+    );
+    return {
+      id: item.id,
+      total: rows.length,
+      uses: rows.map(row => ({
+        taskId: String(row.task_id),
+        version: Number(row.version),
+        usedAt: String(row.used_at),
+      })),
+    };
   }
 
   /** 当前有效版本的证据包。 */
@@ -1200,8 +1220,7 @@ export class KnowledgeService {
     if (
       !item ||
       item.state !== 'published' ||
-      !item.expiresAt ||
-      Date.parse(item.expiresAt) <= Date.parse(this.ctx.now())
+      (item.expiresAt !== null && Date.parse(item.expiresAt) <= Date.parse(this.ctx.now()))
     ) {
       throw notFound('知识不可用');
     }
@@ -1253,12 +1272,14 @@ export class KnowledgeService {
       content: String(snapshot.content),
       conditions: String(snapshot.conditions),
       reviewerId: String(snapshot.reviewer_id),
-      expiresAt: String(snapshot.expires_at),
+      expiresAt: snapshot.expires_at === null || snapshot.expires_at === undefined
+        ? null
+        : String(snapshot.expires_at),
       publishedAt: String(snapshot.published_at),
     };
   }
 
-  /** 任务引用一条当前有效的经验，固定到具体版本。 */
+  /** 任务引用一条当前有效的文档，固定到具体版本。 */
   async reference(actor: Principal, taskId: string, body: unknown): Promise<{ id: string; version: number }> {
     await requireAgentScope(this.ctx, actor, 'knowledge:read');
     const task = await readTask(this.ctx, actor, taskId);
@@ -1269,8 +1290,7 @@ export class KnowledgeService {
     if (
       !item ||
       item.state !== 'published' ||
-      !item.expiresAt ||
-      Date.parse(item.expiresAt) <= Date.parse(this.ctx.now())
+      (item.expiresAt !== null && Date.parse(item.expiresAt) <= Date.parse(this.ctx.now()))
     ) {
       throw notFound('知识不可用');
     }
@@ -1312,7 +1332,7 @@ export class KnowledgeService {
     actor: Principal,
     input: Record<string, unknown>,
   ): Promise<{ workspace: string; principalId: string; personal: boolean }> {
-    if (actor.kind !== 'human' || !actor.accountId) throw forbidden('只有绑定账号的人可以复制经验');
+    if (actor.kind !== 'human' || !actor.accountId) throw forbidden('只有绑定账号的人可以复制文档');
     if (!this.tenants || !this.accounts) throw invalid('空间服务不可用');
     const account = await this.accounts.findById(actor.accountId);
     if (!account) throw forbidden('账号不存在');
@@ -1450,22 +1470,22 @@ export class KnowledgeService {
   }
 
   /**
-   * 复制经验：由用户选择要复制到的团队，确认后生成一份独立草稿；取消即不复制。
+   * 复制文档：由用户选择要复制到的团队，确认后生成一份独立草稿；取消即不复制。
    * 复制到他人的个人空间必须走邀请。
    */
   async copy(actor: Principal, id: string, body: unknown): Promise<Knowledge> {
-    if (actor.kind !== 'human') throw forbidden('只有人可以复制经验');
-    if (actor.tenantRole === 'guest') throw forbidden('访客不能复制经验');
+    if (actor.kind !== 'human') throw forbidden('只有人可以复制文档');
+    if (actor.tenantRole === 'guest') throw forbidden('访客不能复制文档');
     const source = await this.loadReadable(actor, id);
-    if (!source) throw notFound('经验不存在');
-    if (source.state !== 'published') throw conflict('只有已发布的经验可以复制');
+    if (!source) throw notFound('文档不存在');
+    if (source.state !== 'published') throw conflict('只有已发布的文档可以复制');
     if (source.expiresAt && Date.parse(source.expiresAt) <= Date.parse(this.ctx.now())) {
-      throw conflict('经验已过期，请先修订');
+      throw conflict('文档已过期，请先修订');
     }
     const sourceMeta = await this.workspaceMeta(source.workspace);
     if (!sourceMeta) throw notFound('来源空间不存在');
     if (sourceMeta.personal && source.authorId !== actor.id) {
-      throw forbidden('只有作者可以复制自己的个人经验');
+      throw forbidden('只有作者可以复制自己的个人文档');
     }
 
     const input = asObject(body);
@@ -1561,15 +1581,15 @@ export class KnowledgeService {
     };
   }
 
-  /** 邀请他人把经验复制到其个人空间；对方接受后才落库。 */
+  /** 邀请他人把文档复制到其个人空间；对方接受后才落库。 */
   async inviteCopy(actor: Principal, id: string, body: unknown): Promise<CopyInvite> {
     const item = await this.requireItem(actor, id);
     await this.assertManage(actor, item);
-    if (item.state !== 'published') throw conflict('只有已发布的经验可以复制给他人');
+    if (item.state !== 'published') throw conflict('只有已发布的文档可以复制给他人');
     const input = asObject(body);
     const targetPrincipal = asString(input.targetPrincipal, 'targetPrincipal', { max: 128 });
     const note = asOptionalString(input.note, 'note', { max: 500 }) ?? '';
-    if (targetPrincipal === actor.id) throw invalid('不能把经验复制给自己');
+    if (targetPrincipal === actor.id) throw invalid('不能把文档复制给自己');
     const target = await this.ctx.db.read.one(
       `SELECT p.id, p.workspace, t.personal, t.status, p.active
        FROM principals p JOIN tenants t ON t.id = p.workspace
@@ -1663,9 +1683,9 @@ export class KnowledgeService {
     const sourceRow = await this.ctx.db.read.one('SELECT * FROM knowledge WHERE id = :id', {
       id: String(invite.knowledge_id),
     });
-    if (!sourceRow) throw notFound('来源经验不存在');
+    if (!sourceRow) throw notFound('来源文档不存在');
     const source = toKnowledge(sourceRow, String(sourceRow.access_mode) as 'workspace' | 'restricted');
-    if (source.state !== 'published') throw conflict('来源经验已不可用');
+    if (source.state !== 'published') throw conflict('来源文档已不可用');
     const child = await this.createCopy(
       actor,
       source,

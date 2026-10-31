@@ -7,6 +7,11 @@
 # 需要本机已安装 initdb / pg_ctl / createdb（Homebrew 的 postgresql 即可）。
 set -euo pipefail
 
+# macOS 26 + 非 C locale 时，postmaster 会在启动阶段变成多线程并拒绝启动
+# （"postmaster became multithreaded during startup"）。临时集群统一用 C locale。
+export LC_ALL=C
+export LANG=C
+
 collab_pg_dir=$(mktemp -d /private/tmp/collab-postgres.XXXXXX)
 collab_pg_port=${COLLAB_TEST_PG_PORT:-55439}
 
