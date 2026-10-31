@@ -38,7 +38,41 @@ export type SubtaskRef = {
 };
 
 export type StatusChange = { status: TaskStatus; version: number };
+export type TaskParticipantView = {
+  id: string;
+  taskId: string;
+  humanPrincipalId: string;
+  displayName: string;
+  email: string | null;
+  invitedBy: string;
+  status: 'invited' | 'accepted' | 'declined' | 'revoked';
+  agentId: string | null;
+  agentName: string | null;
+  note: string;
+  createdAt: string;
+  respondedAt: string | null;
+  /** 仅 /v1/task-invitations 返回。 */
+  taskTitle?: string;
+  taskStatus?: TaskStatus;
+  invitedByName?: string;
+};
 
+export type TaskRequestView = {
+  id: string;
+  taskId: string;
+  fromPrincipal: string;
+  toPrincipal: string;
+  role: 'coordinate' | 'subtask';
+  payload: Record<string, unknown>;
+  counter: Record<string, unknown> | null;
+  status: 'proposed' | 'accepted' | 'declined' | 'countered' | 'withdrawn';
+  subtaskId: string | null;
+  createdAt: string;
+  respondedAt: string | null;
+  taskTitle: string;
+  fromName: string;
+  toName: string;
+};
 /** 跨任务动态：工作台的「最近活动」直接消费这个结构。 */
 export type ActivityItem = {
   seq: number;

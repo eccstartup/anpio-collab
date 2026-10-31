@@ -29,7 +29,9 @@ import type {
   TaskContext,
   TaskDetail,
   TaskListItem,
+  TaskParticipantView,
   TaskRef,
+  TaskRequestView,
   TaskRoom,
   TaskThread,
 } from './types.ts';
@@ -55,7 +57,9 @@ export type {
   TaskContext,
   TaskDetail,
   TaskListItem,
+  TaskParticipantView,
   TaskRef,
+  TaskRequestView,
   TaskRoom,
   TaskThread,
 };
@@ -550,6 +554,119 @@ export class CollabClient {
       body: input,
       operationId,
       expectedVersion,
+    });
+  }
+
+  // ------------------------------------------------------------ 参与人与协商
+
+  inviteParticipant(
+    taskId: string,
+    input: { principal?: string; email?: string; note?: string },
+    operationId: string,
+  ) {
+    return this.request<TaskParticipantView>(`tasks/${encodeURIComponent(taskId)}/participants`, {
+      body: input,
+      operationId,
+    });
+  }
+
+  participants(taskId: string) {
+    return this.request<TaskParticipantView[]>(`tasks/${encodeURIComponent(taskId)}/participants`);
+  }
+
+  taskInvitations() {
+    return this.request<TaskParticipantView[]>('task-invitations');
+  }
+
+  acceptTaskInvitation(participantId: string, agent: string, operationId: string) {
+    return this.request<TaskParticipantView>(`task-invitations/${encodeURIComponent(participantId)}/accept`, {
+      body: { agent },
+      operationId,
+    });
+  }
+
+  declineTaskInvitation(participantId: string, note: string, operationId: string) {
+    return this.request<TaskParticipantView>(`task-invitations/${encodeURIComponent(participantId)}/decline`, {
+      body: { note },
+      operationId,
+    });
+  }
+
+  selectParticipantAgent(taskId: string, participantId: string, agent: string, operationId: string) {
+    return this.request<TaskParticipantView>(
+      `tasks/${encodeURIComponent(taskId)}/participants/${encodeURIComponent(participantId)}/agent`,
+      { body: { agent }, operationId },
+    );
+  }
+
+  revokeParticipant(taskId: string, participantId: string, operationId: string) {
+    return this.request<TaskParticipantView>(
+      `tasks/${encodeURIComponent(taskId)}/participants/${encodeURIComponent(participantId)}/revoke`,
+      { body: {}, operationId },
+    );
+  }
+
+  proposeRequest(
+    taskId: string,
+    input: { to: string; role: 'coordinate' | 'subtask'; kind?: string; dueAt?: string; dependsOn?: string[]; note?: string },
+    operationId: string,
+  ) {
+    return this.request<TaskRequestView>(`tasks/${encodeURIComponent(taskId)}/requests`, {
+      body: input,
+      operationId,
+    });
+  }
+
+  taskRequests(taskId: string) {
+    return this.request<TaskRequestView[]>(`tasks/${encodeURIComponent(taskId)}/requests`);
+  }
+
+  requests(options: { box?: 'inbox' | 'outbox'; taskId?: string; status?: string } = {}) {
+    const query = new URLSearchParams();
+    if (options.box) query.set('box', options.box);
+    if (options.taskId) query.set('taskId', options.taskId);
+    if (options.status) query.set('status', options.status);
+    const encoded = query.toString();
+    const suffix = encoded ? `?${encoded}` : '';
+    return this.request<TaskRequestView[]>(`requests${suffix}`);
+  }
+
+  acceptRequest(requestId: string, operationId: string) {
+    return this.request<{ id: string; status: 'accepted'; subtaskId: string | null }>(
+      `requests/${encodeURIComponent(requestId)}/accept`,
+      { body: {}, operationId },
+    );
+  }
+
+  declineRequest(requestId: string, reason: string, operationId: string) {
+    return this.request<TaskRequestView>(`requests/${encodeURIComponent(requestId)}/decline`, {
+      body: { reason },
+      operationId,
+    });
+  }
+
+  counterRequest(
+    requestId: string,
+    input: { kind?: string; dueAt?: string; dependsOn?: string[]; note?: string },
+    operationId: string,
+  ) {
+    return this.request<TaskRequestView>(`requests/${encodeURIComponent(requestId)}/counter`, {
+      body: input,
+      operationId,
+    });
+  }
+
+  confirmRequest(requestId: string, operationId: string) {
+    return this.request<{ id: string; status: 'accepted'; subtaskId: string | null }>(
+      `requests/${encodeURIComponent(requestId)}/confirm`,
+      { body: {}, operationId },
+    );
+  }
+
+  withdrawRequest(requestId: string, operationId: string) {
+    return this.request<TaskRequestView>(`requests/${encodeURIComponent(requestId)}/withdraw`, {
+      body: {},
+      operationId,
     });
   }
 

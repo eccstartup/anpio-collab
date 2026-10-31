@@ -67,6 +67,11 @@ const VISIBLE_CLAUSE = `(
   t.owner_id = :actor OR :isAdmin = 1 OR :teamMember = 1
   OR EXISTS (SELECT 1 FROM subtasks vs WHERE vs.task_id = t.id AND vs.agent_id = :actor)
   OR EXISTS (SELECT 1 FROM task_coordinators vc WHERE vc.task_id = t.id AND vc.principal_id = :actor)
+  OR EXISTS (
+    SELECT 1 FROM task_participants vp
+    WHERE vp.task_id = t.id AND vp.status = 'accepted'
+      AND (vp.human_principal_id = :actor OR vp.agent_id = :actor)
+  )
 )`;
 
 /** 动态流：一条事件 + 它所属任务的标题，供工作台直接展示。 */

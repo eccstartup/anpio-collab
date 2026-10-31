@@ -12,6 +12,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import test from 'node:test';
+import { anpLogin } from '../src/anp/client.ts';
 import { migrate } from '../src/platform/db/schema.ts';
 import { ADMIN_TOKEN, emailLogin, startHarness, type Harness } from './helpers/harness.ts';
 
@@ -57,6 +58,40 @@ test('邮箱首次登录：自动创建个人组织，本人是所有者', async
     assert.equal(tenants.length, 1);
     assert.equal(tenants[0].role, 'owner');
     assert.match(tenants[0].name, /的组织$/);
+  } finally {
+    await harness.close();
+  }
+});
+
+test('已有个人空间的账号：DID 首次登录落到个人空间，不再在默认 workspace 建成员身份', async () => {
+  const harness = await startHarness({ workspace: 'acme' });
+  try {
+    const session = await emailLogin(harness, 'wallet-owner@example.com');
+    const me = await json<{ accountId: string; workspace: string }>(await get(harness, '/v1/me', session.token));
+    assert.equal(me.workspace, session.tenant.id);
+
+    // 现实中由「绑定我的 DID」完成：DID 属于这个账号，但还没有身份记录。
+    const identity = harness.did.identity('wallet-owner');
+    await harness.app.ctx.db.transaction(tx =>
+      harness.app.accounts.attach(tx, me.accountId, 'did', identity.did),
+    );
+
+    const first = await anpLogin({ baseUrl: harness.url, identity, client: 'browser' });
+    assert.equal(first.principal.id, session.principal.id, '应复用个人空间里已有的主体');
+    assert.equal(first.principal.workspace, session.tenant.id);
+    assert.equal(first.enrollment, 'auto');
+
+    const second = await anpLogin({ baseUrl: harness.url, identity, client: 'browser' });
+    assert.equal(second.principal.id, first.principal.id);
+    assert.equal(second.enrollment, 'existing');
+
+    // 默认 workspace 里不该再多出这个人的一份成员身份。
+    const stray = await harness.app.ctx.db.read.one<{ count: number }>(
+      `SELECT COUNT(*) AS count FROM principals
+        WHERE workspace = 'acme' AND account_id = :account AND kind = 'human'`,
+      { account: me.accountId },
+    );
+    assert.equal(Number(stray?.count ?? 0), 0);
   } finally {
     await harness.close();
   }

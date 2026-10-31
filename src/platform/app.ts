@@ -21,6 +21,7 @@ import { KnowledgeService } from './services/knowledge.ts';
 import { MailService, type MailMode } from './services/mail.ts';
 import { NotificationService } from './services/notifications.ts';
 import { OversightService, type OversightThresholds } from './services/oversight.ts';
+import { ParticipationService } from './services/participation.ts';
 import { PrincipalService } from './services/principals.ts';
 import { SubtaskService } from './services/subtasks.ts';
 import { TaskService } from './services/tasks.ts';
@@ -54,6 +55,7 @@ export type App = {
   mail: MailService;
   tasks: TaskService;
   subtasks: SubtaskService;
+  participation: ParticipationService;
   knowledge: KnowledgeService;
   notifications: NotificationService;
   collab: CollabService;
@@ -94,6 +96,7 @@ export async function createApp(db: Database, options: AppOptions = {}): Promise
   const knowledge = new KnowledgeService(ctx, tenants, accounts);
   const tasks = new TaskService(ctx, notifications, knowledge);
   const subtasks = new SubtaskService(ctx, notifications);
+  const participation = new ParticipationService(ctx);
 
   const identity = new IdentityService(
     ctx,
@@ -134,6 +137,7 @@ export async function createApp(db: Database, options: AppOptions = {}): Promise
     mail,
     tasks,
     subtasks,
+    participation,
     knowledge,
     notifications,
     collab,

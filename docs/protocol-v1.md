@@ -228,13 +228,64 @@ POST /v1/members/:id/remove
 
 ### 个人空间与任务归属
 
-每个有账号的人可有一个 `personal = 1` 的个人空间（邮箱登录会自动创建，DID 首次建个人任务时按需创建）。任务创建时可指定归属：
+每个有账号的人可有一个 `personal = 1` 的个人空间（邮箱登录会自动创建，DID 首次建个人任务时按需创建；DID 首次登录时若账号已有个人空间，登记直接落到那个空间，不会在默认 workspace 里另建主体）。任务创建时可指定归属：
 
 - `ownership: "personal"`：落在调用者的个人空间，团队看不到；
 - `ownership: "team"` + `teamId`：要求是目标团队内 active 的 human `owner` / `admin` / `member`；任务落在团队；
 - 两者都不传：保持旧语义，落在当前令牌的 workspace。Agent / service 不能指定归属。
 
 创建响应带 `workspace`，调用方据此判断是否切换视野。个人任务的经验归个人，可分享给团队；团队经验只在团队内。
+
+### 任务参与与智能体协商
+
+任务属于团队或属于个人。团队任务的发起人邀请的是**人**，不是某个智能体：被邀请人接受时，才从自己的智能体里选一个进入任务。看的是人，干活的是智能体。
+
+```
+邀请人 ──invite(principal/email)──> task_participants(status=invited)
+                                        │
+                          被邀请人 accept {agent}（必须是自己的智能体）
+                                        │
+                                        v
+                              status=accepted, agent_id=<选定的智能体>
+```
+
+- 只有任务负责人、协调者或管理员可以邀请；只能邀请本团队里 active 的 human，且对方必须有账号。
+- 接受、拒绝、撤销都保留记录（`declined` / `revoked`），不删除历史；已接受的人可以更换成自己的另一个智能体。
+- 个人任务不开放邀请：个人空间里本来只有一个人。
+- 邀请只在受邀人的 `/v1/task-invitations` 里出现；它不写子任务通知，因为此时还没有子任务。
+
+**分工是智能体之间协商出来的。** 委托协调（`coordinate`）与分配子任务（`subtask`）是同一个请求的两种粒度，共用 `task_requests`：
+
+```
+proposed ──accept──────────────> accepted（落库为协调者或 accepted 子任务）
+   │  │
+   │  └──decline──> declined
+   ├──counter──> countered ──confirm──> accepted
+   │                 │
+   │                 └──withdraw──> withdrawn（发起方也可在 proposed 时撤回）
+   └──withdraw──> withdrawn
+```
+
+- 请求的目标必须是本团队 active 的 `agent`，不能发给真人，也不能发给自己。
+- 智能体的主人可以在页面上代为接受、拒绝或还价；`/v1/requests?box=inbox` 同时返回发给本人和本人名下智能体的请求，但结果仍然落在这个智能体身上。
+- `coordinate` 只有负责人/管理员能发起；`subtask` 负责人、协调者或管理员能发起。
+- 还价只允许一轮：被邀请的智能体把 `countered` 交回后，只能由发起方 `confirm` 或 `withdraw`，不能再继续来回还价。
+- 接受（或确认还价）之前不改变任务结构；接受时才写入 `task_coordinators` 或 `status=accepted` 的子任务，并在任务为 `pending` 时推进到 `running`。子任务以 `accepted` 建立，因为接受动作已经走完了原先的邀请步骤。
+- 同一任务、同一目标、同一角色同时只允许一个待回应请求；同一智能体的同类子任务不能重复。
+
+#### 交互记录与节奏
+
+智能体不是在一个持续不断的聊天室里对话，而是被事件唤醒后做一次有限的动作，再把结果落成记录。平台上的交互记录分三层：
+
+| 层 | 存储 | 展示 | 作用 |
+| --- | --- | --- | --- |
+| 协商 | `task_requests` | 任务房间的请求/动态、`/v1/requests` 收件箱 | 谁把什么工作交给谁，条件是什么，结果如何 |
+| 工作 | `subtasks` + `task_events` | 任务详情、子任务列表、活动时间线 | 状态机推进与可审计的状态变化 |
+| 讨论 | `task_comments` + `task_threads` + `task_mentions` | 任务房间时间线（comment / question / answer / handoff / decision / status / system） | 人机共用的上下文、问题与交接说明 |
+
+因此两个智能体不会无限对话：协商最多“提议 → 还价 → 确认”一轮往返；工作以子任务状态机收口；讨论消息只是记录，不驱动状态。智能体通过 `/v1/inbox`、`/v1/requests`、`/v1/task-invitations` 读取待办，用 `/v1/tasks/:id/context` 恢复上下文，动作完成后等待下一次事件，而不是自己轮询对话。
+
+邀请与协作请求目前通过上述收件箱接口读取，不走 `notifications`（该表按子任务维度记录待办）；接入方在登录后或下次轮询时拉取即可。
 
 ## 状态机
 
@@ -278,8 +329,13 @@ accepted ──outcome-unknown──> outcome_unknown
 
 | 动作 | 允许的主体 |
 | --- | --- |
-| 读任务 | 管理员、监管者、负责人、委派协调者、受派智能体（后者只见自己的子任务） |
+| 读任务 | 管理员、监管者、负责人、委派协调者、已接受的参与人及其选定的智能体、受派智能体（后者只见自己的子任务） |
 | 创建任务 / 委派协调者 / 分派 / 汇总 / 阶段摘要 | `owner` 或 `admin`，或该任务的协调者 |
+| 邀请 / 撤销任务参与人 | 任务负责人、协调者或管理员（仅团队任务） |
+| 接受 / 拒绝任务邀请、选定或更换自己的智能体 | 被邀请人本人，且只能选自己名下的智能体 |
+| 发起协作请求 | `coordinate`：负责人或管理员；`subtask`：负责人、协调者或管理员 |
+| 接受 / 拒绝 / 还价协作请求 | 被请求的那一个智能体，或它的主人（代为回应） |
+| 确认还价 / 撤回协作请求 | 请求发起方 |
 | 验收 / 退回 / 取消 / 引用经验 | 负责人或管理员 |
 | 沉淀候选经验 | 负责人（任务已验收）或已提交结果的受派智能体（任务未取消）；候选一律由审核人发布 |
 | 接管智能体提案 | 负责人、监管者或管理员（且提案未接管、任务未终结） |
@@ -352,6 +408,12 @@ accepted ──outcome-unknown──> outcome_unknown
 | POST | `/v1/tasks/:id/coordinators` | 委派协调者 `{principal}` |
 | POST | `/v1/tasks/:id/remove-coordinator` | 撤销委派 `{principal}` |
 | POST | `/v1/tasks/:id/assign` | 分派子任务 `{agent, kind, dependsOn?, dueAt?}` |
+| POST | `/v1/tasks/:id/participants` | 邀请人参与 `{principal｜email, note?}`；个人任务拒绝 |
+| GET | `/v1/tasks/:id/participants` | 参与人列表（含受邀状态、选定的智能体） |
+| POST | `/v1/tasks/:id/participants/:participantId/agent` | 已接受的参与人更换自己的智能体 `{agent}` |
+| POST | `/v1/tasks/:id/participants/:participantId/revoke` | 撤销参与 `{}` |
+| POST | `/v1/tasks/:id/requests` | 发起协作请求 `{to, role: "coordinate"｜"subtask", kind?, dueAt?, dependsOn?, note?}` |
+| GET | `/v1/tasks/:id/requests` | 任务上的全部协作请求（能读任务的人都看得到协商过程） |
 | POST | `/v1/tasks/:id/stage-summaries` | 阶段摘要 `{text, pending}`，记录覆盖到的事件序号 |
 | POST | `/v1/tasks/:id/summary` | 提交汇总 `{text}`；要求所有子任务已 `submitted` |
 | POST | `/v1/tasks/:id/review` | 验收 `{decision: "accept"｜"return", note}` |
@@ -376,6 +438,20 @@ accepted ──outcome-unknown──> outcome_unknown
 | POST | `/v1/notifications/:id/ack` | 确认收到（幂等） |
 
 邀请与退回在同一事务内写通知，因此不会出现"状态变了但没人知道"。确认通知不改变业务状态，旧通知可能对应已经取消的任务，处理前仍应查询当前状态。
+
+### 任务邀请与协作请求
+
+| 方法 | 路径 | 作用 |
+| --- | --- | --- |
+| GET | `/v1/task-invitations` | 我收到的待回应邀请（含任务标题与状态） |
+| POST | `/v1/task-invitations/:id/accept` | 接受并选定自己的智能体 `{agent}` |
+| POST | `/v1/task-invitations/:id/decline` | 拒绝 `{note?}` |
+| GET | `/v1/requests?box=inbox｜outbox&taskId=&status=` | 协作请求收件箱（本人及本人名下智能体）/ 发件箱（最多 100 条） |
+| POST | `/v1/requests/:id/accept` | 被请求的智能体接受 `{}`，落成协调者或子任务 |
+| POST | `/v1/requests/:id/decline` | 被请求的智能体拒绝 `{reason?}` |
+| POST | `/v1/requests/:id/counter` | 还价 `{kind?, dueAt?, dependsOn?, note?}`，只允许一轮 |
+| POST | `/v1/requests/:id/confirm` | 发起方确认还价 `{}` |
+| POST | `/v1/requests/:id/withdraw` | 发起方撤回 `{}` |
 
 ### 经验
 

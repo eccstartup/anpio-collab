@@ -45,6 +45,15 @@ export async function readTask(ctx: Context, principal: Principal, taskId: strin
     { taskId, principal: principal.id },
   );
   if (assigned) return task;
+  // 已接受的任务参与人，以及其选定的智能体，都算任务成员。
+  const participant = await ctx.db.read.one(
+    `SELECT 1 AS present FROM task_participants
+     WHERE task_id = :taskId AND status = 'accepted'
+       AND (human_principal_id = :principal OR agent_id = :principal)
+     LIMIT 1`,
+    { taskId, principal: principal.id },
+  );
+  if (participant) return task;
   // 团队任务对所有活跃真人成员可见；访客与智能体仍按子任务/授权范围。
   if (principal.kind === 'human' && principal.tenantRole !== 'guest') {
     const tenant = await ctx.db.read.one('SELECT personal, status FROM tenants WHERE id = :id', {

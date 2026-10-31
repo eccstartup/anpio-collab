@@ -548,6 +548,132 @@ export const routes: Route[] = [
   },
   {
     method: 'POST',
+    path: '/v1/tasks/:id/participants',
+    description: '邀请一个人参与任务；对方接受时再选定自己的智能体',
+    write: {
+      execute: async ({ app, principal, params, body }) =>
+        app.participation.invite(principal, params.id ?? '', body),
+    },
+  },
+  {
+    method: 'GET',
+    path: '/v1/tasks/:id/participants',
+    description: '任务参与人及其选定的智能体',
+    read: async ({ app, principal, params }) => app.participation.participants(principal, params.id ?? ''),
+  },
+  {
+    method: 'POST',
+    path: '/v1/tasks/:id/participants/:participantId/agent',
+    description: '参与人更换自己的智能体',
+    write: {
+      execute: async ({ app, principal, params, body }) =>
+        app.participation.selectAgent(principal, params.participantId ?? '', body),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/tasks/:id/participants/:participantId/revoke',
+    description: '撤销参与（负责人或协调者）',
+    write: {
+      execute: async ({ app, principal, params }) =>
+        app.participation.revoke(principal, params.id ?? '', params.participantId ?? ''),
+    },
+  },
+  {
+    method: 'GET',
+    path: '/v1/task-invitations',
+    description: '我收到且尚未回应的任务邀请',
+    read: async ({ app, principal }) => app.participation.invitations(principal),
+  },
+  {
+    method: 'POST',
+    path: '/v1/task-invitations/:id/accept',
+    description: '接受任务邀请并选定一个自己的智能体',
+    write: {
+      execute: async ({ app, principal, params, body }) =>
+        app.participation.acceptInvitation(principal, params.id ?? '', body),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/task-invitations/:id/decline',
+    description: '拒绝任务邀请',
+    write: {
+      execute: async ({ app, principal, params, body }) =>
+        app.participation.declineInvitation(principal, params.id ?? '', body),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/tasks/:id/requests',
+    description: '智能体协作请求：委托协调者或分配子任务，接受后才落库',
+    write: {
+      execute: async ({ app, principal, params, body }) =>
+        app.participation.propose(principal, params.id ?? '', body),
+    },
+  },
+  {
+    method: 'GET',
+    path: '/v1/tasks/:id/requests',
+    description: '任务上的全部协作请求；能读任务的人都看得到协商过程',
+    read: async ({ app, principal, params }) =>
+      app.participation.taskRequests(principal, params.id ?? ''),
+  },
+  {
+    method: 'GET',
+    path: '/v1/requests',
+    description: '我的协作请求（box=inbox|outbox，可按任务与状态过滤）',
+    read: async ({ app, principal, query }) =>
+      app.participation.requests(principal, {
+        box: query.get('box') ?? undefined,
+        taskId: query.get('taskId') ?? undefined,
+        status: query.get('status') ?? undefined,
+      }),
+  },
+  {
+    method: 'POST',
+    path: '/v1/requests/:id/accept',
+    description: '接受协作请求；子任务直接进入 accepted',
+    write: {
+      execute: async ({ app, principal, params }) => app.participation.acceptRequest(principal, params.id ?? ''),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/requests/:id/decline',
+    description: '拒绝协作请求并说明原因',
+    write: {
+      execute: async ({ app, principal, params, body }) =>
+        app.participation.declineRequest(principal, params.id ?? '', body),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/requests/:id/counter',
+    description: '对协作请求还价：修改期限、粒度或补充说明',
+    write: {
+      execute: async ({ app, principal, params, body }) =>
+        app.participation.counterRequest(principal, params.id ?? '', body),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/requests/:id/confirm',
+    description: '发起方接受还价并按还价条款落库',
+    write: {
+      execute: async ({ app, principal, params }) => app.participation.confirmRequest(principal, params.id ?? ''),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/requests/:id/withdraw',
+    description: '发起方撤回协作请求',
+    write: {
+      execute: async ({ app, principal, params }) => app.participation.withdrawRequest(principal, params.id ?? ''),
+    },
+  },
+  {
+    method: 'POST',
     path: '/v1/tasks/:id/stage-summaries',
     description: '记录阶段摘要与未决事项',
     write: {

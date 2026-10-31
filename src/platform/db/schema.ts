@@ -15,6 +15,7 @@
  *  - v9 本地对象存储：文件可以脱离任务，上传分三步（申请、直传、确认）。
  *  - v10 房间已读游标：未读按每人每任务记录，不改变任务版本。
  *  - v11 任务归档：归档只加时间戳，不改状态，也不删版本与文件。
+ *  - v12 任务参与人与智能体协商：人先入队并选定智能体，分工再由智能体之间协商。
  *
  * 补列必须先于事务探测（只读连接看不到未提交的 DDL），
  * 因此 `ensureColumns` 在事务外查现有列，事务内只做 CREATE 与 ALTER。
@@ -699,6 +700,49 @@ function statements(dialect: 'sqlite' | 'postgres'): string[] {
       recorded_at TEXT NOT NULL
     )`,
     `CREATE INDEX IF NOT EXISTS knowledge_events_target ON knowledge_events(knowledge_id, seq)`,
+
+    // ---- v12：任务参与人与智能体协商 ----
+    // 参与人是"人"：任务发起人邀请的是人，被邀请人接受时再选定自己的一个智能体。
+    // 同一个人在同一个任务里只有一条参与记录，换智能体改 agent_id 即可。
+    `CREATE TABLE IF NOT EXISTS task_participants (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL REFERENCES tasks(id),
+      workspace TEXT NOT NULL,
+      human_principal_id TEXT NOT NULL REFERENCES principals(id),
+      account_id TEXT NOT NULL,
+      invited_by TEXT NOT NULL REFERENCES principals(id),
+      status TEXT NOT NULL DEFAULT 'invited',
+      agent_id TEXT REFERENCES principals(id),
+      note TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      responded_at TEXT,
+      UNIQUE (task_id, human_principal_id)
+    )`,
+    `CREATE INDEX IF NOT EXISTS task_participants_invitee
+       ON task_participants(human_principal_id, status, created_at)`,
+
+    // 协商请求：委托协调者（role=coordinate）与分配子任务（role=subtask）
+    // 走同一张表，因为两者都是"一个主体把一段工作交给另一个主体"。
+    // 接受时 role 决定落成协调者还是子任务；还价通过 counter 暂存，发起方确认后才落库。
+    `CREATE TABLE IF NOT EXISTS task_requests (
+      id TEXT PRIMARY KEY,
+      workspace TEXT NOT NULL,
+      task_id TEXT NOT NULL REFERENCES tasks(id),
+      from_principal TEXT NOT NULL REFERENCES principals(id),
+      to_principal TEXT NOT NULL REFERENCES principals(id),
+      role TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      counter TEXT,
+      response_note TEXT,
+      status TEXT NOT NULL DEFAULT 'proposed',
+      subtask_id TEXT REFERENCES subtasks(id),
+      created_at TEXT NOT NULL,
+      responded_at TEXT
+    )`,
+    `CREATE INDEX IF NOT EXISTS task_requests_inbox
+       ON task_requests(to_principal, status, created_at)`,
+    `CREATE INDEX IF NOT EXISTS task_requests_outbox
+       ON task_requests(from_principal, status, created_at)`,
   ];
 }
 
@@ -736,9 +780,11 @@ const ADDED_COLUMNS: { table: string; column: string; definition: string }[] = [
   { table: 'task_comments', column: 'reply_to', definition: 'TEXT' },
   { table: 'task_comments', column: 'payload', definition: "TEXT NOT NULL DEFAULT '{}'" },
   { table: 'task_comments', column: 'edited_at', definition: 'TEXT' },
+  // v12 协作请求：回应时带一句说明，拒绝与还价都能留下原因。
+  { table: 'task_requests', column: 'response_note', definition: 'TEXT' },
 ];
 
-export const SCHEMA_VERSION = 11;
+export const SCHEMA_VERSION = 12;
 
 async function existingColumns(db: Database, table: string): Promise<Set<string> | null> {
   try {

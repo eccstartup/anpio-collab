@@ -33,6 +33,9 @@ const STATUS_LABEL = {
   open: '开放中',
   claimed: '已认领',
   withdrawn: '已撤回',
+  proposed: '待回应',
+  declined: '已拒绝',
+  countered: '已还价',
 };
 
 const STATUS_TONE = {
@@ -55,7 +58,12 @@ const STATUS_TONE = {
   open: 'active',
   claimed: 'ok',
   withdrawn: 'muted',
+  proposed: 'warn',
+  declined: 'muted',
+  countered: 'warn',
 };
+
+const REQUEST_ROLE_LABEL = { coordinate: '委托协调', subtask: '分配子任务' };
 
 const ROLE_LABEL = {
   admin: '管理员',
@@ -225,6 +233,11 @@ const state = {
   replyTo: '',
   taskComments: [],
   taskOffers: [],
+  participants: [],
+  taskRequests: [],
+  invitations: [],
+  requestInbox: [],
+  myAgents: [],
   knowledge: [],
   aicds: [],
   aicdState: '',
@@ -776,9 +789,19 @@ function renderNav() {
 
 async function refresh() {
   try {
+    if (!isAgentSide()) {
+      state.myAgents = await api('agents')
+        .then((items) => items.filter((item) => item.status === 'active'))
+        .catch(() => []);
+    }
     if (state.view === 'home') {
       state.tasks = await api('tasks');
       state.home = await api('space/home').catch(() => null);
+      // 邀请与协作请求没有子任务可挂通知，只能从收件箱读。
+      if (!isAgentSide()) {
+        state.invitations = await api('task-invitations').catch(() => []);
+      }
+      state.requestInbox = await api('requests?box=inbox&status=proposed').catch(() => []);
       if (isAgentSide()) {
         state.inbox = await api('inbox').catch(() => []);
         state.mentions = await api('me/mentions').catch(() => []);
@@ -792,6 +815,8 @@ async function refresh() {
       if (state.taskId) {
         const id = encodeURIComponent(state.taskId);
         state.detail = await api(`tasks/${id}`);
+        state.participants = await api(`tasks/${id}/participants`).catch(() => []);
+        state.taskRequests = await api(`tasks/${id}/requests`).catch(() => []);
         if (state.taskTab === 'room') {
           state.room = await api(`tasks/${id}/room`);
         } else {
@@ -969,6 +994,7 @@ function renderHome() {
 
   return frag(
     intro,
+    renderPendingWork(),
     needsBlock,
     el('div', { class: 'section-title' }, '概览'),
     stats,
@@ -1039,6 +1065,7 @@ function renderWorkbench() {
   return frag(
     el('div', { class: 'section-title' }, '概览'),
     stats,
+    renderPendingWork(),
     el('div', { class: 'section-title' }, '我的待办'),
     inboxRows,
     el('div', { class: 'section-title' }, '在线状态'),
@@ -1422,6 +1449,7 @@ function renderTaskDetail() {
       el('div', { class: 'card-head' }, el('h3', {}, '汇总')),
       el('div', { class: 'result-box' }, task.result.text ?? JSON.stringify(task.result, null, 2))) : null,
     renderSubtasks(detail, owner),
+    renderParticipation(detail, owner),
     renderOffers(task),
     renderComments(task),
     detail.knowledgeRefs.length
@@ -1475,6 +1503,7 @@ function renderTaskRoom() {
       statCard('文件', counts.files, '输入、中间产物与成果'),
       statCard('经验', counts.knowledge, '与这件事相关的经验')),
     renderRoomParticipants(room),
+    renderRoomRequests(),
     renderRoomThreads(room),
     renderRoomMessages(room),
     renderRoomFiles(room),
@@ -1494,6 +1523,15 @@ function renderRoomParticipants(room) {
           avatarNode(person.displayName || person.id, person.avatar, 'sm'),
           el('span', {}, `${person.displayName}（${ROOM_ROLE_LABEL[person.role] ?? person.role}）`))))
       : el('div', { class: 'empty' }, '还没有参与者。'));
+}
+
+function renderRoomRequests() {
+  if (!state.taskRequests.length) return null;
+  return el('div', { class: 'card' },
+    el('div', { class: 'card-head' },
+      el('h3', {}, '协作请求'),
+      el('span', { class: 'muted' }, `${state.taskRequests.length} 个，接受后才落库`)),
+    el('div', { class: 'list' }, state.taskRequests.map((request) => requestCard(request))));
 }
 
 function renderRoomThreads(room) {
@@ -2018,6 +2056,311 @@ function renderTaskActions(detail, owner) {
   return buttons.length ? frag(...buttons) : null;
 }
 
+const requestTermText = (terms = {}) => {
+  const parts = [];
+  if (terms.kind) parts.push(`类别 ${terms.kind}`);
+  if (terms.dueAt) parts.push(`截止 ${formatTime(terms.dueAt)}`);
+  if (terms.note) parts.push(terms.note);
+  return parts.join(' · ') || '—';
+};
+
+/** 协商记录在任务页、房间和待办里复用同一张卡片。 */
+function requestCard(request, options = {}) {
+  // 人可以在页面上替自己的智能体回应；落库的仍是那个智能体。
+  const mine = request.toPrincipal === state.me.id
+    || state.myAgents.some((agent) => agent.agentPrincipalId === request.toPrincipal);
+  const fromMe = request.fromPrincipal === state.me.id;
+  const actions = [];
+  if (mine && request.status === 'proposed') {
+    actions.push(el('button', {
+      class: 'primary',
+      type: 'button',
+      onclick: () => act(
+        () => api(`requests/${encodeURIComponent(request.id)}/accept`, { body: {} }),
+        '已接受，分工已建立',
+      ),
+    }, '接受'));
+    actions.push(el('button', { type: 'button', onclick: () => openDeclineRequest(request) }, '拒绝'));
+    actions.push(el('button', { type: 'button', onclick: () => openCounterRequest(request) }, '还价'));
+  }
+  if (fromMe && request.status === 'countered') {
+    actions.push(el('button', {
+      class: 'primary',
+      type: 'button',
+      onclick: () => act(
+        () => api(`requests/${encodeURIComponent(request.id)}/confirm`, { body: {} }),
+        '已确认还价，分工已建立',
+      ),
+    }, '确认还价'));
+  }
+  if (fromMe && ['proposed', 'countered'].includes(request.status)) {
+    actions.push(el('button', {
+      class: 'ghost',
+      type: 'button',
+      onclick: () => act(
+        () => api(`requests/${encodeURIComponent(request.id)}/withdraw`, { body: {} }),
+        '已撤回请求',
+      ),
+    }, '撤回'));
+  }
+
+  return el('div', { class: 'list-item static' },
+    el('div', { class: 'row spread top' },
+      el('div', {},
+        el('span', { class: 'title' },
+          `${REQUEST_ROLE_LABEL[request.role] ?? request.role} · ${request.fromName} → ${request.toName}`),
+        options.showTask ? el('div', { class: 'meta' }, el('span', {}, request.taskTitle)) : null),
+      badge(request.status)),
+    el('div', { class: 'meta' },
+      el('span', {}, requestTermText(request.payload)),
+      request.counter ? el('span', {}, `还价：${requestTermText(request.counter)}`) : null,
+      el('span', {}, formatTime(request.createdAt))),
+    actions.length ? el('div', { class: 'row actions-row' }, actions) : null);
+}
+
+function invitationCard(invitation) {
+  return el('div', { class: 'list-item static' },
+    el('div', { class: 'row spread top' },
+      el('div', {},
+        el('span', { class: 'title' }, invitation.taskTitle),
+        el('div', { class: 'meta' },
+          el('span', {}, `邀请人 ${invitation.invitedByName || invitation.invitedBy}`),
+          badge(invitation.taskStatus))),
+      badge(invitation.status)),
+    invitation.note ? el('div', { class: 'muted small', style: 'margin-top:6px' }, invitation.note) : null,
+    el('div', { class: 'row actions-row' },
+      el('button', {
+        class: 'primary',
+        type: 'button',
+        onclick: () => openAcceptInvitation(invitation),
+      }, '接受并选智能体'),
+      el('button', { type: 'button', onclick: () => openDeclineInvitation(invitation) }, '拒绝')));
+}
+
+/** 工作台上的「等你回应」：邀请按人，协作请求按智能体。 */
+function renderPendingWork() {
+  const invites = state.invitations.length
+    ? frag(
+      el('div', { class: 'section-title' }, '任务邀请'),
+      el('div', { class: 'list' }, state.invitations.map(invitationCard)),
+    )
+    : null;
+  const requests = state.requestInbox.length
+    ? frag(
+      el('div', { class: 'section-title' }, '待回应的协作请求'),
+      el('div', { class: 'list' }, state.requestInbox.map((item) => requestCard(item, { showTask: true }))),
+    )
+    : null;
+  return invites || requests ? frag(invites, requests) : null;
+}
+
+function renderParticipation(detail, owner) {
+  const task = detail.task;
+  const coordinator = detail.coordinators.includes(state.me.id);
+  const canManage = owner || coordinator || isAdmin();
+  const active = ['pending', 'running'].includes(task.status);
+  const personal = Boolean(state.tenant?.personal);
+  const canInvite = canManage && active && !personal;
+
+  const people = state.participants.map((person) => {
+    const actions = [];
+    if (canManage && person.status !== 'revoked') {
+      actions.push(el('button', {
+        class: 'link',
+        type: 'button',
+        onclick: () => act(
+          () => api(
+            `tasks/${encodeURIComponent(task.id)}/participants/${encodeURIComponent(person.id)}/revoke`,
+            { body: {} },
+          ),
+          '已撤销参与',
+        ),
+      }, '撤销'));
+    }
+    return el('div', { class: 'list-item static' },
+      el('div', { class: 'row spread top' },
+        el('div', {},
+          el('span', { class: 'title' }, person.displayName || person.humanPrincipalId),
+          el('div', { class: 'meta' },
+            person.email ? el('span', {}, person.email) : null,
+            el('span', {}, person.agentName ? `智能体 ${person.agentName}` : '尚未选定智能体'))),
+        badge(person.status === 'revoked' ? 'revoked' : person.status)),
+      actions.length ? el('div', { class: 'row actions-row' }, actions) : null);
+  });
+
+  const requests = state.taskRequests.map((request) => requestCard(request));
+
+  return el('div', { class: 'card' },
+    el('div', { class: 'card-head' },
+      el('h3', {}, '参与人与分工'),
+      el('span', { class: 'muted' },
+        `${state.participants.length} 人 · ${state.taskRequests.length} 个请求`)),
+    personal
+      ? el('div', { class: 'muted small' }, '个人任务只有你一个人，不邀请他人。')
+      : people.length
+        ? el('div', { class: 'list' }, people)
+        : el('div', { class: 'empty' }, '还没有邀请其他人。邀请的是人，对方接受时选自己的智能体进来。'),
+    canInvite
+      ? el('div', { class: 'row', style: 'margin-top:12px' },
+        el('button', { type: 'button', onclick: () => openInviteParticipant(task) }, '邀请人参与'))
+      : null,
+    el('div', { class: 'section-title', style: 'margin-top:18px' }, '协作请求'),
+    requests.length
+      ? el('div', { class: 'list' }, requests)
+      : el('div', { class: 'empty' }, '分工由智能体之间协商：先提议，对方接受或确认还价后才落库。'),
+    canManage && active && !personal
+      ? el('div', { class: 'row', style: 'margin-top:12px' },
+        el('button', { type: 'button', onclick: () => openProposeRequest(task) }, '发起协作请求'))
+      : null);
+}
+
+function openInviteParticipant(task) {
+  openDialog({
+    title: '邀请人参与任务',
+    description: '邀请的是人，不是智能体。对方接受时，会从自己的智能体里选一个进入任务；对方必须已经是本团队成员。',
+    submitLabel: '发出邀请',
+    fields: [
+      { name: 'email', label: '对方邮箱', required: true, placeholder: 'name@example.com' },
+      { name: 'note', label: '说明（可选）', type: 'textarea', placeholder: '例如：请一起核对供应商数据' },
+    ],
+    onSubmit: (values) => act(
+      () => api(`tasks/${encodeURIComponent(task.id)}/participants`, {
+        body: { email: values.email, note: values.note || '' },
+      }),
+      '已发出邀请',
+    ),
+  });
+}
+
+async function openProposeRequest(task) {
+  const owner = task.ownerId === state.me.id || isAdmin();
+  const options = [
+    ...(owner ? [{ value: 'coordinate', label: '委托协调 · 统筹整个任务' }] : []),
+    { value: 'subtask', label: '分配子任务 · 一段具体工作' },
+  ];
+  const agents = await api('principals')
+    .then((items) => items.filter((item) => item.kind === 'agent' && item.active))
+    .catch(() => []);
+  openDialog({
+    title: '发起协作请求',
+    description: '这只是一个提议。对方接受，或还价后由你确认，才会建立协调者或子任务。',
+    submitLabel: '发出请求',
+    fields: [
+      { name: 'role', label: '交接方式', type: 'select', value: options[0].value, options },
+      agents.length
+        ? {
+          name: 'to',
+          label: '交给哪个智能体',
+          type: 'select',
+          value: agents[0].id,
+          options: agents.map((agent) => ({
+            value: agent.id,
+            label: agent.displayName || agent.id,
+          })),
+        }
+        : { name: 'to', label: '智能体 ID', required: true, placeholder: 'agent-id' },
+      { name: 'kind', label: '子任务类别（分配子任务时必填）', placeholder: 'supplier-check' },
+      { name: 'dueAt', label: '截止时间（可空）', type: 'datetime-local' },
+      { name: 'note', label: '说明（可空）', type: 'textarea' },
+    ],
+    onSubmit: (values) =>
+      act(async () => {
+        const body = { to: values.to, role: values.role };
+        if (values.kind) body.kind = values.kind;
+        if (values.dueAt) body.dueAt = new Date(values.dueAt).toISOString();
+        if (values.note) body.note = values.note;
+        await api(`tasks/${encodeURIComponent(task.id)}/requests`, { body });
+      }, '已发出请求，等待对方回应'),
+  });
+}
+
+function openCounterRequest(request) {
+  openDialog({
+    title: '还价',
+    description: '只能改期限、粒度或说明。发起方确认后才落库；还价只有这一轮。',
+    submitLabel: '提交还价',
+    fields: [
+      ...(request.role === 'subtask'
+        ? [{ name: 'kind', label: '子任务类别', value: request.payload.kind ?? '', placeholder: 'supplier-check' }]
+        : []),
+      { name: 'dueAt', label: '截止时间（可空）', type: 'datetime-local' },
+      { name: 'note', label: '说明（可空）', type: 'textarea' },
+    ],
+    onSubmit: (values) =>
+      act(async () => {
+        const body = {};
+        if (values.kind) body.kind = values.kind;
+        if (values.dueAt) body.dueAt = new Date(values.dueAt).toISOString();
+        if (values.note) body.note = values.note;
+        await api(`requests/${encodeURIComponent(request.id)}/counter`, { body });
+      }, '已还价，等待发起方确认'),
+  });
+}
+
+function openDeclineRequest(request) {
+  openDialog({
+    title: '拒绝协作请求',
+    description: '拒绝会保留记录，发起方能看到原因。',
+    submitLabel: '拒绝',
+    fields: [{ name: 'reason', label: '原因（可选）', type: 'textarea' }],
+    onSubmit: (values) => act(
+      () => api(`requests/${encodeURIComponent(request.id)}/decline`, {
+        body: { reason: values.reason || '' },
+      }),
+      '已拒绝请求',
+    ),
+  });
+}
+
+async function openAcceptInvitation(invitation) {
+  let agents = state.myAgents;
+  if (!agents.length) {
+    agents = await api('agents')
+      .then((items) => items.filter((item) => item.status === 'active'))
+      .catch(() => []);
+  }
+  if (!agents.length) {
+    toast('你还没有可用的智能体，请先在「我的智能体」里授权一个', 'error');
+    return;
+  }
+  openDialog({
+    title: '接受任务邀请',
+    description: '选一个自己的智能体进入任务；之后它会在任务房间里工作。',
+    submitLabel: '接受',
+    fields: [{
+      name: 'agent',
+      label: '智能体',
+      type: 'select',
+      value: agents[0].agentPrincipalId,
+      options: agents.map((agent) => ({
+        value: agent.agentPrincipalId,
+        label: agent.agentName || agent.agentPrincipalId,
+      })),
+    }],
+    onSubmit: (values) => act(
+      () => api(`task-invitations/${encodeURIComponent(invitation.id)}/accept`, {
+        body: { agent: values.agent },
+      }),
+      '已接受邀请，选定的智能体已进入任务',
+    ),
+  });
+}
+
+function openDeclineInvitation(invitation) {
+  openDialog({
+    title: '拒绝任务邀请',
+    description: '拒绝不会影响你在团队里的其他工作。',
+    submitLabel: '拒绝',
+    fields: [{ name: 'note', label: '说明（可选）', type: 'textarea' }],
+    onSubmit: (values) => act(
+      () => api(`task-invitations/${encodeURIComponent(invitation.id)}/decline`, {
+        body: { note: values.note || '' },
+      }),
+      '已拒绝邀请',
+    ),
+  });
+}
+
 function renderSubtasks(detail, owner) {
   const rows = detail.subtasks.map((subtask) => {
     const result = subtask.result
@@ -2138,6 +2481,17 @@ const EVENT_TEXT = {
   offer_published: '挂出开放子任务',
   offer_claimed: '认领开放子任务',
   offer_withdrawn: '撤回开放子任务',
+  participant_invited: '邀请参与任务',
+  participant_accepted: '接受任务邀请',
+  participant_declined: '拒绝任务邀请',
+  participant_agent_selected: '选定参与智能体',
+  participant_revoked: '撤销任务参与',
+  request_proposed: '发起协作请求',
+  request_accepted: '接受协作请求',
+  request_declined: '拒绝协作请求',
+  request_countered: '协作请求还价',
+  request_confirmed: '确认还价',
+  request_withdrawn: '撤回协作请求',
 };
 
 /**
@@ -2174,6 +2528,20 @@ function eventDetail(type, payload, kinds) {
       return text(payload.kind);
     case 'offer_claimed':
       return text(payload.claimedBy) ?? text(payload.agent) ?? null;
+    case 'participant_invited':
+    case 'participant_revoked':
+      return text(payload.humanPrincipalId);
+    case 'participant_accepted':
+    case 'participant_agent_selected':
+      return text(payload.agentId);
+    case 'request_proposed':
+    case 'request_accepted':
+    case 'request_confirmed':
+      return [REQUEST_ROLE_LABEL[text(payload.role)] ?? text(payload.role), text(payload.to)]
+        .filter(Boolean)
+        .join(' · ');
+    case 'request_countered':
+      return text(payload.terms?.note) ?? REQUEST_ROLE_LABEL[text(payload.role)] ?? null;
     default:
       return text(payload.note) ?? text(payload.reason) ?? null;
   }

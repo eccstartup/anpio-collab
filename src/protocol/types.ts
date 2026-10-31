@@ -211,6 +211,56 @@ export type TaskEvent = {
   recordedAt: string;
 };
 
+// ---------------------------------------------------------------- 参与与协商
+
+/**
+ * 任务参与人是**人**，不是智能体。
+ * 被邀请人接受时选定自己的一个智能体，之后由那个智能体进入协作。
+ */
+export const PARTICIPANT_STATUSES = ['invited', 'accepted', 'declined', 'revoked'] as const;
+export type ParticipantStatus = (typeof PARTICIPANT_STATUSES)[number];
+
+export type TaskParticipant = {
+  id: string;
+  taskId: string;
+  humanPrincipalId: string;
+  displayName: string;
+  email: string | null;
+  invitedBy: string;
+  status: ParticipantStatus;
+  /** 受邀人接受后选定的智能体；未接受时为 null。 */
+  agentId: string | null;
+  agentName: string | null;
+  note: string;
+  createdAt: string;
+  respondedAt: string | null;
+};
+
+/**
+ * 智能体之间的协商请求。
+ * `coordinate` 接受后成为协调者，`subtask` 接受后成为子任务——
+ * 两者都是"把一段工作交给另一个主体"，只是粒度不同。
+ */
+export const REQUEST_ROLES = ['coordinate', 'subtask'] as const;
+export type RequestRole = (typeof REQUEST_ROLES)[number];
+
+export const REQUEST_STATUSES = ['proposed', 'accepted', 'declined', 'countered', 'withdrawn'] as const;
+export type RequestStatus = (typeof REQUEST_STATUSES)[number];
+
+export type TaskRequest = {
+  id: string;
+  taskId: string;
+  fromPrincipal: string;
+  toPrincipal: string;
+  role: RequestRole;
+  payload: Record<string, unknown>;
+  counter: Record<string, unknown> | null;
+  status: RequestStatus;
+  subtaskId: string | null;
+  createdAt: string;
+  respondedAt: string | null;
+};
+
 export const KNOWLEDGE_STATES = ['draft', 'candidate', 'published', 'archived', 'revoked'] as const;
 export type KnowledgeState = (typeof KNOWLEDGE_STATES)[number];
 
@@ -376,7 +426,18 @@ export type EventType =
   | 'aicd_copy_declined'
   | 'offer_published'
   | 'offer_claimed'
-  | 'offer_withdrawn';
+  | 'offer_withdrawn'
+  | 'participant_invited'
+  | 'participant_accepted'
+  | 'participant_declined'
+  | 'participant_agent_selected'
+  | 'participant_revoked'
+  | 'request_proposed'
+  | 'request_accepted'
+  | 'request_declined'
+  | 'request_countered'
+  | 'request_confirmed'
+  | 'request_withdrawn';
 
 // ---------------------------------------------------------------- 协作
 

@@ -284,10 +284,27 @@ export class IdentityService {
     const accountId = account?.id ?? null;
 
     return this.ctx.db.transaction(async tx => {
-      const existing = await tx.one<{ id: string; principal_id: string }>(
-        'SELECT id, principal_id FROM identities WHERE workspace = :workspace AND did = :did',
-        { workspace: this.options.workspace, did: input.did },
-      );
+      // 已有个人空间的账号，DID 首次登记就落到个人空间：邮箱登录已经在那里建了
+      // 主体，再在默认 workspace 里登记一份，同一个人就会有两个主体。
+      // pending 模式例外：陌生 DID 仍要先经管理员批准，不能借已有账号绕过。
+      const home =
+        accountId && input.client === 'browser' && this.options.enroll === 'open'
+          ? await this.findPersonalHome(tx, accountId)
+          : null;
+      const scope = home?.workspace ?? this.options.workspace;
+
+      const existing =
+        (await tx.one<{ id: string; principal_id: string }>(
+          'SELECT id, principal_id FROM identities WHERE workspace = :workspace AND did = :did',
+          { workspace: scope, did: input.did },
+        )) ??
+        // 绑定码固定属于平台 workspace；那条身份不在个人空间里。
+        (input.bindCode
+          ? await tx.one<{ id: string; principal_id: string }>(
+              'SELECT id, principal_id FROM identities WHERE workspace = :workspace AND did = :did',
+              { workspace: this.options.workspace, did: input.did },
+            )
+          : undefined);
       if (existing) {
         const row = await tx.one('SELECT * FROM principals WHERE id = :id', { id: existing.principal_id });
         if (!row) throw notFound('身份绑定的主体已不存在');
@@ -319,10 +336,59 @@ export class IdentityService {
         throw forbidden('该 DID 未登记，且平台不接受自动登记');
       }
 
+      if (home) {
+        const principal = await this.attachToPersonal(tx, home, input.did);
+        await this.insertIdentity(tx, input, principal.id, true, home.workspace);
+        return { principal, enrollment: 'auto' as const };
+      }
+
       const principal = await this.enrollPrincipal(tx, { ...input, accountId });
       await this.insertIdentity(tx, input, principal.id);
       return { principal, enrollment: 'auto' as const };
     });
+  }
+
+  /** 账号的个人空间主体；没有个人空间时返回 null。 */
+  private async findPersonalHome(
+    tx: Queryable,
+    accountId: string,
+  ): Promise<{ workspace: string; principal: Principal } | null> {
+    const row = await tx.one(
+      `SELECT p.*, t.id AS tenant_id
+       FROM principals p JOIN tenants t ON t.id = p.workspace
+       WHERE p.account_id = :account AND p.kind = 'human' AND p.active = 1
+         AND t.personal = 1 AND t.status = 'active'
+       ORDER BY p.created_at
+       LIMIT 1`,
+      { account: accountId },
+    );
+    if (!row) return null;
+    return { workspace: String(row.tenant_id), principal: toPrincipal(row) };
+  }
+
+  /**
+   * 把首次登记的 DID 挂到个人空间已有的主体上。
+   *
+   * 个人空间的主体在邮箱首次登录时已经建好；这里只补 DID 与句柄，
+   * 不新建主体，也不动角色。
+   */
+  private async attachToPersonal(
+    tx: Queryable,
+    home: { workspace: string; principal: Principal },
+    did: string,
+  ): Promise<Principal> {
+    const { principal } = home;
+    if (!principal.did) {
+      await tx.run('UPDATE principals SET did = :did WHERE id = :id', { did, id: principal.id });
+    }
+    if (!principal.handle) {
+      const handle = handleFromDid(did);
+      if (handle) {
+        await tx.run('UPDATE principals SET handle = :handle WHERE id = :id', { handle, id: principal.id });
+      }
+    }
+    const row = await tx.one('SELECT * FROM principals WHERE id = :id', { id: principal.id });
+    return toPrincipal(row!);
   }
 
   private async bindWithCode(
@@ -438,6 +504,7 @@ export class IdentityService {
     input: { did: string; fingerprint: string; client: 'browser' | 'agent' },
     principalId: string,
     countsAsLogin = true,
+    workspace = this.options.workspace,
   ): Promise<void> {
     const at = this.ctx.now();
     await tx.run(
@@ -445,7 +512,7 @@ export class IdentityService {
        VALUES(:id, :workspace, :did, :principal, :fingerprint, :client, :at, :lastLoginAt, :loginCount)`,
       {
         id: randomUUID(),
-        workspace: this.options.workspace,
+        workspace,
         did: input.did,
         principal: principalId,
         fingerprint: input.fingerprint,
