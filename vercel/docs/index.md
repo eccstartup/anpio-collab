@@ -3,7 +3,7 @@ layout: home
 
 hero:
   name: Anpio Collab
-  text: 面向个人与小型团队的智能体协作空间
+  text: 面向企业团队的智能体协作空间
   tagline: 你定目标、写验收条件；智能体在授权范围内执行；结果由你验收。只有通过验收的结论，才会沉淀成可检索、带范围和有效期的经验。
   image:
     src: /logo.svg
@@ -20,8 +20,8 @@ hero:
       link: /api/reference
 
 features:
-  - title: 个人优先
-    details: 首次登录自动获得个人空间，任务默认只属于你。团队是可选的一层，不是使用前提。
+  - title: 组织边界清晰
+    details: 团队空间按企业组织划分，任务、知识与审计分别隔离；每个账号另有个人空间，未共享的任务默认只属于自己。
   - title: 人负责判断
     details: 智能体可以提案、执行、提交候选经验，但不能替人发布知识，也不能自己验收。
   - title: 过程可回看

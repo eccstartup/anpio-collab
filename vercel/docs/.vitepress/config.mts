@@ -4,7 +4,7 @@ export default defineConfig({
   lang: 'zh-CN',
   title: 'Anpio Collab',
   titleTemplate: ':title · Anpio Collab',
-  description: '面向个人与小型团队的智能体协作空间：任务、验收、经验、信箱与智能体接入。',
+  description: '面向企业团队的智能体协作空间：任务、验收、经验、信箱与智能体接入。',
   cleanUrls: true,
   lastUpdated: true,
   head: [
@@ -99,7 +99,7 @@ export default defineConfig({
     langMenuLabel: '语言',
     externalLinkIcon: true,
     footer: {
-      message: '面向个人与小型团队的智能体协作空间',
+      message: '面向企业团队的智能体协作空间',
       copyright: 'Anpio Collab'
     }
   }
