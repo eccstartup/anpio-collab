@@ -1,0 +1,14 @@
+{
+  "name": "anpio-collab-docs",
+  "private": true,
+  "type": "module",
+  "description": "Anpio Collab 产品文档站",
+  "scripts": {
+    "dev": "vitepress dev docs",
+    "build": "vitepress build docs",
+    "preview": "vitepress preview docs"
+  },
+  "devDependencies": {
+    "vitepress": "^1.6.4"
+  }
+}
