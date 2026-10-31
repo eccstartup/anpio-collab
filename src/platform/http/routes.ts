@@ -629,7 +629,7 @@ export const routes: Route[] = [
   {
     method: 'GET',
     path: '/v1/tasks/:id/room',
-    description: '任务房间：进展、对话、文件与经验 合并时间线',
+    description: '任务房间：进展、对话、文件与经验合并时间线',
     read: async ({ app, principal, params }) => app.collab.room(principal, params.id ?? ''),
   },
   {
@@ -690,7 +690,7 @@ export const routes: Route[] = [
   {
     method: 'POST',
     path: '/v1/tasks/:id/files/:fileId/promote',
-    description: '把成果文件提升为经验 证据附件',
+    description: '把成果文件提升为经验证据附件',
     write: {
       execute: async ({ app, principal, params, body }) => {
         const input = asObject(body);
@@ -963,7 +963,7 @@ export const routes: Route[] = [
   {
     method: 'POST',
     path: '/v1/aicds',
-    description: '新建经验 草稿（真人，可关联任务）',
+    description: '新建经验草稿（真人，可关联任务）',
     write: {
       execute: async ({ app, principal, body }) => app.knowledge.create(principal, body),
     },
@@ -1043,7 +1043,7 @@ export const routes: Route[] = [
   {
     method: 'GET',
     path: '/v1/aicds/:id/copies',
-    description: '该经验 的复制去向',
+    description: '该经验的复制去向',
     read: async ({ app, principal, params }) => app.knowledge.copies(principal, params.id ?? ''),
   },
   {

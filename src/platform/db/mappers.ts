@@ -115,7 +115,6 @@ export function toKnowledge(row: Row, accessMode: 'workspace' | 'restricted' = '
   const kinds = ['experience', 'playbook', 'checklist', 'decision', 'report', 'handoff'];
   const sources = ['task', 'manual', 'agent'];
   const levels = ['task_verified', 'manual', 'imported'];
-  const policies = ['none', 'team', 'tenant'];
   return {
     id: text(row.id),
     workspace: text(row.workspace),
@@ -138,9 +137,6 @@ export function toKnowledge(row: Row, accessMode: 'workspace' | 'restricted' = '
     evidenceLevel: (levels.includes(text(row.evidence_level))
       ? text(row.evidence_level)
       : 'task_verified') as Knowledge['evidenceLevel'],
-    copyPolicy: (policies.includes(text(row.copy_policy))
-      ? text(row.copy_policy)
-      : 'team') as Knowledge['copyPolicy'],
     archivedAt: row.archived_at === null || row.archived_at === undefined ? null : text(row.archived_at),
   };
 }

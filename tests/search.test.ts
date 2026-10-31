@@ -30,7 +30,6 @@ const item = (id: string, content: string, conditions: string): Knowledge => ({
   tags: [],
   source: 'task',
   evidenceLevel: 'task_verified',
-  copyPolicy: 'team',
   archivedAt: null,
 });
 

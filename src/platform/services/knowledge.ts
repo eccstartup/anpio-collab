@@ -13,7 +13,6 @@ import type {
   AicdSource,
   CopiedFrom,
   CopyInvite,
-  CopyPolicy,
   EventType,
   EvidenceLevel,
   Knowledge,
@@ -24,7 +23,6 @@ import type {
 import {
   AICD_KINDS,
   COPY_INVITE_STATUSES,
-  COPY_POLICIES,
   EVIDENCE_LEVELS,
 } from '../../protocol/types.ts';
 import {
@@ -250,18 +248,7 @@ export class KnowledgeService {
     return asStringArray(value, 'tags', { max: MAX_TAGS, maxLength: MAX_TAG_LENGTH });
   }
 
-  private parsePolicy(value: unknown, fallback: CopyPolicy): CopyPolicy {
-    if (value === undefined) return fallback;
-    return asEnum(value, 'copyPolicy', COPY_POLICIES);
-  }
-
-  private tightenPolicy(current: CopyPolicy, requested: CopyPolicy): CopyPolicy {
-    const rank: Record<CopyPolicy, number> = { none: 0, team: 1, tenant: 2 };
-    if (rank[requested] > rank[current]) throw invalid('复制策略只能收紧，不能放宽');
-    return requested;
-  }
-
-  /**经验 审计走自己的表；绑定了任务时再向任务事件流补一条。 */
+  /** 经验审计走自己的表；绑定了任务时再向任务事件流补一条。 */
   private async record(
     tx: Queryable,
     actor: Principal,
@@ -389,7 +376,6 @@ export class KnowledgeService {
     const tags = this.parseTags(input.tags);
     const meta = await this.workspaceMeta(actor.workspace);
     if (meta && meta.status !== 'active') throw forbidden('当前空间不可用');
-    const copyPolicy = this.parsePolicy(input.copyPolicy, meta?.personal ? 'tenant' : 'team');
 
     let sourceTaskId: string | null = null;
     let source: AicdSource = 'manual';
@@ -414,9 +400,9 @@ export class KnowledgeService {
       await tx.run(
         `INSERT INTO knowledge(id, workspace, task_id, content, conditions, state, version, author_id,
                                reviewer_id, expires_at, access_mode, created_at, updated_at, kind, title,
-                               summary, tags, source, evidence_level, copy_policy, archived_at)
+                               summary, tags, source, evidence_level, archived_at)
          VALUES(:id, :workspace, :taskId, :content, :conditions, 'draft', 1, :author,
-                NULL, NULL, 'restricted', :at, :at, :kind, :title, :summary, :tags, :source, :level, :policy, NULL)`,
+                NULL, NULL, 'restricted', :at, :at, :kind, :title, :summary, :tags, :source, :level, NULL)`,
         {
           id,
           workspace: actor.workspace,
@@ -431,7 +417,6 @@ export class KnowledgeService {
           tags: encode(tags),
           source,
           level: evidenceLevel,
-          policy: copyPolicy,
         },
       );
       await this.record(
@@ -458,7 +443,7 @@ export class KnowledgeService {
     const item = await this.requireItem(actor, id);
     await this.assertManage(actor, item);
     if (item.state !== 'draft' && item.state !== 'candidate') {
-      throw conflict('只有草稿或待审核的经验 可以直接编辑');
+      throw conflict('只有草稿或待审核的经验可以直接编辑');
     }
     const input = asObject(body);
     const next = {
@@ -474,10 +459,6 @@ export class KnowledgeService {
           : (asOptionalString(input.conditions, 'conditions', { max: 4000 }) ?? ''),
       tags: input.tags === undefined ? item.tags : this.parseTags(input.tags),
       kind: input.kind === undefined ? item.kind : asEnum(input.kind, 'kind', AICD_KINDS),
-      copyPolicy:
-        input.copyPolicy === undefined
-          ? item.copyPolicy
-          : this.tightenPolicy(item.copyPolicy, asEnum(input.copyPolicy, 'copyPolicy', COPY_POLICIES)),
       sourceTaskId: item.sourceTaskId,
       workspace: item.workspace,
     };
@@ -485,7 +466,7 @@ export class KnowledgeService {
       await tx.run(
         `UPDATE knowledge
          SET title = :title, summary = :summary, content = :content, conditions = :conditions,
-             tags = :tags, kind = :kind, copy_policy = :policy, updated_at = :at
+             tags = :tags, kind = :kind, updated_at = :at
          WHERE id = :id`,
         {
           title: next.title,
@@ -494,7 +475,6 @@ export class KnowledgeService {
           conditions: next.conditions,
           tags: encode(next.tags),
           kind: next.kind,
-          policy: next.copyPolicy,
           at: this.ctx.now(),
           id: item.id,
         },
@@ -638,7 +618,7 @@ export class KnowledgeService {
     return this.decorate(items);
   }
 
-  /** 把同一团队里的成果文件挂到经验 上；只有 output 可以提升为证据。 */
+  /** 把同一团队里的成果文件挂到经验上；只有 output 可以提升为证据。 */
   async attachAsset(actor: Principal, id: string, body: unknown): Promise<Record<string, unknown>> {
     const item = await this.requireItem(actor, id);
     await this.assertManage(actor, item);
@@ -717,8 +697,6 @@ export class KnowledgeService {
       input.title === undefined ? content.slice(0, 60) : asString(input.title, 'title', { max: 200 });
     const summary = asOptionalString(input.summary, 'summary', { max: 500 }) ?? '';
     const tags = this.parseTags(input.tags);
-    const meta = await this.workspaceMeta(actor.workspace);
-    const copyPolicy = this.parsePolicy(input.copyPolicy, meta?.personal ? 'tenant' : 'team');
     const source: AicdSource = actor.kind === 'human' ? 'task' : 'agent';
 
     const id = this.ctx.newId();
@@ -727,10 +705,10 @@ export class KnowledgeService {
       await tx.run(
         `INSERT INTO knowledge(id, workspace, task_id, content, conditions, state, version, author_id,
                                reviewer_id, expires_at, access_mode, created_at, updated_at, kind, title,
-                               summary, tags, source, evidence_level, copy_policy, archived_at)
+                               summary, tags, source, evidence_level, archived_at)
          VALUES(:id, :workspace, :taskId, :content, :conditions, 'candidate', 1, :author,
                 NULL, NULL, 'restricted', :at, :at, :kind, :title, :summary, :tags, :source,
-                'task_verified', :policy, NULL)`,
+                'task_verified', NULL)`,
         {
           id,
           workspace: actor.workspace,
@@ -744,7 +722,6 @@ export class KnowledgeService {
           summary,
           tags: encode(tags),
           source,
-          policy: copyPolicy,
         },
       );
       await this.record(
@@ -776,7 +753,6 @@ export class KnowledgeService {
       tags,
       source,
       evidenceLevel: 'task_verified',
-      copyPolicy,
       archivedAt: null,
     };
   }
@@ -794,7 +770,7 @@ export class KnowledgeService {
     const item = await this.requireItem(actor, id);
     await this.assertManage(actor, item);
     if (item.state !== 'candidate' && item.state !== 'draft') {
-      throw conflict('只有草稿或待审核的经验 可以发布');
+      throw conflict('只有草稿或待审核的经验可以发布');
     }
     const input = asObject(body);
     const title = input.title === undefined ? item.title : asString(input.title, 'title', { max: 200 });
@@ -823,10 +799,6 @@ export class KnowledgeService {
       input.evidenceLevel === undefined
         ? item.evidenceLevel
         : asEnum(input.evidenceLevel, 'evidenceLevel', EVIDENCE_LEVELS);
-    const copyPolicy =
-      input.copyPolicy === undefined
-        ? item.copyPolicy
-        : this.tightenPolicy(item.copyPolicy, asEnum(input.copyPolicy, 'copyPolicy', COPY_POLICIES));
 
     const at = this.ctx.now();
     await this.ctx.db.transaction(async tx => {
@@ -835,7 +807,7 @@ export class KnowledgeService {
         `UPDATE knowledge
          SET state = 'published', reviewer_id = :reviewer, expires_at = :expiresAt, title = :title,
              summary = :summary, conditions = :conditions, tags = :tags, kind = :kind,
-             evidence_level = :level, copy_policy = :policy, archived_at = NULL, updated_at = :at
+             evidence_level = :level, archived_at = NULL, updated_at = :at
          WHERE id = :id`,
         {
           reviewer: actor.id,
@@ -846,7 +818,6 @@ export class KnowledgeService {
           tags: encode(tags),
           kind,
           level: evidenceLevel,
-          policy: copyPolicy,
           at,
           id: item.id,
         },
@@ -1363,7 +1334,6 @@ export class KnowledgeService {
     actor: Principal,
     source: Knowledge,
     target: { workspace: string; principalId: string; personal: boolean },
-    policy: CopyPolicy,
   ): Promise<Knowledge> {
     const childId = this.ctx.newId();
     const now = this.ctx.now();
@@ -1378,10 +1348,10 @@ export class KnowledgeService {
       await tx.run(
         `INSERT INTO knowledge(id, workspace, task_id, content, conditions, state, version, author_id,
                                reviewer_id, expires_at, access_mode, created_at, updated_at, kind, title,
-                               summary, tags, source, evidence_level, copy_policy, archived_at)
+                               summary, tags, source, evidence_level, archived_at)
          VALUES(:id, :workspace, NULL, :content, :conditions, 'draft', 1, :author,
                 NULL, NULL, 'restricted', :at, :at, :kind, :title, :summary, :tags,
-                'manual', 'imported', :policy, NULL)`,
+                'manual', 'imported', NULL)`,
         {
           id: childId,
           workspace: target.workspace,
@@ -1393,7 +1363,6 @@ export class KnowledgeService {
           title: source.title,
           summary: source.summary,
           tags: encode(source.tags),
-          policy,
         },
       );
       await tx.run(
@@ -1481,41 +1450,32 @@ export class KnowledgeService {
   }
 
   /**
-   * 复制经验：
-   *  - 个人空间 → 作者所在团队；
-   *  - 团队 → 只允许在同一团队内分叉；
-   *  - 复制到别人的个人空间必须走邀请。
+   * 复制经验：由用户选择要复制到的团队，确认后生成一份独立草稿；取消即不复制。
+   * 复制到他人的个人空间必须走邀请。
    */
   async copy(actor: Principal, id: string, body: unknown): Promise<Knowledge> {
     if (actor.kind !== 'human') throw forbidden('只有人可以复制经验');
     if (actor.tenantRole === 'guest') throw forbidden('访客不能复制经验');
     const source = await this.loadReadable(actor, id);
     if (!source) throw notFound('经验不存在');
-    if (source.state !== 'published') throw conflict('只有已发布的经验 可以复制');
+    if (source.state !== 'published') throw conflict('只有已发布的经验可以复制');
     if (source.expiresAt && Date.parse(source.expiresAt) <= Date.parse(this.ctx.now())) {
       throw conflict('经验已过期，请先修订');
     }
-    if (source.copyPolicy === 'none') throw forbidden('这条经验 不允许复制');
     const sourceMeta = await this.workspaceMeta(source.workspace);
     if (!sourceMeta) throw notFound('来源空间不存在');
+    if (sourceMeta.personal && source.authorId !== actor.id) {
+      throw forbidden('只有作者可以复制自己的个人经验');
+    }
 
     const input = asObject(body);
+    if (input.targetWorkspace === undefined) throw invalid('请选择要复制到的团队');
     const target = await this.resolveCopyTarget(actor, input);
-    if (target.workspace === source.workspace) {
-      if (sourceMeta.personal) throw invalid('个人空间内无需复制；请选择目标团队');
-    } else if (!sourceMeta.personal) {
-      throw forbidden('团队经验 只能在团队内复制，不能带出');
-    } else {
-      if (source.authorId !== actor.id) throw forbidden('只有作者可以复制自己的经验');
-      if (target.personal || source.copyPolicy === 'team') {
-        throw forbidden('复制到个人空间需要对方接受邀请');
-      }
+    if (target.personal) throw invalid('请选择要复制到的团队');
+    if (target.workspace === source.workspace && sourceMeta.personal) {
+      throw invalid('个人空间内无需复制；请选择目标团队');
     }
-    const policy = this.tightenPolicy(
-      source.copyPolicy,
-      this.parsePolicy(input.copyPolicy, source.copyPolicy),
-    );
-    return this.createCopy(actor, source, target, policy);
+    return this.createCopy(actor, source, target);
   }
 
   /** 来源空间可见的副本去向。 */
@@ -1601,16 +1561,15 @@ export class KnowledgeService {
     };
   }
 
-  /** 邀请他人把经验 复制到其个人空间；对方接受后才落库。 */
+  /** 邀请他人把经验复制到其个人空间；对方接受后才落库。 */
   async inviteCopy(actor: Principal, id: string, body: unknown): Promise<CopyInvite> {
     const item = await this.requireItem(actor, id);
     await this.assertManage(actor, item);
-    if (item.state !== 'published') throw conflict('只有已发布的经验 可以复制给他人');
-    if (item.copyPolicy !== 'tenant') throw forbidden('这条经验 的复制策略不允许进入个人空间');
+    if (item.state !== 'published') throw conflict('只有已发布的经验可以复制给他人');
     const input = asObject(body);
     const targetPrincipal = asString(input.targetPrincipal, 'targetPrincipal', { max: 128 });
     const note = asOptionalString(input.note, 'note', { max: 500 }) ?? '';
-    if (targetPrincipal === actor.id) throw invalid('不能把经验 复制给自己');
+    if (targetPrincipal === actor.id) throw invalid('不能把经验复制给自己');
     const target = await this.ctx.db.read.one(
       `SELECT p.id, p.workspace, t.personal, t.status, p.active
        FROM principals p JOIN tenants t ON t.id = p.workspace
@@ -1704,15 +1663,13 @@ export class KnowledgeService {
     const sourceRow = await this.ctx.db.read.one('SELECT * FROM knowledge WHERE id = :id', {
       id: String(invite.knowledge_id),
     });
-    if (!sourceRow) throw notFound('来源经验 不存在');
+    if (!sourceRow) throw notFound('来源经验不存在');
     const source = toKnowledge(sourceRow, String(sourceRow.access_mode) as 'workspace' | 'restricted');
-    if (source.state !== 'published') throw conflict('来源经验 已不可用');
-    if (source.copyPolicy !== 'tenant') throw conflict('来源已收窄复制策略');
+    if (source.state !== 'published') throw conflict('来源经验已不可用');
     const child = await this.createCopy(
       actor,
       source,
       { workspace: actor.workspace, principalId: actor.id, personal: true },
-      source.copyPolicy,
     );
     await this.ctx.db.transaction(async tx => {
       await tx.run(

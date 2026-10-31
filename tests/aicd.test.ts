@@ -3,7 +3,7 @@
  *
  * 钉住几条容易松掉的语义：
  *  - 智能体不能创建或发布经验；
- *  - 个人经验 只能由作者带进自己所在的团队，团队经验 不能带出；
+ *  - 复制由用户选择目标团队，个人经验只有作者能复制；
  *  - 跨个人空间必须由对方接受邀请，来源撤销后副本仍有明确提示；
  *  - 任务房间把进展、对话与文件合并成一条时间线，团队真人成员可读。
  */
@@ -54,7 +54,6 @@ type Item = {
   kind: string;
   source: string;
   evidenceLevel: string;
-  copyPolicy: string;
   authorName: string;
   sourceTaskId: string | null;
   copiedFrom: { id: string; workspaceName: string; version: number } | null;
@@ -70,7 +69,6 @@ const draft = (overrides: Record<string, unknown> = {}) => ({
   content: '先查库存快照，再确认供应商可供量和交期。',
   conditions: '物料 M-100 缺料',
   tags: ['库存', '补货'],
-  copyPolicy: 'tenant',
   ...overrides,
 });
 
@@ -90,7 +88,6 @@ const publishDraft = async (
   await json(
     await call(harness, 'POST', `/v1/aicds/${item.id}/publish`, token, {
       expiresAt: FUTURE,
-      copyPolicy: 'tenant',
       ...body,
     }),
   );
@@ -104,7 +101,6 @@ test('经验手动生命周期：草稿可编辑、提交后发布，智能体�
     assert.equal(created.state, 'draft');
     assert.equal(created.source, 'manual');
     assert.equal(created.evidenceLevel, 'manual');
-    assert.equal(created.copyPolicy, 'tenant');
     assert.equal(created.authorName, 'alice');
 
     const removable = await createDraft(harness, alice.token, { title: '只用于删除的草稿' });
@@ -122,11 +118,9 @@ test('经验手动生命周期：草稿可编辑、提交后发布，智能体�
       await call(harness, 'POST', `/v1/aicds/${created.id}/edit`, alice.token, {
         title: '缺料时先查库存快照',
         tags: ['库存'],
-        copyPolicy: 'team',
       }, 1),
     );
     assert.equal(edited.title, '缺料时先查库存快照');
-    assert.equal(edited.copyPolicy, 'team');
 
     const submitted = await json<Item>(
       await call(harness, 'POST', `/v1/aicds/${created.id}/submit`, alice.token, undefined, 1),
@@ -149,14 +143,13 @@ test('经验手动生命周期：草稿可编辑、提交后发布，智能体�
       'POST',
       `/v1/aicds/${created.id}/publish`,
       alice.token,
-      { copyPolicy: 'team' },
+      {},
     );
     assert.equal(missingExpiry.status, 400, '经验必须给出有效期');
 
     const published = await json<Item>(
       await call(harness, 'POST', `/v1/aicds/${created.id}/publish`, alice.token, {
         expiresAt: FUTURE,
-        copyPolicy: 'team',
       }),
     );
     assert.equal(published.state, 'published');
@@ -196,7 +189,7 @@ test('经验手动生命周期：草稿可编辑、提交后发布，智能体�
   }
 });
 
-test('复制到自己的团队：生成独立草稿、保留来源链，团队副本不能带出', async () => {
+test('复制到自己的团队：选择目标团队生成独立草稿、保留来源链', async () => {
   const harness = await startHarness({ workspace: 'acme' });
   try {
     const alice = await emailLogin(harness, 'alice@example.com');
@@ -213,13 +206,11 @@ test('复制到自己的团队：生成独立草稿、保留来源链，团队�
     const child = await json<Item>(
       await call(harness, 'POST', `/v1/aicds/${source.id}/copy`, personal.token, {
         targetWorkspace: team.tenant.id,
-        copyPolicy: 'team',
       }),
     );
     assert.equal(child.state, 'draft');
     assert.equal(child.source, 'manual');
     assert.equal(child.evidenceLevel, 'imported');
-    assert.equal(child.copyPolicy, 'team');
     assert.equal(child.copiedFrom?.workspaceName, alice.tenant.name);
     assert.equal(child.copiedFrom?.version, 1);
 
@@ -234,11 +225,6 @@ test('复制到自己的团队：生成独立草稿、保留来源链，团队�
       await call(harness, 'GET', `/v1/aicds/${child.id}/lineage`, teamSession.token),
     );
     assert.deepEqual(lineage.map(entry => entry.id), [source.id]);
-
-    const widened = await call(harness, 'POST', `/v1/aicds/${child.id}/edit`, teamSession.token, {
-      copyPolicy: 'tenant',
-    }, child.version);
-    assert.equal(widened.status, 400, '副本的复制策略只能收紧');
 
     // 团队产物文件可以挂成证据，团队内复制时一起带上。
     const teamTask = (await harness.client(teamSession.token).createTask(TASK_INPUT, 'team-task')) as { id: string };
@@ -261,12 +247,15 @@ test('复制到自己的团队：生成独立草稿、保留来源链，团队�
     );
     assert.deepEqual(assets.map(entry => entry.fileId), [file.id]);
 
-    await publishDraft(harness, teamSession.token, child, { copyPolicy: 'team' });
+    await publishDraft(harness, teamSession.token, child);
+
+    const missingTarget = await call(harness, 'POST', `/v1/aicds/${child.id}/copy`, teamSession.token, {});
+    assert.equal(missingTarget.status, 400, '复制必须选择目标团队');
 
     const out = await call(harness, 'POST', `/v1/aicds/${child.id}/copy`, teamSession.token, {
       targetWorkspace: 'personal',
     });
-    assert.equal(out.status, 403, '团队经验 不能带进个人空间');
+    assert.equal(out.status, 400, '复制目标必须是团队');
 
     const forked = await json<Item>(
       await call(harness, 'POST', `/v1/aicds/${child.id}/copy`, teamSession.token, {
@@ -455,7 +444,7 @@ test('任务房间：线程、消息、文件与进展合并成一条时间线',
       roomWithKnowledge.activity.some(
         entry => entry.stream === 'knowledge' && entry.type === 'aicd_published',
       ),
-      '挂到任务文件上的经验 出现在任务时间线里',
+      '挂到任务文件上的经验出现在任务时间线里',
     );
 
     const resolved = await json<{ status: string }>(

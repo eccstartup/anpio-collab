@@ -134,20 +134,11 @@ const AICD_STATE_TONE = {
   revoked: 'danger',
 };
 
-const COPY_POLICY_LABEL = {
-  none: '不可复制',
-  team: '仅本团队',
-  tenant: '可复制给成员',
-};
-
 const EVIDENCE_LABEL = {
   task_verified: '任务验收沉淀',
   manual: '人工编写',
   imported: '从副本导入',
 };
-
-/** 复制策略有方向：副本只能更严，选择器里也就只列不放宽的选项。 */
-const COPY_POLICY_RANK = { none: 0, team: 1, tenant: 2 };
 
 const MESSAGE_KIND_LABEL = {
   comment: '普通消息',
@@ -201,7 +192,7 @@ const TITLES = {
   tasks: ['任务', '目标、分工、验收与证据'],
   pool: ['开放池', '能力匹配就可以认领，认领即加入'],
   mentions: ['提醒', '有人在评论里提到了你'],
-  knowledge: ['经验库', '经验可手动编写、审核、发布与复制；团队经验只在团队内'],
+  knowledge: ['经验库', '经验可手动编写、审核、发布与复制；复制时选择目标团队'],
   agents: ['我的智能体', '你请进来的智能体，和它们正在做的事'],
   directory: ['团队', '你和谁一起工作'],
   oversight: ['监管', '哪里不对：卡住、失联、积压与被反复拒绝'],
@@ -1683,7 +1674,7 @@ const MAX_SPACE_FILE_BYTES = 256 * 1024;
 function openUploadFile(task) {
   openDialog({
     title: '上传文件',
-    description: '单文件上限 256 KiB；成果文件可以挂到经验 下当证据。',
+    description: '单文件上限 256 KiB；成果文件可以挂到经验下当证据。',
     submitLabel: '上传',
     fields: [
       { name: 'file', label: '文件', type: 'files', required: true },
@@ -1755,7 +1746,7 @@ function renderRoomActivity(room) {
   return el('div', { class: 'card' },
     el('div', { class: 'card-head' },
       el('h3', {}, '合并时间线'),
-      el('span', { class: 'muted' }, '进展、对话、文件与经验 按时间排在一起')),
+      el('span', { class: 'muted' }, '进展、对话、文件与经验按时间排在一起')),
     el('div', { class: 'row actions-row' }, streams.map(([value, label]) =>
       el('button', {
         class: 'link',
@@ -2332,7 +2323,6 @@ function renderAicds() {
       el('div', { class: 'meta' },
         el('span', {}, `v${item.version}`),
         el('span', {}, `作者 ${item.authorName || item.authorId}`),
-        el('span', {}, COPY_POLICY_LABEL[item.copyPolicy] ?? item.copyPolicy),
         el('span', {}, EVIDENCE_LABEL[item.evidenceLevel] ?? item.evidenceLevel),
         item.expiresAt ? el('span', {}, `有效期至 ${formatDate(item.expiresAt)}`) : null,
         item.copiedFrom
@@ -2381,14 +2371,12 @@ function aicdActionButtons(item, manage, personal) {
     }, '修订'));
   }
   if (item.state === 'published') {
-    if (item.copyPolicy !== 'none') {
-      buttons.push(el('button', {
-        class: 'link',
-        type: 'button',
-        onclick: () => openCopyAicd(item),
-      }, '复制'));
-    }
-    if (item.copyPolicy === 'tenant' && manage) {
+    buttons.push(el('button', {
+      class: 'link',
+      type: 'button',
+      onclick: () => openCopyAicd(item),
+    }, '复制'));
+    if (manage) {
       buttons.push(el('button', {
         class: 'link',
         type: 'button',
@@ -2408,14 +2396,6 @@ function aicdActionButtons(item, manage, personal) {
 
 const AICD_KIND_OPTIONS = Object.entries(AICD_KIND_LABEL).map(([value, label]) => ({ value, label }));
 
-/** 副本只能更严：编辑与发布时只列不大于当前等级的复制策略。 */
-function copyPolicyOptions(current) {
-  const ceiling = COPY_POLICY_RANK[current] ?? COPY_POLICY_RANK.tenant;
-  return Object.entries(COPY_POLICY_LABEL)
-    .filter(([value]) => COPY_POLICY_RANK[value] <= ceiling)
-    .map(([value, label]) => ({ value, label }));
-}
-
 function aicdFields(item = {}) {
   return [
     { name: 'kind', label: '类型', type: 'select', value: item.kind ?? 'experience', options: AICD_KIND_OPTIONS },
@@ -2431,13 +2411,6 @@ function aicdFields(item = {}) {
       placeholder: '什么时候适用、什么时候不要用',
     },
     { name: 'tags', label: '标签（逗号分隔）', value: (item.tags ?? []).join('，') },
-    {
-      name: 'copyPolicy',
-      label: '复制策略',
-      type: 'select',
-      value: item.copyPolicy ?? 'tenant',
-      options: copyPolicyOptions(item.copyPolicy ?? 'tenant'),
-    },
   ];
 }
 
@@ -2449,7 +2422,6 @@ function aicdBody(values) {
     content: values.content,
     conditions: values.conditions,
     tags: values.tags.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean),
-    copyPolicy: values.copyPolicy,
   };
 }
 
@@ -2471,7 +2443,7 @@ function openCreateAicd() {
 function openEditAicd(item) {
   openDialog({
     title: '编辑经验',
-    description: '草稿与待审核稿可以直接改；复制策略只能收紧。',
+    description: '草稿与待审核稿可以直接改。',
     submitLabel: '保存',
     fields: aicdFields(item),
     onSubmit: (values) => act(
@@ -2504,20 +2476,10 @@ function openPublishAicd(item) {
     submitLabel: '发布',
     fields: [
       { name: 'expiresAt', label: '有效期至', type: 'date', value: expires, required: true },
-      {
-        name: 'copyPolicy',
-        label: '复制策略',
-        type: 'select',
-        value: item.copyPolicy,
-        options: copyPolicyOptions(item.copyPolicy),
-      },
     ],
     onSubmit: (values) => act(
       () => api(`aicds/${item.id}/publish`, {
-        body: {
-          expiresAt: new Date(`${values.expiresAt}T00:00:00Z`).toISOString(),
-          copyPolicy: values.copyPolicy,
-        },
+        body: { expiresAt: new Date(`${values.expiresAt}T00:00:00Z`).toISOString() },
       }),
       '已发布',
     ),
@@ -2554,37 +2516,26 @@ function openDeleteAicd(item) {
 }
 
 function openCopyAicd(item) {
-  const personal = Boolean(state.tenant?.personal);
-  const options = personal
-    ? state.tenants
-      .filter((tenant) => !tenant.personal && ['owner', 'admin', 'member'].includes(tenant.role))
-      .map((tenant) => ({ value: tenant.id, label: `${tenant.name}（${TENANT_ROLE_LABEL[tenant.role] ?? tenant.role}）` }))
-    : state.tenant
-      ? [{ value: state.tenant.id, label: `${state.tenant.name}（当前团队）` }]
-      : [];
+  const options = state.tenants
+    .filter((tenant) => !tenant.personal && ['owner', 'admin', 'member'].includes(tenant.role))
+    .map((tenant) => ({
+      value: tenant.id,
+      label: `${tenant.name}（${tenant.id === state.tenant?.id ? '当前团队' : TENANT_ROLE_LABEL[tenant.role] ?? tenant.role}）`,
+    }));
   if (!options.length) {
-    toast(personal ? '先加入一个团队，再把个人经验复制过去' : '当前团队不可用', 'error');
+    toast('先加入一个团队，再把经验复制过去', 'error');
     return;
   }
   openDialog({
     title: '复制经验',
-    description: personal
-      ? '复制会在目标团队生成一份独立草稿，来源链保留在原条目上。'
-      : '团队内复制会生成一份独立草稿；团队经验 不能带进个人空间。',
+    description: '选择要复制到的团队；确认后会在目标团队生成一份独立草稿，取消则不会复制。',
     submitLabel: '复制',
     fields: [
-      { name: 'targetWorkspace', label: '目标空间', type: 'select', options },
-      {
-        name: 'copyPolicy',
-        label: '副本的复制策略',
-        type: 'select',
-        value: item.copyPolicy,
-        options: copyPolicyOptions(item.copyPolicy),
-      },
+      { name: 'targetWorkspace', label: '目标团队', type: 'select', options },
     ],
     onSubmit: (values) => act(
       () => api(`aicds/${item.id}/copy`, {
-        body: { targetWorkspace: values.targetWorkspace, copyPolicy: values.copyPolicy },
+        body: { targetWorkspace: values.targetWorkspace },
         expectedVersion: item.version,
       }),
       '已复制为草稿',
@@ -2625,7 +2576,6 @@ function openAicdDetail(id) {
       el('div', { class: 'stack' },
         el('div', { class: 'row' },
           toneBadge(AICD_STATE_TONE[item.state] ?? 'muted', AICD_STATE_LABEL[item.state] ?? item.state),
-          toneBadge('muted', COPY_POLICY_LABEL[item.copyPolicy] ?? item.copyPolicy),
           item.sourceRevoked ? toneBadge('danger', '来源已撤销') : null),
         item.summary ? el('p', {}, item.summary) : null,
         el('div', { class: 'result-box' }, item.content),
@@ -2698,7 +2648,7 @@ function openAicdDetail(id) {
 
 function renderAicdInvites() {
   if (!state.aicdInvites.length) {
-    return el('div', { class: 'empty' }, '没有复制邀请。别人把经验 复制给你时，会先在这里等你接受。');
+    return el('div', { class: 'empty' }, '没有复制邀请。别人把经验复制给你时，会先在这里等你接受。');
   }
   const personal = Boolean(state.tenant?.personal);
   return el('div', { class: 'list' }, state.aicdInvites.map((invite) => {
@@ -2788,6 +2738,7 @@ function renderPublished() {
             ? el('button', { class: 'link', type: 'button', onclick: () => openShareKnowledge(item) }, '分享给团队')
             : el('button', { class: 'link', type: 'button', onclick: () => openAccess(item) }, '调整范围'),
           el('button', { class: 'link', type: 'button', onclick: () => openVersions(item) }, '版本历史'),
+          el('button', { class: 'link danger', type: 'button', onclick: () => openArchiveAicd(item) }, '归档'),
           el('button', { class: 'link danger', type: 'button', onclick: () => openRevoke(item) }, '撤销'))
         : null,
     );

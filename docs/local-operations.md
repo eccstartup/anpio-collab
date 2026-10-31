@@ -78,6 +78,17 @@ export DATABASE_URL="postgresql://user:pass@127.0.0.1:5432/collab"
 npm start
 ```
 
+本机 Homebrew PostgreSQL（已在 PostgreSQL 15 上验证）：
+
+```sh
+brew services start postgresql@15      # 已在运行则跳过
+createdb collab                         # 只需一次；库名可自取
+DATABASE_URL="postgresql://127.0.0.1:5432/collab" \
+  COLLAB_BOOTSTRAP_TOKEN="$(openssl rand -hex 32)" npm start
+```
+
+空库首次启动必须给 `COLLAB_BOOTSTRAP_TOKEN`（至少 24 字符），用来创建管理员主体；之后启动不再需要。schema 会自动迁移；8787 被占用时加 `PORT=8788`。
+
 - 使用连接池（`max: 10`），事务独占一条连接，普通查询各自取连接
 - 迁移在 `pg_advisory_xact_lock` 下执行，多实例同时启动不会互相踩踏
 - `BIGSERIAL` 的 `int8` 已统一转成 `number`；项目的序号都在安全整数范围内

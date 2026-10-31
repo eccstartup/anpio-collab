@@ -170,7 +170,7 @@ const EVENT_LABELS: Record<string, string> = {
   offer_withdrawn: '撤回开放子任务',
   aicd_created: '创建经验',
   aicd_updated: '编辑经验',
-  aicd_submitted: '提交经验 审核',
+  aicd_submitted: '提交经验审核',
   aicd_archived: '归档经验',
   aicd_copied: '复制经验',
   aicd_copy_invited: '发起复制邀请',
@@ -706,7 +706,7 @@ export class CollabService {
 
   // ---------------------------------------------------------------- 任务房间
 
-  /** 把任务进展、对话、文件与经验 合并成一条时间线。 */
+  /** 把任务进展、对话、文件与经验合并成一条时间线。 */
   async room(actor: Principal, taskId: string): Promise<TaskRoom> {
     const task = await readTask(this.ctx, actor, taskId);
     const [threads, messages, files] = await Promise.all([
@@ -772,7 +772,6 @@ export class CollabService {
       tags: typeof row.tags === 'string' ? (parseJson(row.tags, []) as string[]) : [],
       source: String(row.source) as TaskRoom['knowledge'][number]['source'],
       evidenceLevel: String(row.evidence_level) as TaskRoom['knowledge'][number]['evidenceLevel'],
-      copyPolicy: String(row.copy_policy) as TaskRoom['knowledge'][number]['copyPolicy'],
       archivedAt: row.archived_at === null || row.archived_at === undefined ? null : String(row.archived_at),
       authorName: String(row.author_name ?? row.author_id),
     }));

@@ -24,7 +24,7 @@ const MIGRATION_LOCK = 190106;
 /**
  * knowledge 的完整结构。
  *
- * v7 把 `task_id` 放宽为可空（手动经验 不绑任务），SQLite 只能靠重建表
+ * v7 把 `task_id` 放宽为可空（手动经验不绑任务），SQLite 只能靠重建表
  * 才能去掉 NOT NULL，所以这份 DDL 同时服务新库与重建路径，避免两处漂移。
  */
 const KNOWLEDGE_TABLE = `CREATE TABLE IF NOT EXISTS knowledge (
@@ -47,7 +47,6 @@ const KNOWLEDGE_TABLE = `CREATE TABLE IF NOT EXISTS knowledge (
       tags TEXT NOT NULL DEFAULT '[]',
       source TEXT NOT NULL DEFAULT 'task',
       evidence_level TEXT NOT NULL DEFAULT 'task_verified',
-      copy_policy TEXT NOT NULL DEFAULT 'team',
       archived_at TEXT
     )`;
 
@@ -75,7 +74,6 @@ const LEGACY_KNOWLEDGE_DEFAULTS: Record<string, string> = {
   tags: "'[]'",
   source: "'task'",
   evidence_level: "'task_verified'",
-  copy_policy: "'team'",
   archived_at: 'NULL',
 };
 
@@ -212,7 +210,7 @@ function statements(dialect: 'sqlite' | 'postgres'): string[] {
     )`,
     `CREATE INDEX IF NOT EXISTS operations_created ON operations(created_at)`,
 
-    // ---- 知识 /经验 ----
+    // ---- 知识 / 经验 ----
     KNOWLEDGE_TABLE,
     ...KNOWLEDGE_INDEXES,
 
@@ -621,7 +619,7 @@ function statements(dialect: 'sqlite' | 'postgres'): string[] {
     `CREATE INDEX IF NOT EXISTS knowledge_copy_invites_target
        ON knowledge_copy_invites(target_principal, status, created_at)`,
 
-    //经验 审计：手动经验 没有任务事件流，动作单独记在这里。
+    //经验审计：手动经验没有任务事件流，动作单独记在这里。
     `CREATE TABLE IF NOT EXISTS knowledge_events (
       seq ${seq},
       id TEXT NOT NULL UNIQUE,
@@ -659,7 +657,6 @@ const ADDED_COLUMNS: { table: string; column: string; definition: string }[] = [
   { table: 'knowledge', column: 'tags', definition: "TEXT NOT NULL DEFAULT '[]'" },
   { table: 'knowledge', column: 'source', definition: "TEXT NOT NULL DEFAULT 'task'" },
   { table: 'knowledge', column: 'evidence_level', definition: "TEXT NOT NULL DEFAULT 'task_verified'" },
-  { table: 'knowledge', column: 'copy_policy', definition: "TEXT NOT NULL DEFAULT 'team'" },
   { table: 'knowledge', column: 'archived_at', definition: 'TEXT' },
   { table: 'knowledge_versions', column: 'title', definition: "TEXT NOT NULL DEFAULT ''" },
   { table: 'knowledge_versions', column: 'summary', definition: "TEXT NOT NULL DEFAULT ''" },
@@ -742,7 +739,6 @@ async function rebuildSqliteKnowledge(tx: Queryable): Promise<void> {
     'tags',
     'source',
     'evidence_level',
-    'copy_policy',
     'archived_at',
   ];
   const values = target.map(column =>

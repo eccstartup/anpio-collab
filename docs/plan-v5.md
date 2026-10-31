@@ -37,7 +37,7 @@
 | 对话 | 平台内留下的消息流；人、智能体、系统共用一张表，用 `kind` 区分 | 任务 |
 | 中间文件 | 智能体或人在任务过程中产生/接收的文件，带来源、版本、哈希 | 任务 |
 
-**不新增第二套权限系统。** 空间可见性仍由 `tenant + principal + agent grant scope` 决定；经验的跨团队可见性只走 `knowledge_shares`（只读实时），跨空间搬运只走"复制"（独立副本，受 `copy_policy` 与目标接受约束）。
+**不新增第二套权限系统。** 空间可见性仍由 `tenant + principal + agent grant scope` 决定；经验的跨团队可见性只走 `knowledge_shares`（只读实时），跨空间搬运只走"复制"（独立副本；目标团队由用户选择，复制到他人个人空间需对方接受）。
 
 ---
 
@@ -103,19 +103,12 @@
 
 | 来源 | 可复制到 | 条件 |
 | --- | --- | --- |
-| 个人经验 | 作者所在的团队 | `copy_policy=team/tenant`（默认 `team`）；作者本人或团队成员在来源空间有读权限 |
-| 个人经验 | 同租户他人的个人空间 | `copy_policy=tenant`；作者发起，目标成员**接受**后落库；不能跨租户 |
-| 团队经验 | 同一团队内 | 团队成员；只能复制到本团队，不能复制到个人空间或其他团队 |
-| 团队经验 | 团队外 | **不允许**；跨团队只走"分享"，且管理权仍在来源团队 |
-| 已复制的经验 | 副本所在空间内 | 继承来源的 `copy_policy`，且只能收紧不能放宽；来源改为 `none` 后，已有副本也不得再向外复制 |
+| 个人经验 | 作者加入的团队 | 只有作者本人可以复制；在对话框里选择目标团队 |
+| 个人经验 | 同租户他人的个人空间 | 作者发起，目标成员**接受**后落库；不能跨租户 |
+| 团队经验 | 用户加入的团队 | 对来源有读权限的成员；可选当前团队或其他已加入的团队 |
+| 已复制的经验 | 同左 | 副本是独立条目，复制规则与普通经验相同 |
 
-用 `copy_policy` 显式控制，不做隐式推断：
-
-| 值 | 含义 |
-| --- | --- |
-| `none` | 禁止复制，只能引用或分享 |
-| `team`（默认） | 个人经验可复制到作者所在团队；团队经验只能在本团队内复制 |
-| `tenant` | 同租户内可复制到成员个人空间（仍需对方接受） |
+没有复制策略字段：是否复制由用户在条目上的操作决定——选择目标团队并确认，或直接取消。前提是来源已发布、未过期、复制人对来源有读权限，且是目标团队成员。
 
 **复制给他人为什么需要接受**：个人空间不是收件箱。未经同意的内容直接落进别人的空间，既侵犯边界，也会让"我的经验"变成"别人塞给我的经验"。复制邀请走通知与待办，拒绝不产生数据。
 
@@ -158,7 +151,6 @@ ALTER knowledge ADD COLUMN summary TEXT NOT NULL DEFAULT '';
 ALTER knowledge ADD COLUMN tags TEXT NOT NULL DEFAULT '[]';       -- JSON 数组
 ALTER knowledge ADD COLUMN source TEXT NOT NULL DEFAULT 'task';   -- task | manual | agent
 ALTER knowledge ADD COLUMN evidence_level TEXT NOT NULL DEFAULT 'task_verified';
-ALTER knowledge ADD COLUMN copy_policy TEXT NOT NULL DEFAULT 'team';  -- none | team | tenant
 ALTER knowledge ADD COLUMN archived_at TEXT;
 
 -- task_id 改为可空（SQLite 需要重建表；PostgreSQL 直接 DROP NOT NULL）
@@ -549,12 +541,12 @@ GET    /v1/space/search?q=&kind=                跨任务检索消息 / 文件 /
 
 ### 第一阶段：经验手动发布 + 任务房间骨架（已实施）
 
-- schema v7：`knowledge` 增列（含 `kind/title/summary/tags/source/evidence_level/copy_policy`）与 `task_id` 可空；`knowledge_lineage`；`knowledge_copy_invites`；`task_comments` 增 `kind/thread/reply/payload`；`task_threads`；`space_files`；`task_materials` 回填。
+- schema v7：`knowledge` 增列（含 `kind/title/summary/tags/source/evidence_level`）与 `task_id` 可空；`knowledge_lineage`；`knowledge_copy_invites`；`task_comments` 增 `kind/thread/reply/payload`；`task_threads`；`space_files`；`task_materials` 回填。
 - 经验：手动草稿、编辑、提交、发布、修订、归档、撤销、删除；列表与详情；附件绑定。默认类型为经验。
-- 复制：复制到本团队、复制给他人（邀请—接受）、来源链展示、来源撤销提示；`copy_policy` 生效。
+- 复制：用户在条目上选择目标团队直接复制、复制给他人（邀请—接受）、来源链展示、来源撤销提示。
 - 任务房间：概览、合并时间线、线程化对话、文件列表与下载；轮询刷新。
 - 权限：团队任务对成员可见；智能体仍按子任务与 grant 范围。
-- 测试：经验生命周期、手动发布权限、复制目标矩阵、复制邀请接受/拒绝、跨团队复制拒绝、消息可见性、文件鉴权、迁移回填；SQLite 与 PostgreSQL 各跑一遍。
+- 测试：经验生命周期、手动发布权限、复制目标选择、复制邀请接受/拒绝、复制到非成员团队拒绝、消息可见性、文件鉴权、迁移回填；SQLite 与 PostgreSQL 各跑一遍。
 
 实施说明：以上均已完成，验收见 `tests/aicd.test.ts`。两条边界留在第二阶段：手动经验的附件目前只能引用任务产出文件（`space_files.task_id` 非空），尚无独立上传；合并时间线的类型过滤在客户端完成。
 
@@ -588,8 +580,8 @@ GET    /v1/space/search?q=&kind=                跨任务检索消息 / 文件 /
 | 手动经验 | 不建任务也能新建草稿；个人空间本人可发布；团队需 reviewer/admin；智能体发布一律 403 |
 | 删除 | 无副本、未被任务引用的草稿或待审核稿可删除；已发布稿拒绝，需先归档或撤销 |
 | 版本与证据 | 发布写快照；修订生成新版本；历史引用钉住旧版本；归档与撤销语义分开 |
-| 复制 | 个人经验可复制到作者所在团队；复制给他人需对方接受后落库；团队经验只能在本团队内复制；跨团队复制一律 403 |
-| 副本治理 | 副本是独立 `draft`，不带来源的分享/引用/审核；显示"复制自 谁 · 哪个空间 · 哪一版"；来源撤销后副本保留但告警；副本继承 `copy_policy` 且只能收紧 |
+| 复制 | 用户选择自己加入的目标团队后复制；复制给他人需对方接受后落库；目标不是自己加入的团队时 403 |
+| 副本治理 | 副本是独立 `draft`，不带来源的分享/引用/审核；显示"复制自 谁 · 哪个空间 · 哪一版"；来源撤销后副本保留但告警；复制规则随用户操作，不再有复制策略字段 |
 | 任务房间 | 一个页面看到概览、进展、对话、文件、相关经验；合并时间线可按类型过滤 |
 | 智能体对话 | 支持 question / answer / handoff / decision；线程可解决；被提问方能在 inbox 看到 |
 | 中间文件 | 上传、下载、版本、哈希、来源、软删除；未授权主体拿不到元数据与正文 |

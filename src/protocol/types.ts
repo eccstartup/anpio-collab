@@ -223,10 +223,6 @@ export type AicdSource = (typeof AICD_SOURCES)[number];
 export const EVIDENCE_LEVELS = ['task_verified', 'manual', 'imported'] as const;
 export type EvidenceLevel = (typeof EVIDENCE_LEVELS)[number];
 
-/** 复制策略：none 禁止；team 只在本团队；tenant 可到成员个人空间。 */
-export const COPY_POLICIES = ['none', 'team', 'tenant'] as const;
-export type CopyPolicy = (typeof COPY_POLICIES)[number];
-
 /** 知识可见范围：workspace 表示全工作空间，restricted 表示仅授权主体。 */
 export type AccessMode = 'workspace' | 'restricted';
 
@@ -251,7 +247,6 @@ export type Knowledge = {
   tags: string[];
   source: AicdSource;
   evidenceLevel: EvidenceLevel;
-  copyPolicy: CopyPolicy;
   archivedAt: string | null;
   /** 列表补充的展示信息：作者姓名与来源空间。 */
   authorName?: string;
