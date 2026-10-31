@@ -970,6 +970,73 @@ tr:last-child td {
   overflow-wrap: anywhere;
 }
 
+.preview-body {
+  max-height: 70vh;
+  overflow: auto;
+}
+
+.preview-media {
+  display: block;
+  max-width: 100%;
+  max-height: 60vh;
+  margin: 0 auto;
+  border-radius: 10px;
+}
+
+.preview-doc {
+  width: 100%;
+  height: 60vh;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+}
+
+.preview-text {
+  margin: 0;
+  max-height: 60vh;
+  overflow: auto;
+  padding: 12px 14px;
+  background: #f7f5f1;
+  border-radius: 10px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.diff {
+  max-height: 60vh;
+  overflow: auto;
+  background: #fbfaf7;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.diff-line {
+  display: flex;
+  gap: 8px;
+  padding: 1px 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.diff-line.add {
+  background: #eaf5ea;
+}
+
+.diff-line.del {
+  background: #fbeceb;
+}
+
+.diff-sign {
+  width: 10px;
+  flex: none;
+  color: var(--muted);
+}
+
 .actions {
   display: flex;
   gap: 8px;

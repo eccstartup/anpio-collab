@@ -36,7 +36,7 @@ const USAGE = `用法:
   say <taskId> <内容> | ask <taskId> [--to <主体ID>]... <内容>
   handoff <taskId> [--to <主体ID>]... <内容>
   thread <taskId> <主题> | resolve <taskId> <threadId>
-  read <taskId> | questions | pack <taskId>
+  read <taskId> | questions | pack <taskId> | home
   find <关键词> | upload <文件路径> [--task <taskId>]
   download <文件ID> [--out <路径>]
   adopt <taskId>
@@ -183,6 +183,8 @@ async function run(client: CollabClient, argv: string[]): Promise<unknown> {
       return client.markRead(first, `cli:read:${first}:${Date.now()}`);
     case 'questions':
       return client.questions();
+    case 'home':
+      return client.home();
     case 'pack':
       if (!first) throw new Error('需要 taskId');
       return client.contextPack(first);

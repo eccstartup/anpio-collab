@@ -1179,6 +1179,12 @@ export const routes: Route[] = [
   },
   {
     method: 'GET',
+    path: '/v1/space/home',
+    description: '团队首页的「需要你」队列',
+    read: async ({ app, principal }) => app.collab.home(principal),
+  },
+  {
+    method: 'GET',
     path: '/v1/space/search',
     description: '跨任务检索消息、文件与已发布文档',
     read: async ({ app, principal, query }) =>

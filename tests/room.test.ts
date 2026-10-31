@@ -191,6 +191,75 @@ test('跨任务检索只返回调用方有权读取的消息与文件', async ()
   }
 });
 
+test('团队首页：提问、提醒、待验收与提案各自归位，处理后从队列消失', async () => {
+  const harness = await startHarness();
+  try {
+    const owner = harness.admin;
+    const agent = await register(harness, 'home-agent', ['agent']);
+    const outsider = await register(harness, 'home-outsider', ['agent']);
+
+    const created = (await owner.createTask(TASK_INPUT, nextOperationId('create'))) as { id: string };
+    const subtask = (await owner.assign(
+      created.id,
+      { agent: 'home-agent', kind: 'inventory' },
+      nextOperationId('assign'),
+    )) as { id: string };
+    await agent.accept(subtask.id, nextOperationId('accept'));
+
+    const question = (await agent.sendMessage(
+      created.id,
+      { body: '昨天的库存快照能直接用吗？', kind: 'question', payload: { to: 'admin' } },
+      nextOperationId('ask'),
+    )) as TaskComment;
+    await agent.sendMessage(
+      created.id,
+      { body: '@admin 口径请确认一下', kind: 'comment' },
+      nextOperationId('mention'),
+    );
+
+    // 待验收状态直接改库，聚焦首页查询本身而不是再走一遍汇总流程。
+    const reviewTask = (await owner.createTask(
+      { ...TASK_INPUT, title: '补货方案复核' },
+      nextOperationId('create'),
+    )) as { id: string };
+    await harness.db.run(`UPDATE tasks SET status = 'review', updated_at = :at WHERE id = :id`, {
+      at: new Date().toISOString(),
+      id: reviewTask.id,
+    });
+
+    await agent.createTask({ ...TASK_INPUT, title: '自动发现：冷库温度异常' }, nextOperationId('proposal'));
+
+    const home = await owner.home();
+    assert.deepEqual(home.totals, { questions: 1, mentions: 1, reviews: 1, proposals: 1 });
+    assert.deepEqual(
+      home.needsYou.map(item => item.kind).sort(),
+      ['mention', 'proposal', 'question', 'review'],
+    );
+    const questionItem = home.needsYou.find(item => item.kind === 'question');
+    assert.ok(questionItem);
+    assert.equal(questionItem.taskId, created.id);
+    assert.equal(questionItem.id, question.id);
+    assert.match(questionItem.title, /库存快照/);
+    assert.ok(home.needsYou.every(item => item.taskTitle.length > 0 && item.at.length > 0));
+
+    // 未参与任务、也不是审核人的智能体，队列里只有自己的提案。
+    const quiet = await outsider.home();
+    assert.deepEqual(quiet.totals, { questions: 0, mentions: 0, reviews: 0, proposals: 0 });
+    assert.deepEqual(quiet.needsYou, []);
+
+    await owner.markRead(created.id, nextOperationId('read'));
+    await owner.sendMessage(
+      created.id,
+      { body: '可以用，标明快照时间。', kind: 'answer', replyTo: question.id },
+      nextOperationId('answer'),
+    );
+    const after = await owner.home();
+    assert.deepEqual(after.totals, { questions: 0, mentions: 0, reviews: 1, proposals: 1 });
+  } finally {
+    await harness.close();
+  }
+});
+
 test('房间未读与提问在 PostgreSQL 上行为一致', async () => {
   if (!process.env.COLLAB_TEST_DATABASE) return;
   const harness = await startHarness();
@@ -211,8 +280,11 @@ test('房间未读与提问在 PostgreSQL 上行为一致', async () => {
     );
     const room = (await owner.room(created.id)) as TaskRoom;
     assert.equal(room.unread.questions, 1);
+    assert.equal((await owner.home()).totals.questions, 1);
     await owner.markRead(created.id, nextOperationId('read'));
     assert.equal((await owner.room(created.id)).unread.questions, 0);
+    assert.equal((await owner.home()).totals.questions, 1, '已读不等于已回答');
+    assert.equal((await owner.home()).totals.mentions, 0);
     assert.equal(((await owner.questions()) as TaskComment[]).length, 1);
   } finally {
     await harness.close();

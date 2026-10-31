@@ -1518,6 +1518,121 @@ export class CollabService {
   }
 
   /**
+   * 团队首页的「需要你」队列：提问、未读提醒、待验收与我可接管的提案。
+   * 只汇总已有事实，不改任何状态。
+   */
+  async home(actor: Principal): Promise<{
+    totals: { questions: number; mentions: number; reviews: number; proposals: number };
+    needsYou: { taskId: string; taskTitle: string; kind: 'question' | 'mention' | 'review' | 'proposal'; id: string; title: string; at: string }[];
+    generatedAt: string;
+  }> {
+    await requireAgentScope(this.ctx, actor, 'tasks:read');
+    const teamVisible = await this.teamVisible(actor);
+    const canReview = hasAnyRole(actor, 'admin', 'reviewer') ? 1 : 0;
+    const params = { workspace: actor.workspace, principal: actor.id, teamVisible, canReview, needle: `%"${actor.id}"%` };
+
+    const questionRows = await this.ctx.db.read.all(
+      `SELECT c.id, c.body, c.payload, c.created_at, c.task_id, t.title AS task_title
+       FROM task_comments c JOIN tasks t ON t.id = c.task_id
+       WHERE t.workspace = :workspace AND c.kind = 'question' AND c.payload LIKE :needle
+         AND NOT EXISTS (SELECT 1 FROM task_comments a WHERE a.task_id = c.task_id AND a.reply_to = c.id)
+         AND NOT EXISTS (SELECT 1 FROM task_threads th WHERE th.id = c.thread_id AND th.status = 'resolved')
+         AND ${this.visibleTaskSql}
+       ORDER BY c.created_at DESC LIMIT 50`,
+      params,
+    );
+    const questions = questionRows.filter(row => {
+      let payload: Record<string, unknown> = {};
+      try {
+        const parsed = JSON.parse(String(row.payload ?? '{}')) as unknown;
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          payload = parsed as Record<string, unknown>;
+        }
+      } catch {
+        // payload 不是 JSON 时按无收件人处理。
+      }
+      return addressedTo(payload).includes(actor.id);
+    });
+
+    const mentionRows = await this.ctx.db.read.all(
+      `SELECT m.id, m.created_at, c.body, c.task_id, t.title AS task_title
+       FROM task_mentions m
+       JOIN task_comments c ON c.id = m.comment_id
+       JOIN tasks t ON t.id = m.task_id
+       WHERE m.workspace = :workspace AND m.recipient_id = :principal AND m.read_at IS NULL
+         AND c.kind <> 'question'
+         AND ${this.visibleTaskSql}
+       ORDER BY m.created_at DESC LIMIT 50`,
+      params,
+    );
+
+    const reviewRows = await this.ctx.db.read.all(
+      `SELECT t.id, t.title, t.updated_at FROM tasks t
+       WHERE t.workspace = :workspace AND t.status = 'review'
+         AND (t.owner_id = :principal
+           OR EXISTS (SELECT 1 FROM task_coordinators tc WHERE tc.task_id = t.id AND tc.principal_id = :principal)
+           OR :canReview = 1)
+       ORDER BY t.updated_at DESC LIMIT 50`,
+      params,
+    );
+
+    const proposalRows = await this.ctx.db.read.all(
+      `SELECT t.id, t.title, t.created_at FROM tasks t
+       WHERE t.workspace = :workspace AND t.origin = 'agent' AND t.status = 'pending'
+         AND t.adopted_at IS NULL
+         AND (t.owner_id = :principal OR :teamVisible = 1 OR :canReview = 1)
+       ORDER BY t.created_at DESC LIMIT 50`,
+      params,
+    );
+
+    const needsYou = [
+      ...questions.map(row => ({
+        taskId: String(row.task_id),
+        taskTitle: String(row.task_title),
+        kind: 'question' as const,
+        id: String(row.id),
+        title: String(row.body).replace(/\s+/g, ' ').slice(0, 140),
+        at: String(row.created_at),
+      })),
+      ...mentionRows.map(row => ({
+        taskId: String(row.task_id),
+        taskTitle: String(row.task_title),
+        kind: 'mention' as const,
+        id: String(row.id),
+        title: String(row.body).replace(/\s+/g, ' ').slice(0, 140),
+        at: String(row.created_at),
+      })),
+      ...reviewRows.map(row => ({
+        taskId: String(row.id),
+        taskTitle: String(row.title),
+        kind: 'review' as const,
+        id: String(row.id),
+        title: `任务「${String(row.title)}」等你验收`,
+        at: String(row.updated_at),
+      })),
+      ...proposalRows.map(row => ({
+        taskId: String(row.id),
+        taskTitle: String(row.title),
+        kind: 'proposal' as const,
+        id: String(row.id),
+        title: `智能体提案「${String(row.title)}」等你接管`,
+        at: String(row.created_at),
+      })),
+    ].sort((left, right) => right.at.localeCompare(left.at));
+
+    return {
+      totals: {
+        questions: questions.length,
+        mentions: mentionRows.length,
+        reviews: reviewRows.length,
+        proposals: proposalRows.length,
+      },
+      needsYou: needsYou.slice(0, 30),
+      generatedAt: this.ctx.now(),
+    };
+  }
+
+  /**
    * 交接包：给"换一个进程接着做"的智能体一份紧凑事实。
    * 与 UI 同源，不另造一套状态；文件给出带令牌访问的下载地址。
    */

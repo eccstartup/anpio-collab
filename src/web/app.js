@@ -173,6 +173,13 @@ const SPACE_FILE_KIND_OPTIONS = Object.entries(SPACE_FILE_KIND_LABEL).map(([valu
   label,
 }));
 
+const NEED_KIND_LABEL = {
+  question: '提问',
+  mention: '提醒',
+  review: '待验收',
+  proposal: '提案',
+};
+
 const NAV = [
   { id: 'home', label: '工作台', show: () => true },
   { id: 'tasks', label: '任务', show: () => true },
@@ -233,6 +240,7 @@ const state = {
   identities: [],
   links: [],
   sessions: [],
+  home: null,
   heartbeatAt: '',
   tenants: [],
   tenant: null,
@@ -768,6 +776,7 @@ async function refresh() {
   try {
     if (state.view === 'home') {
       state.tasks = await api('tasks');
+      state.home = await api('space/home').catch(() => null);
       if (isAgentSide()) {
         state.inbox = await api('inbox').catch(() => []);
         state.mentions = await api('me/mentions').catch(() => []);
@@ -933,8 +942,29 @@ function renderHome() {
     )
     : null;
 
+  const needs = state.home?.needsYou ?? [];
+  const needsBlock = needs.length
+    ? frag(
+      el('div', { class: 'section-title' }, '等你处理'),
+      el('div', { class: 'list' }, needs.map(item =>
+        el('button', {
+          type: 'button',
+          class: 'list-item',
+          onclick: () => openTaskById(item.taskId),
+        },
+          el('div', { class: 'row spread top' },
+            el('div', {},
+              el('div', { class: 'title' }, item.title),
+              el('div', { class: 'meta' },
+                el('span', {}, NEED_KIND_LABEL[item.kind] ?? item.kind),
+                el('span', {}, item.taskTitle))),
+            el('div', { class: 'when' }, formatTime(item.at)))))),
+    )
+    : null;
+
   return frag(
     intro,
+    needsBlock,
     el('div', { class: 'section-title' }, '概览'),
     stats,
     proposals.length
@@ -1618,21 +1648,90 @@ function renderMessageComposer(room) {
       send));
 }
 
+const TEXT_PREVIEW_LIMIT = 200 * 1024;
+
+function fileContentPath(taskId, file) {
+  const fileId = encodeURIComponent(file.fileId ?? file.id);
+  return taskId
+    ? `tasks/${encodeURIComponent(taskId)}/files/${fileId}/content`
+    : `space/files/${fileId}/content`;
+}
+
+async function fetchFileBytes(taskId, file) {
+  const response = await fetch(`${API_ROOT}/${fileContentPath(taskId, file)}`, {
+    headers: { authorization: `Bearer ${state.token}` },
+  });
+  if (!response.ok) {
+    if (response.status === 401) signOut('登录状态已失效，请重新连接');
+    const payload = await readPayload(response);
+    throw new Error(payload?.error?.message ?? `读取文件失败（HTTP ${response.status}）`);
+  }
+  return response;
+}
+
+function isTextFile(file) {
+  const mime = String(file.mime ?? '');
+  if (mime.startsWith('text/')) return true;
+  if (['application/json', 'application/xml', 'application/x-yaml'].includes(mime)) return true;
+  return /\.(md|txt|json|csv|tsv|log|ya?ml|xml|html?)$/i.test(String(file.name ?? ''));
+}
+
+/**
+ * 预览只读不下载：图片和 PDF 用对象 URL 交给浏览器，
+ * 文本读前 200 KiB 直接铺开，其余类型退回下载。
+ */
+function previewSpaceFile(taskId, file) {
+  act(async () => {
+    const mime = String(file.mime ?? '');
+    let body;
+    let objectUrl = null;
+    if (mime.startsWith('image/')) {
+      const response = await fetchFileBytes(taskId, file);
+      objectUrl = URL.createObjectURL(await response.blob());
+      body = el('img', { class: 'preview-media', src: objectUrl, alt: file.name });
+    } else if (mime === 'application/pdf') {
+      const response = await fetchFileBytes(taskId, file);
+      objectUrl = URL.createObjectURL(await response.blob());
+      body = el('iframe', {
+        class: 'preview-doc',
+        src: `${objectUrl}#page=1&view=FitH`,
+        title: file.name,
+      });
+    } else if (isTextFile(file)) {
+      const response = await fetchFileBytes(taskId, file);
+      const text = await response.text();
+      body = frag(
+        el('pre', { class: 'preview-text' }, text.slice(0, TEXT_PREVIEW_LIMIT)),
+        text.length > TEXT_PREVIEW_LIMIT
+          ? el('p', { class: 'muted small' }, `只显示前 ${formatBytes(TEXT_PREVIEW_LIMIT)}，完整内容请下载。`)
+          : null,
+      );
+    } else {
+      body = el('p', { class: 'muted' }, `暂不支持预览 ${mime || '该类型'}，请下载后查看。`);
+    }
+
+    if (objectUrl) {
+      document.getElementById('dialog').addEventListener(
+        'close',
+        () => URL.revokeObjectURL(objectUrl),
+        { once: true },
+      );
+    }
+    showPanel(
+      `预览 · ${file.name}`,
+      `${formatBytes(file.size)} · ${mime || '未知类型'} · v${file.version}`,
+      el('div', { class: 'preview-body' },
+        body,
+        el('div', { class: 'row', style: 'margin-top:12px' },
+          el('button', { type: 'button', onclick: () => downloadSpaceFile(taskId, file) }, '下载'))),
+    );
+  }, '');
+}
+
 function downloadSpaceFile(taskId, file) {
   act(async () => {
-    const fileId = encodeURIComponent(file.fileId ?? file.id);
     // 任务文件与独立附件走同一条流式读取路径，不再把整个文件塞进 base64 JSON。
-    const path = taskId
-      ? `tasks/${encodeURIComponent(taskId)}/files/${fileId}/content`
-      : `space/files/${fileId}/content`;
-    const response = await fetch(`${API_ROOT}/${path}`, {
-      headers: { authorization: `Bearer ${state.token}` },
-    });
-    if (!response.ok) {
-      if (response.status === 401) signOut('登录状态已失效，请重新连接');
-      const payload = await readPayload(response);
-      throw new Error(payload?.error?.message ?? `下载失败（HTTP ${response.status}）`);
-    }
+    const response = await fetchFileBytes(taskId, file);
     const url = URL.createObjectURL(await response.blob());
     const link = el('a', { href: url, download: file.name ?? '下载' });
     document.body.append(link);
@@ -1654,6 +1753,7 @@ function renderRoomFiles(room) {
       el('span', { class: 'mono muted', title: `sha256 ${file.sha256}` }, file.sha256.slice(0, 12)),
       el('span', {}, formatTime(file.createdAt))),
     el('div', { class: 'row actions-row' },
+      el('button', { class: 'link', type: 'button', onclick: () => previewSpaceFile(room.task.id, file) }, '预览'),
       el('button', { class: 'link', type: 'button', onclick: () => downloadSpaceFile(room.task.id, file) }, '下载'),
       file.kind === 'output'
         ? el('button', {
@@ -2890,15 +2990,85 @@ function openShareKnowledge(item) {
   }, '');
 }
 
+/** 行级差异：版本正文都不大，用 LCS 回溯；超长时退回逐行比较。 */
+function lineDiff(before, after) {
+  const left = String(before ?? '').split('\n');
+  const right = String(after ?? '').split('\n');
+  if (left.length + right.length > 4000) {
+    const rows = [];
+    for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+      if (left[index] === right[index]) {
+        rows.push({ type: 'same', text: left[index] ?? '' });
+      } else {
+        if (left[index] !== undefined) rows.push({ type: 'del', text: left[index] });
+        if (right[index] !== undefined) rows.push({ type: 'add', text: right[index] });
+      }
+    }
+    return rows;
+  }
+
+  const rows = left.length + 1;
+  const cols = right.length + 1;
+  const table = Array.from({ length: rows }, () => new Uint16Array(cols));
+  for (let i = left.length - 1; i >= 0; i -= 1) {
+    for (let j = right.length - 1; j >= 0; j -= 1) {
+      table[i][j] = left[i] === right[j]
+        ? table[i + 1][j + 1] + 1
+        : Math.max(table[i + 1][j], table[i][j + 1]);
+    }
+  }
+
+  const diff = [];
+  let i = 0;
+  let j = 0;
+  while (i < left.length && j < right.length) {
+    if (left[i] === right[j]) {
+      diff.push({ type: 'same', text: left[i] });
+      i += 1;
+      j += 1;
+    } else if (table[i + 1][j] >= table[i][j + 1]) {
+      diff.push({ type: 'del', text: left[i] });
+      i += 1;
+    } else {
+      diff.push({ type: 'add', text: right[j] });
+      j += 1;
+    }
+  }
+  while (i < left.length) diff.push({ type: 'del', text: left[i++] });
+  while (j < right.length) diff.push({ type: 'add', text: right[j++] });
+  return diff;
+}
+
+function openVersionDiff(from, to) {
+  const diff = lineDiff(from.content, to.content);
+  const added = diff.filter(row => row.type === 'add').length;
+  const removed = diff.filter(row => row.type === 'del').length;
+  showPanel(
+    `版本对比 · v${from.version} → v${to.version}`,
+    `新增 ${added} 行，删除 ${removed} 行`,
+    el('div', { class: 'diff' }, diff.map(row => el('div', { class: `diff-line ${row.type}` },
+      el('span', { class: 'diff-sign' }, row.type === 'add' ? '+' : row.type === 'del' ? '−' : ' '),
+      el('span', {}, row.text || ' ')))),
+  );
+}
+
 function openVersions(item) {
   act(async () => {
     const versions = await api(`knowledge/${item.id}/versions`);
     showPanel(
       `版本历史 · ${item.id.slice(0, 8)}`,
       '',
-      el('div', { class: 'stack' }, versions.map((version) =>
+      el('div', { class: 'stack' }, versions.map((version, index) =>
         el('div', { class: 'result-box' },
-          el('div', { class: 'mono' }, `v${version.version} · ${formatTime(version.publishedAt)}`),
+          el('div', { class: 'row spread top' },
+            el('div', { class: 'mono' }, `v${version.version} · ${formatTime(version.publishedAt)}`),
+            index > 0
+              ? el('button', {
+                class: 'link',
+                type: 'button',
+                onclick: () => openVersionDiff(versions[index - 1], version),
+              }, `与 v${versions[index - 1].version} 对比`)
+              : null),
           el('div', { style: 'margin-top:6px' }, version.content),
           el('div', { class: 'muted' }, `适用：${version.conditions} · 有效期至 ${formatDate(version.expiresAt)}`)))),
     );

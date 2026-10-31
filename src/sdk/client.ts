@@ -66,6 +66,19 @@ export type UploadSession = {
 
 export type ContextPack = { markdown: string; manifest: Record<string, unknown> };
 
+export type SpaceHome = {
+  totals: { questions: number; mentions: number; reviews: number; proposals: number };
+  needsYou: {
+    taskId: string;
+    taskTitle: string;
+    kind: 'question' | 'mention' | 'review' | 'proposal';
+    id: string;
+    title: string;
+    at: string;
+  }[];
+  generatedAt: string;
+};
+
 export type SpaceSearch = {
   query: string;
   messages: (TaskComment & { taskTitle: string })[];
@@ -354,6 +367,11 @@ export class CollabClient {
 
   search(query: string) {
     return this.request<SpaceSearch>(`space/search?q=${encodeURIComponent(query)}`);
+  }
+
+  /** 团队首页「需要你」队列：提问、未读提醒、待验收与可接管提案。 */
+  home() {
+    return this.request<SpaceHome>('space/home');
   }
 
   file(id: string) {
