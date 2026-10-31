@@ -35,7 +35,7 @@ export async function isCoordinator(ctx: Context, principal: Principal, taskId: 
   return Boolean(row);
 }
 
-/** 可读 = 管理员 / 负责人 / 委派协调者 / 受派智能体。 */
+/** 可读 = 管理员 / 负责人 / 委派协调者 / 受派智能体 / 团队里的真人成员。 */
 export async function readTask(ctx: Context, principal: Principal, taskId: string): Promise<Task> {
   const task = await loadTask(ctx, principal, taskId);
   if (hasAnyRole(principal, 'admin') || task.ownerId === principal.id) return task;
@@ -45,6 +45,13 @@ export async function readTask(ctx: Context, principal: Principal, taskId: strin
     { taskId, principal: principal.id },
   );
   if (assigned) return task;
+  // 团队任务对所有活跃真人成员可见；访客与智能体仍按子任务/授权范围。
+  if (principal.kind === 'human' && principal.tenantRole !== 'guest') {
+    const tenant = await ctx.db.read.one('SELECT personal, status FROM tenants WHERE id = :id', {
+      id: principal.workspace,
+    });
+    if (tenant && Number(tenant.personal) === 0 && String(tenant.status) === 'active') return task;
+  }
   throw forbidden('无权访问该任务');
 }
 

@@ -24,6 +24,14 @@ const item = (id: string, content: string, conditions: string): Knowledge => ({
   accessMode: 'workspace',
   createdAt: '2026-10-28T00:00:00Z',
   updatedAt: '2026-10-28T00:00:00Z',
+  kind: 'experience',
+  title: id,
+  summary: '',
+  tags: [],
+  source: 'task',
+  evidenceLevel: 'task_verified',
+  copyPolicy: 'team',
+  archivedAt: null,
 });
 
 const corpus = [

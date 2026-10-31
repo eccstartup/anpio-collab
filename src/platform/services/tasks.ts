@@ -59,9 +59,9 @@ export type TaskListItem = {
   adopted: boolean;
 };
 
-/** 任务可见性：管理员、负责人、协调者、受派智能体。 */
+/** 任务可见性：管理员、负责人、协调者、受派智能体；团队任务对本团队成员开放。 */
 const VISIBLE_CLAUSE = `(
-  t.owner_id = :actor OR :isAdmin = 1
+  t.owner_id = :actor OR :isAdmin = 1 OR :teamMember = 1
   OR EXISTS (SELECT 1 FROM subtasks vs WHERE vs.task_id = t.id AND vs.agent_id = :actor)
   OR EXISTS (SELECT 1 FROM task_coordinators vc WHERE vc.task_id = t.id AND vc.principal_id = :actor)
 )`;
@@ -216,12 +216,26 @@ export class TaskService {
     return { id: task.id, ownerId: actor.id, version };
   }
 
-  private buildListSql(actor: Principal, filters: TaskFilters): { sql: string; params: Record<string, unknown> } {
+  /** 团队任务对活跃团队里的真人成员可见；访客与智能体仍按原规则。 */
+  private async isTeamMember(actor: Principal): Promise<boolean> {
+    if (actor.kind !== 'human' || actor.tenantRole === 'guest') return false;
+    const row = await this.ctx.db.read.one('SELECT personal, status FROM tenants WHERE id = :id', {
+      id: actor.workspace,
+    });
+    return Boolean(row && Number(row.personal) === 0 && String(row.status) === 'active');
+  }
+
+  private buildListSql(
+    actor: Principal,
+    filters: TaskFilters,
+    teamMember: boolean,
+  ): { sql: string; params: Record<string, unknown> } {
     const conditions = ['t.workspace = :workspace', VISIBLE_CLAUSE];
     const params: Record<string, unknown> = {
       workspace: actor.workspace,
       actor: actor.id,
       isAdmin: hasAnyRole(actor, 'admin') ? 1 : 0,
+      teamMember: teamMember ? 1 : 0,
       limit: filters.limit,
       offset: filters.offset,
     };
@@ -243,7 +257,11 @@ export class TaskService {
 
   async list(actor: Principal, filters: Omit<TaskFilters, 'limit' | 'offset'> = {}): Promise<TaskListItem[]> {
     await requireAgentScope(this.ctx, actor, 'tasks:read');
-    const { sql, params } = this.buildListSql(actor, { ...filters, limit: 500, offset: 0 });
+    const { sql, params } = this.buildListSql(
+      actor,
+      { ...filters, limit: 500, offset: 0 },
+      await this.isTeamMember(actor),
+    );
     const rows = await this.ctx.db.read.all(sql, params);
     return rows.map(toListItem);
   }
@@ -251,7 +269,11 @@ export class TaskService {
   async page(actor: Principal, filters: TaskFilters): Promise<{ items: TaskListItem[]; nextOffset: number | null }> {
     await requireAgentScope(this.ctx, actor, 'tasks:read');
     // 多取一条用来判断是否还有下一页，避免额外 count 查询。
-    const { sql, params } = this.buildListSql(actor, { ...filters, limit: filters.limit + 1 });
+    const { sql, params } = this.buildListSql(
+      actor,
+      { ...filters, limit: filters.limit + 1 },
+      await this.isTeamMember(actor),
+    );
     const rows = await this.ctx.db.read.all(sql, params);
     const items = rows.slice(0, filters.limit).map(toListItem);
     return { items, nextOffset: rows.length > filters.limit ? filters.offset + filters.limit : null };

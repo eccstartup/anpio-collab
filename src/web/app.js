@@ -110,6 +110,78 @@ const RULE_LABEL = {
 const PRESENCE_LABEL = { online: '在线', busy: '忙碌', offline: '离线' };
 const PRESENCE_TONE = { online: 'ok', busy: 'warn', offline: 'muted' };
 
+const AICD_KIND_LABEL = {
+  experience: '经验',
+  playbook: '做法',
+  checklist: '清单',
+  decision: '决策记录',
+  report: '报告',
+  handoff: '交接说明',
+};
+
+const AICD_STATE_LABEL = {
+  draft: '草稿',
+  candidate: '待审核',
+  published: '已发布',
+  archived: '已归档',
+  revoked: '已撤销',
+};
+const AICD_STATE_TONE = {
+  draft: 'muted',
+  candidate: 'warn',
+  published: 'ok',
+  archived: 'muted',
+  revoked: 'danger',
+};
+
+const COPY_POLICY_LABEL = {
+  none: '不可复制',
+  team: '仅本团队',
+  tenant: '可复制给成员',
+};
+
+const EVIDENCE_LABEL = {
+  task_verified: '任务验收沉淀',
+  manual: '人工编写',
+  imported: '从副本导入',
+};
+
+/** 复制策略有方向：副本只能更严，选择器里也就只列不放宽的选项。 */
+const COPY_POLICY_RANK = { none: 0, team: 1, tenant: 2 };
+
+const MESSAGE_KIND_LABEL = {
+  comment: '普通消息',
+  question: '提问',
+  answer: '回答',
+  handoff: '交接',
+  decision: '决定',
+  status: '进展',
+  system: '系统',
+};
+const MESSAGE_KIND_TONE = {
+  comment: 'muted',
+  question: 'warn',
+  answer: 'ok',
+  handoff: 'active',
+  decision: 'active',
+  status: 'muted',
+  system: 'danger',
+};
+const MESSAGE_KIND_OPTIONS = Object.entries(MESSAGE_KIND_LABEL)
+  .filter(([value]) => value !== 'system')
+  .map(([value, label]) => ({ value, label }));
+
+const SPACE_FILE_KIND_LABEL = {
+  input: '输入',
+  intermediate: '中间产物',
+  output: '成果',
+  evidence: '证据',
+};
+const SPACE_FILE_KIND_OPTIONS = Object.entries(SPACE_FILE_KIND_LABEL).map(([value, label]) => ({
+  value,
+  label,
+}));
+
 const NAV = [
   { id: 'home', label: '工作台', show: () => true },
   { id: 'tasks', label: '任务', show: () => true },
@@ -129,7 +201,7 @@ const TITLES = {
   tasks: ['任务', '目标、分工、验收与证据'],
   pool: ['开放池', '能力匹配就可以认领，认领即加入'],
   mentions: ['提醒', '有人在评论里提到了你'],
-  knowledge: ['经验库', '个人经验可分享给团队；团队经验只在团队内'],
+  knowledge: ['经验库', 'AICD 手动编写、审核、发布与复制；团队经验只在团队内'],
   agents: ['我的智能体', '你请进来的智能体，和它们正在做的事'],
   directory: ['团队', '你和谁一起工作'],
   oversight: ['监管', '哪里不对：卡住、失联、积压与被反复拒绝'],
@@ -142,14 +214,22 @@ const state = {
   method: '',
   me: null,
   view: 'home',
-  tab: 'published',
+  tab: 'aicds',
   tasks: [],
   activity: [],
   taskId: null,
+  taskTab: 'detail',
   detail: null,
+  room: null,
+  roomThread: '',
+  roomStream: '',
+  replyTo: '',
   taskComments: [],
   taskOffers: [],
   knowledge: [],
+  aicds: [],
+  aicdState: '',
+  aicdInvites: [],
   candidates: [],
   pending: [],
   audit: [],
@@ -680,6 +760,7 @@ function renderNav() {
           onclick: () => {
             state.view = view.id;
             state.taskId = null;
+            state.taskTab = 'detail';
             renderNav();
             refresh();
           },
@@ -709,15 +790,25 @@ async function refresh() {
       if (state.taskId) {
         const id = encodeURIComponent(state.taskId);
         state.detail = await api(`tasks/${id}`);
-        state.taskComments = await api(`tasks/${id}/comments`).catch(() => []);
-        state.taskOffers = await api(`tasks/${id}/offers`).catch(() => []);
+        if (state.taskTab === 'room') {
+          state.room = await api(`tasks/${id}/room`);
+        } else {
+          state.taskComments = await api(`tasks/${id}/comments`).catch(() => []);
+          state.taskOffers = await api(`tasks/${id}/offers`).catch(() => []);
+        }
       }
     }
     if (state.view === 'pool') state.offers = await api('offers');
     if (state.view === 'mentions') state.mentions = await api('me/mentions');
     if (state.view === 'knowledge') {
-      state.knowledge = await api(`knowledge${state.query ? `?q=${encodeURIComponent(state.query)}` : ''}`);
+      if (state.tab === 'published') {
+        state.knowledge = await api(`knowledge${state.query ? `?q=${encodeURIComponent(state.query)}` : ''}`);
+      }
+      if (state.tab === 'aicds') {
+        state.aicds = await api(`aicds${state.aicdState ? `?state=${encodeURIComponent(state.aicdState)}` : ''}`);
+      }
       if (hasRole('reviewer', 'admin')) state.candidates = await api('knowledge/candidates');
+      state.aicdInvites = await api('me/copy-invites').catch(() => []);
     }
     if (state.view === 'directory') {
       state.tenantDetail = await api('tenants/current').catch(() => null);
@@ -782,6 +873,10 @@ function render() {
 function openTaskById(taskId) {
   state.view = 'tasks';
   state.taskId = taskId;
+  state.taskTab = 'detail';
+  state.room = null;
+  state.roomThread = '';
+  state.roomStream = '';
   renderNav();
   refresh();
 }
@@ -1216,11 +1311,18 @@ function renderTaskDetail() {
 
   const back = el(
     'button',
-    { class: 'link back', type: 'button', onclick: () => { state.taskId = null; refresh(); } },
+    { class: 'link back', type: 'button', onclick: () => { state.taskId = null; state.taskTab = 'detail'; refresh(); } },
     '← 返回任务列表',
   );
 
   const hasGoal = task.goal && task.goal !== task.title;
+
+  const tabs = el(
+    'div',
+    { class: 'tabs' },
+    taskTabButton('detail', '任务'),
+    taskTabButton('room', '房间'),
+  );
 
   const head = el(
     'div',
@@ -1253,9 +1355,14 @@ function renderTaskDetail() {
 
   const actions = renderTaskActions(detail, owner);
 
+  if (state.taskTab === 'room') {
+    return frag(back, head, tabs, renderTaskRoom());
+  }
+
   return frag(
     back,
     head,
+    tabs,
     task.origin === 'agent' && !task.adopted
       ? el('div', { class: 'note warn' },
         el('strong', {}, '这是智能体发起的提案。'),
@@ -1294,6 +1401,392 @@ function renderTaskDetail() {
       : null,
     renderTimeline(detail.events, detail.subtasks),
   );
+}
+
+function taskTabButton(id, label) {
+  return el('button', {
+    type: 'button',
+    'aria-current': state.taskTab === id ? 'true' : 'false',
+    onclick: () => {
+      state.taskTab = id;
+      state.roomThread = '';
+      refresh();
+    },
+  }, label);
+}
+
+// ---------------------------------------------------------------- 任务房间
+
+const ROOM_STREAM_LABEL = { event: '进展', message: '消息', file: '文件', knowledge: 'AICD' };
+const ROOM_ROLE_LABEL = {
+  owner: '负责人',
+  coordinator: '协调者',
+  agent: '受派智能体',
+  participant: '参与者',
+};
+
+function renderTaskRoom() {
+  const room = state.room;
+  if (!room) return el('div', { class: 'empty' }, '加载中…');
+  const counts = room.counts;
+  return frag(
+    el('div', { class: 'grid' },
+      statCard('消息', counts.messages, '人与智能体共用一条线'),
+      statCard('开放线程', counts.threadsOpen, `共 ${room.threads.length} 个线程`),
+      statCard('文件', counts.files, '输入、中间产物与成果'),
+      statCard('AICD', counts.knowledge, '与这件事相关的经验')),
+    renderRoomParticipants(room),
+    renderRoomThreads(room),
+    renderRoomMessages(room),
+    renderRoomFiles(room),
+    renderRoomActivity(room),
+    renderRoomKnowledge(room),
+  );
+}
+
+function renderRoomParticipants(room) {
+  return el('div', { class: 'card' },
+    el('div', { class: 'card-head' },
+      el('h3', {}, '参与者'),
+      el('span', { class: 'muted' }, `${room.participants.length} 位`)),
+    room.participants.length
+      ? el('div', { class: 'row' }, room.participants.map((person) =>
+        el('span', { class: 'comment-person', title: person.id },
+          avatarNode(person.displayName || person.id, person.avatar, 'sm'),
+          el('span', {}, `${person.displayName}（${ROOM_ROLE_LABEL[person.role] ?? person.role}）`))))
+      : el('div', { class: 'empty' }, '还没有参与者。'));
+}
+
+function renderRoomThreads(room) {
+  const rows = room.threads.map((thread) => {
+    const active = state.roomThread === thread.id;
+    return el('div', { class: 'list-item static' },
+      el('div', { class: 'row spread top' },
+        el('span', { class: 'title' }, thread.topic),
+        toneBadge(thread.status === 'open' ? 'warn' : 'muted', thread.status === 'open' ? '进行中' : '已结束')),
+      el('div', { class: 'meta' },
+        el('span', {}, `发起 ${thread.openedByName}`),
+        thread.assigneeId ? el('span', {}, `指派给 ${thread.assigneeId}`) : null,
+        el('span', {}, `${thread.messageCount} 条消息`),
+        el('span', {}, formatTime(thread.createdAt))),
+      el('div', { class: 'row actions-row' },
+        el('button', {
+          class: 'link',
+          type: 'button',
+          onclick: () => {
+            state.roomThread = active ? '' : thread.id;
+            refresh();
+          },
+        }, active ? '看全部消息' : '只看这个线程'),
+        thread.status === 'open'
+          ? el('button', {
+            class: 'link',
+            type: 'button',
+            onclick: () => act(
+              () => api(`tasks/${room.task.id}/threads/${thread.id}/resolve`, { body: {} }),
+              '线程已结束',
+            ),
+          }, '结束线程')
+          : null));
+  });
+
+  return el('div', { class: 'card' },
+    el('div', { class: 'card-head' },
+      el('h3', {}, '对话线程'),
+      el('button', { type: 'button', onclick: () => openThread(room.task) }, '开启线程')),
+    rows.length ? el('div', { class: 'list' }, rows) : el('div', { class: 'empty' }, '还没有线程。开一个线程，把讨论收在一处。'));
+}
+
+function openThread(task) {
+  openDialog({
+    title: '开启对话线程',
+    description: '线程用来收拢一个话题：谁在等谁、结论是什么，结束时点“结束线程”。',
+    submitLabel: '开启',
+    fields: [
+      { name: 'topic', label: '话题', required: true, placeholder: '例如：补货方案' },
+      { name: 'assigneeId', label: '指派给（主体 ID，可空）', placeholder: 'inv-room' },
+    ],
+    onSubmit: (values) => act(
+      () => api(`tasks/${task.id}/threads`, {
+        body: { topic: values.topic, assigneeId: values.assigneeId || undefined },
+      }),
+      '线程已开启',
+    ),
+  });
+}
+
+function renderRoomMessages(room) {
+  const threads = new Map(room.threads.map((thread) => [thread.id, thread]));
+  const files = new Map(room.files.map((file) => [file.id, file]));
+  const messages = state.roomThread
+    ? room.messages.filter((message) => message.threadId === state.roomThread)
+    : room.messages;
+
+  const rows = messages.map((message) => {
+    const thread = message.threadId ? threads.get(message.threadId) : null;
+    const parent = message.replyTo ? room.messages.find((item) => item.id === message.replyTo) : null;
+    const blocking = message.payload?.blocking === true;
+    return el('div', { class: 'comment' },
+      el('div', { class: 'comment-head' },
+        el('span', { class: 'comment-person' },
+          avatarNode(message.authorName || message.authorId, message.authorAvatar, 'sm'),
+          el('span', { class: 'comment-author' }, message.authorName || message.authorId)),
+        toneBadge(message.authorKind === 'human' ? 'muted' : 'active', KIND_LABEL[message.authorKind] ?? message.authorKind),
+        toneBadge(MESSAGE_KIND_TONE[message.kind] ?? 'muted', MESSAGE_KIND_LABEL[message.kind] ?? message.kind),
+        blocking ? toneBadge('danger', '阻塞') : null,
+        thread ? el('span', { class: 'muted small' }, `#${thread.topic}`) : null,
+        el('span', { class: 'when' }, formatTime(message.createdAt))),
+      parent
+        ? el('div', { class: 'muted small' }, `回复 ${parent.authorName || parent.authorId}：${parent.body.slice(0, 80)}`)
+        : null,
+      el('div', { class: 'comment-body' }, message.body),
+      message.fileIds?.length
+        ? el('div', { class: 'row', style: 'margin-top:4px' }, message.fileIds.map((fileId) => {
+          const file = files.get(fileId);
+          return el('button', {
+            class: 'link',
+            type: 'button',
+            onclick: () => (file ? downloadSpaceFile(room.task.id, file) : toast('文件已删除', 'error')),
+          }, file ? `${file.name}（${formatBytes(file.size)}）` : '附件');
+        }))
+        : null,
+      el('div', { class: 'row actions-row' },
+        el('button', {
+          class: 'link',
+          type: 'button',
+          onclick: () => {
+            state.replyTo = message.id;
+            refresh();
+          },
+        }, '回复')));
+  });
+
+  return el('div', { class: 'card' },
+    el('div', { class: 'card-head' },
+      el('h3', {}, state.roomThread ? `消息 · ${threads.get(state.roomThread)?.topic ?? ''}` : '消息'),
+      state.roomThread
+        ? el('button', {
+          class: 'link',
+          type: 'button',
+          onclick: () => {
+            state.roomThread = '';
+            refresh();
+          },
+        }, '看全部消息')
+        : el('span', { class: 'muted' }, `${messages.length} 条`)),
+    rows.length ? el('div', { class: 'comments' }, rows) : el('div', { class: 'empty' }, '还没有消息。问一句、给个结论，都会留在房间里。'),
+    renderMessageComposer(room));
+}
+
+function renderMessageComposer(room) {
+  const draft = el('textarea', { placeholder: '写点进展、问题或结论；用 @主体ID 提到某人' });
+  const kind = el('select', {}, MESSAGE_KIND_OPTIONS.map((option) => {
+    const node = el('option', { value: option.value }, option.label);
+    if (option.value === 'status') node.selected = true;
+    return node;
+  }));
+  const thread = el('select', {},
+    el('option', { value: '' }, '不归线程'),
+    room.threads.filter((item) => item.status === 'open').map((item) => el('option', { value: item.id }, item.topic)));
+  if (state.roomThread) thread.value = state.roomThread;
+  const parent = state.replyTo ? room.messages.find((message) => message.id === state.replyTo) : null;
+
+  const send = el('button', { class: 'primary', type: 'button' }, '发送');
+  send.addEventListener('click', () => act(async () => {
+    const text = draft.value.trim();
+    if (!text) throw new Error('消息不能为空');
+    await api(`tasks/${room.task.id}/messages`, {
+      body: {
+        body: text,
+        kind: kind.value,
+        threadId: thread.value || undefined,
+        replyTo: state.replyTo || undefined,
+      },
+    });
+    draft.value = '';
+    state.replyTo = '';
+  }, '已发送'));
+
+  return el('div', { class: 'comment-form' },
+    parent
+      ? el('div', { class: 'row spread' },
+        el('span', { class: 'muted small' }, `回复 ${parent.authorName || parent.authorId}：${parent.body.slice(0, 60)}`),
+        el('button', {
+          class: 'link',
+          type: 'button',
+          onclick: () => {
+            state.replyTo = '';
+            refresh();
+          },
+        }, '取消'))
+      : null,
+    draft,
+    el('div', { class: 'row' },
+      el('label', { class: 'field' }, el('span', {}, '类型'), kind),
+      el('label', { class: 'field' }, el('span', {}, '线程'), thread),
+      send));
+}
+
+function downloadSpaceFile(taskId, file) {
+  act(async () => {
+    const content = await api(`tasks/${encodeURIComponent(taskId)}/files/${encodeURIComponent(file.fileId ?? file.id)}`);
+    const binary = atob(content.data);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+    const url = URL.createObjectURL(new Blob([bytes], { type: content.file.mime }));
+    const link = el('a', { href: url, download: content.file.name });
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  }, '');
+}
+
+function renderRoomFiles(room) {
+  const rows = room.files.map((file) => el('div', { class: 'list-item static' },
+    el('div', { class: 'row spread top' },
+      el('span', { class: 'title' }, file.name),
+      toneBadge('muted', SPACE_FILE_KIND_LABEL[file.kind] ?? file.kind)),
+    el('div', { class: 'meta' },
+      el('span', {}, formatBytes(file.size)),
+      el('span', {}, `v${file.version}`),
+      el('span', {}, `上传 ${file.producedByName || file.producedBy}`),
+      el('span', { class: 'mono muted', title: `sha256 ${file.sha256}` }, file.sha256.slice(0, 12)),
+      el('span', {}, formatTime(file.createdAt))),
+    el('div', { class: 'row actions-row' },
+      el('button', { class: 'link', type: 'button', onclick: () => downloadSpaceFile(room.task.id, file) }, '下载'),
+      file.kind === 'output'
+        ? el('button', {
+          class: 'link',
+          type: 'button',
+          onclick: () => openPromoteFile(room.task, file),
+        }, '挂到 AICD')
+        : null,
+      el('button', {
+        class: 'link danger',
+        type: 'button',
+        onclick: () => act(
+          () => api(`tasks/${room.task.id}/files/${file.id}/delete`, { body: {} }),
+          '文件已删除',
+        ),
+      }, '删除'))));
+
+  return el('div', { class: 'card' },
+    el('div', { class: 'card-head' },
+      el('h3', {}, '文件'),
+      el('button', { type: 'button', onclick: () => openUploadFile(room.task) }, '上传文件')),
+    rows.length ? el('div', { class: 'list' }, rows) : el('div', { class: 'empty' }, '还没有文件。中间产物和成果都可以留在这里。'));
+}
+
+const MAX_SPACE_FILE_BYTES = 256 * 1024;
+
+function openUploadFile(task) {
+  openDialog({
+    title: '上传文件',
+    description: '单文件上限 256 KiB；成果文件可以挂到 AICD 下当证据。',
+    submitLabel: '上传',
+    fields: [
+      { name: 'file', label: '文件', type: 'files', required: true },
+      { name: 'kind', label: '类别', type: 'select', value: 'intermediate', options: SPACE_FILE_KIND_OPTIONS },
+    ],
+    onSubmit: (values) => act(async () => {
+      const file = values.file?.[0];
+      if (!file) throw new Error('请选择文件');
+      if (file.size > MAX_SPACE_FILE_BYTES) throw new Error('单文件上限 256 KiB');
+      await api(`tasks/${task.id}/files`, {
+        body: {
+          name: file.name || '未命名文件',
+          mime: file.type || 'application/octet-stream',
+          kind: values.kind,
+          data: bytesToBase64(new Uint8Array(await file.arrayBuffer())),
+        },
+      });
+    }, '已上传'),
+  });
+}
+
+function openPromoteFile(task, file) {
+  act(async () => {
+    const items = await api('aicds');
+    const options = items
+      .filter((item) => item.state !== 'archived' && item.state !== 'revoked')
+      .map((item) => ({
+        value: item.id,
+        label: `${item.title}（${AICD_STATE_LABEL[item.state] ?? item.state}）`,
+      }));
+    if (!options.length) {
+      toast('先建一条 AICD，再把成果挂成证据', 'error');
+      return;
+    }
+    openDialog({
+      title: '挂到 AICD',
+      description: '只有成果文件能挂成证据；同团队内复制时附件会一起带走。',
+      submitLabel: '挂接',
+      fields: [
+        { name: 'knowledgeId', label: 'AICD', type: 'select', options },
+        {
+          name: 'role',
+          label: '角色',
+          type: 'select',
+          value: 'evidence',
+          options: [
+            { value: 'evidence', label: '证据' },
+            { value: 'attachment', label: '附件' },
+          ],
+        },
+      ],
+      onSubmit: (values) => act(
+        () => api(`tasks/${task.id}/files/${file.id}/promote`, { body: values }),
+        '已挂接',
+      ),
+    });
+  }, '');
+}
+
+function renderRoomActivity(room) {
+  const streams = [['', '全部'], ['event', '进展'], ['message', '消息'], ['file', '文件'], ['knowledge', 'AICD']];
+  const entries = state.roomStream
+    ? room.activity.filter((entry) => entry.stream === state.roomStream)
+    : room.activity;
+  const items = entries.slice(-60).reverse().map((entry) => el('li', {},
+    el('div', { class: 'what' },
+      `${ROOM_STREAM_LABEL[entry.stream] ?? entry.stream} · ${entry.summary}`),
+    el('div', { class: 'when' }, `${entry.actorName || entry.actorId} · ${formatTime(entry.at)}`)));
+  return el('div', { class: 'card' },
+    el('div', { class: 'card-head' },
+      el('h3', {}, '合并时间线'),
+      el('span', { class: 'muted' }, '进展、对话、文件与 AICD 按时间排在一起')),
+    el('div', { class: 'row actions-row' }, streams.map(([value, label]) =>
+      el('button', {
+        class: 'link',
+        type: 'button',
+        'aria-current': state.roomStream === value ? 'true' : 'false',
+        onclick: () => { state.roomStream = value; refresh(); },
+      }, label))),
+    items.length ? el('ul', { class: 'timeline' }, items) : el('div', { class: 'empty' }, '暂无动态'));
+}
+
+function renderRoomKnowledge(room) {
+  if (!room.knowledge.length) return null;
+  return el('div', { class: 'card' },
+    el('div', { class: 'card-head' },
+      el('h3', {}, '这件事沉淀的 AICD'),
+      el('span', { class: 'muted' }, '发布后团队智能体能读到')),
+    el('div', { class: 'list' }, room.knowledge.map((item) =>
+      el('div', { class: 'list-item static' },
+        el('div', { class: 'row spread top' },
+          el('span', { class: 'title' }, item.title || item.content.slice(0, 40)),
+          toneBadge(AICD_STATE_TONE[item.state] ?? 'muted', AICD_STATE_LABEL[item.state] ?? item.state)),
+        el('div', { class: 'meta' },
+          el('span', {}, AICD_KIND_LABEL[item.kind] ?? item.kind),
+          el('span', {}, `v${item.version}`),
+          el('span', {}, `适用：${item.conditions || '—'}`)),
+        el('div', { class: 'row actions-row' },
+          el('button', {
+            class: 'link',
+            type: 'button',
+            onclick: () => openAicdDetail(item.id),
+          }, '详情'))))));
 }
 
 function renderMaterials(detail) {
@@ -1765,9 +2258,12 @@ function openReturn(subtask) {
 // ---------------------------------------------------------------- 经验库
 
 function renderKnowledge() {
+  const pendingInvites = state.aicdInvites.filter((invite) => invite.status === 'pending').length;
   const tabs = el('div', { class: 'tabs' },
+    tabButton('aicds', 'AICD'),
     tabButton('published', '已发布'),
-    hasRole('reviewer', 'admin') ? tabButton('candidates', `待审核 ${state.candidates.length ? `(${state.candidates.length})` : ''}`) : null);
+    hasRole('reviewer', 'admin') ? tabButton('candidates', `待审核 ${state.candidates.length ? `(${state.candidates.length})` : ''}`) : null,
+    tabButton('invites', pendingInvites ? `复制邀请 (${pendingInvites})` : '复制邀请'));
 
   const input = el('input', {
     type: 'search',
@@ -1783,11 +2279,448 @@ function renderKnowledge() {
   };
   const search = el('div', { class: 'search' }, input, el('button', { type: 'button', onclick: runSearch }, '检索'));
 
+  if (state.tab === 'aicds') return frag(tabs, renderAicds());
+  if (state.tab === 'invites') return frag(tabs, renderAicdInvites());
   const body = state.tab === 'candidates' && hasRole('reviewer', 'admin')
     ? renderCandidates()
     : renderPublished();
   return frag(tabs, state.tab === 'published' ? search : null, body);
 }
+
+function renderAicds() {
+  const filter = el('select', {
+    onchange: (event) => {
+      state.aicdState = event.target.value;
+      refresh();
+    },
+  }, [
+    ['', '全部状态'],
+    ['draft', '草稿'],
+    ['candidate', '待审核'],
+    ['published', '已发布'],
+    ['archived', '已归档'],
+    ['revoked', '已撤销'],
+  ].map(([value, label]) => {
+    const node = el('option', { value }, label);
+    if (value === state.aicdState) node.selected = true;
+    return node;
+  }));
+
+  const toolbar = el('div', { class: 'toolbar' },
+    filter,
+    !isAgentSide() && !isGuest()
+      ? el('button', { class: 'primary', type: 'button', onclick: openCreateAicd }, '新建 AICD')
+      : null);
+
+  if (!state.aicds.length) {
+    return frag(toolbar, el('div', { class: 'empty' },
+      '还没有 AICD。新建一条草稿，写清适用条件与有效期，再提交审核。'));
+  }
+
+  return frag(toolbar, el('div', { class: 'list' }, state.aicds.map((item) => {
+    const mine = item.authorId === state.me.id;
+    const manage = mine || hasRole('admin', 'reviewer');
+    const personal = Boolean(state.tenant?.personal);
+    return el('div', { class: 'list-item static' },
+      el('div', { class: 'row spread top' },
+        el('div', { style: 'min-width:0' },
+          el('p', { class: 'title' }, item.title || item.content.slice(0, 60)),
+          item.summary ? el('p', { class: 'muted small' }, item.summary) : null),
+        el('div', { class: 'row' },
+          toneBadge(AICD_STATE_TONE[item.state] ?? 'muted', AICD_STATE_LABEL[item.state] ?? item.state),
+          toneBadge('muted', AICD_KIND_LABEL[item.kind] ?? item.kind))),
+      el('div', { class: 'meta' },
+        el('span', {}, `v${item.version}`),
+        el('span', {}, `作者 ${item.authorName || item.authorId}`),
+        el('span', {}, COPY_POLICY_LABEL[item.copyPolicy] ?? item.copyPolicy),
+        el('span', {}, EVIDENCE_LABEL[item.evidenceLevel] ?? item.evidenceLevel),
+        item.expiresAt ? el('span', {}, `有效期至 ${formatDate(item.expiresAt)}`) : null,
+        item.copiedFrom
+          ? el('span', {},
+            `复制自 ${item.copiedFrom.authorName || '成员'} · `
+            + `${item.copiedFrom.personal ? '个人空间' : item.copiedFrom.workspaceName} v${item.copiedFrom.version}`)
+          : null,
+        el('span', {}, `更新 ${formatTime(item.updatedAt)}`)),
+      item.sourceRevoked
+        ? el('div', { class: 'note warn' }, '来源已被撤销：这份副本仍可用，但引用前请先复核。')
+        : null,
+      el('div', { class: 'row actions-row' }, aicdActionButtons(item, manage, personal)));
+  })));
+}
+
+function aicdActionButtons(item, manage, personal) {
+  const buttons = [
+    el('button', { class: 'link', type: 'button', onclick: () => openAicdDetail(item.id) }, '详情'),
+  ];
+  if (manage && (item.state === 'draft' || item.state === 'candidate')) {
+    buttons.push(el('button', { class: 'link', type: 'button', onclick: () => openEditAicd(item) }, '编辑'));
+    if (item.state === 'draft') {
+      buttons.push(el('button', {
+        class: 'link',
+        type: 'button',
+        onclick: () => openSubmitAicd(item),
+      }, '提交审核'));
+    } else if (personal || hasRole('reviewer', 'admin')) {
+      buttons.push(el('button', {
+        class: 'link',
+        type: 'button',
+        onclick: () => openPublishAicd(item),
+      }, '发布'));
+    }
+  }
+  if (manage && (item.state === 'published' || item.state === 'revoked')) {
+    buttons.push(el('button', {
+      class: 'link',
+      type: 'button',
+      onclick: () => openRevise(item),
+    }, '修订'));
+  }
+  if (item.state === 'published') {
+    if (item.copyPolicy !== 'none') {
+      buttons.push(el('button', {
+        class: 'link',
+        type: 'button',
+        onclick: () => openCopyAicd(item),
+      }, '复制'));
+    }
+    if (item.copyPolicy === 'tenant' && manage) {
+      buttons.push(el('button', {
+        class: 'link',
+        type: 'button',
+        onclick: () => openInviteAicd(item),
+      }, '邀请他人复制'));
+    }
+  }
+  if (manage && item.state !== 'archived') {
+    buttons.push(el('button', {
+      class: 'link danger',
+      type: 'button',
+      onclick: () => openArchiveAicd(item),
+    }, '归档'));
+  }
+  return buttons;
+}
+
+const AICD_KIND_OPTIONS = Object.entries(AICD_KIND_LABEL).map(([value, label]) => ({ value, label }));
+
+/** 副本只能更严：编辑与发布时只列不大于当前等级的复制策略。 */
+function copyPolicyOptions(current) {
+  const ceiling = COPY_POLICY_RANK[current] ?? COPY_POLICY_RANK.tenant;
+  return Object.entries(COPY_POLICY_LABEL)
+    .filter(([value]) => COPY_POLICY_RANK[value] <= ceiling)
+    .map(([value, label]) => ({ value, label }));
+}
+
+function aicdFields(item = {}) {
+  return [
+    { name: 'kind', label: '类型', type: 'select', value: item.kind ?? 'experience', options: AICD_KIND_OPTIONS },
+    { name: 'title', label: '标题', value: item.title ?? '', required: true, placeholder: '一句话说明它解决什么问题' },
+    { name: 'summary', label: '摘要', value: item.summary ?? '', placeholder: '列表里展示的一句话' },
+    { name: 'content', label: '正文', type: 'textarea', value: item.content ?? '', required: true },
+    {
+      name: 'conditions',
+      label: '适用条件',
+      type: 'textarea',
+      value: item.conditions ?? '',
+      required: true,
+      placeholder: '什么时候适用、什么时候不要用',
+    },
+    { name: 'tags', label: '标签（逗号分隔）', value: (item.tags ?? []).join('，') },
+    {
+      name: 'copyPolicy',
+      label: '复制策略',
+      type: 'select',
+      value: item.copyPolicy ?? 'tenant',
+      options: copyPolicyOptions(item.copyPolicy ?? 'tenant'),
+    },
+  ];
+}
+
+function aicdBody(values) {
+  return {
+    kind: values.kind,
+    title: values.title,
+    summary: values.summary || undefined,
+    content: values.content,
+    conditions: values.conditions,
+    tags: values.tags.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean),
+    copyPolicy: values.copyPolicy,
+  };
+}
+
+function openCreateAicd() {
+  openDialog({
+    title: '新建 AICD',
+    description: state.tenant?.personal
+      ? '先存成草稿；发布后在个人空间生效，再复制给团队。'
+      : '先存成草稿；提交审核后由你、审核人或管理员发布。',
+    submitLabel: '保存草稿',
+    fields: aicdFields(),
+    onSubmit: (values) => act(
+      () => api('aicds', { body: aicdBody(values) }),
+      '草稿已保存',
+    ),
+  });
+}
+
+function openEditAicd(item) {
+  openDialog({
+    title: '编辑 AICD',
+    description: '草稿与待审核稿可以直接改；复制策略只能收紧。',
+    submitLabel: '保存',
+    fields: aicdFields(item),
+    onSubmit: (values) => act(
+      () => api(`aicds/${item.id}/edit`, { body: aicdBody(values), expectedVersion: item.version }),
+      '已保存',
+    ),
+  });
+}
+
+function openSubmitAicd(item) {
+  openDialog({
+    title: '提交审核',
+    description: '提交后状态变成待审核；发布前还能继续编辑。',
+    submitLabel: '提交审核',
+    fields: [],
+    onSubmit: () => act(
+      () => api(`aicds/${item.id}/submit`, { body: {}, expectedVersion: item.version }),
+      '已提交审核',
+    ),
+  });
+}
+
+function openPublishAicd(item) {
+  const expires = new Date(Date.now() + 365 * 86_400_000).toISOString().slice(0, 10);
+  openDialog({
+    title: '发布 AICD',
+    description: state.tenant?.personal
+      ? '发布后先在个人空间生效，可以再复制给团队。'
+      : '发布后，本团队的智能体能读到这条 AICD。',
+    submitLabel: '发布',
+    fields: [
+      { name: 'expiresAt', label: '有效期至', type: 'date', value: expires, required: true },
+      {
+        name: 'copyPolicy',
+        label: '复制策略',
+        type: 'select',
+        value: item.copyPolicy,
+        options: copyPolicyOptions(item.copyPolicy),
+      },
+    ],
+    onSubmit: (values) => act(
+      () => api(`aicds/${item.id}/publish`, {
+        body: {
+          expiresAt: new Date(`${values.expiresAt}T00:00:00Z`).toISOString(),
+          copyPolicy: values.copyPolicy,
+        },
+      }),
+      '已发布',
+    ),
+  });
+}
+
+function openArchiveAicd(item) {
+  openDialog({
+    title: '归档 AICD',
+    description: '归档后不再出现在常规列表，但版本、来源链与副本都保留。',
+    submitLabel: '归档',
+    fields: [{ name: 'reason', label: '原因', type: 'textarea', placeholder: '可选' }],
+    onSubmit: (values) => act(
+      () => api(`aicds/${item.id}/archive`, {
+        body: { reason: values.reason || undefined },
+        expectedVersion: item.version,
+      }),
+      '已归档',
+    ),
+  });
+}
+
+function openCopyAicd(item) {
+  const personal = Boolean(state.tenant?.personal);
+  const options = personal
+    ? state.tenants
+      .filter((tenant) => !tenant.personal && ['owner', 'admin', 'member'].includes(tenant.role))
+      .map((tenant) => ({ value: tenant.id, label: `${tenant.name}（${TENANT_ROLE_LABEL[tenant.role] ?? tenant.role}）` }))
+    : state.tenant
+      ? [{ value: state.tenant.id, label: `${state.tenant.name}（当前团队）` }]
+      : [];
+  if (!options.length) {
+    toast(personal ? '先加入一个团队，再把个人经验复制过去' : '当前团队不可用', 'error');
+    return;
+  }
+  openDialog({
+    title: '复制 AICD',
+    description: personal
+      ? '复制会在目标团队生成一份独立草稿，来源链保留在原条目上。'
+      : '团队内复制会生成一份独立草稿；团队 AICD 不能带进个人空间。',
+    submitLabel: '复制',
+    fields: [
+      { name: 'targetWorkspace', label: '目标空间', type: 'select', options },
+      {
+        name: 'copyPolicy',
+        label: '副本的复制策略',
+        type: 'select',
+        value: item.copyPolicy,
+        options: copyPolicyOptions(item.copyPolicy),
+      },
+    ],
+    onSubmit: (values) => act(
+      () => api(`aicds/${item.id}/copy`, {
+        body: { targetWorkspace: values.targetWorkspace, copyPolicy: values.copyPolicy },
+        expectedVersion: item.version,
+      }),
+      '已复制为草稿',
+    ),
+  });
+}
+
+function openInviteAicd(item) {
+  openDialog({
+    title: '邀请他人复制',
+    description: '对方接受后，会在其个人空间生成独立草稿；邀请 7 天内有效。',
+    submitLabel: '发出邀请',
+    fields: [
+      { name: 'targetPrincipal', label: '对方主体 ID', required: true, placeholder: '对方的个人空间成员 ID' },
+      { name: 'note', label: '附言', type: 'textarea', placeholder: '可选' },
+    ],
+    onSubmit: (values) => act(
+      () => api(`aicds/${item.id}/invite`, {
+        body: { targetPrincipal: values.targetPrincipal, note: values.note || undefined },
+        expectedVersion: item.version,
+      }),
+      '邀请已发出',
+    ),
+  });
+}
+
+function openAicdDetail(id) {
+  act(async () => {
+    const [item, assets, copies, lineage] = await Promise.all([
+      api(`aicds/${encodeURIComponent(id)}`),
+      api(`aicds/${encodeURIComponent(id)}/assets`).catch(() => []),
+      api(`aicds/${encodeURIComponent(id)}/copies`).catch(() => []),
+      api(`aicds/${encodeURIComponent(id)}/lineage`).catch(() => []),
+    ]);
+    showPanel(
+      item.title || 'AICD',
+      `${AICD_KIND_LABEL[item.kind] ?? item.kind} · v${item.version} · ${EVIDENCE_LABEL[item.evidenceLevel] ?? item.evidenceLevel}`,
+      el('div', { class: 'stack' },
+        el('div', { class: 'row' },
+          toneBadge(AICD_STATE_TONE[item.state] ?? 'muted', AICD_STATE_LABEL[item.state] ?? item.state),
+          toneBadge('muted', COPY_POLICY_LABEL[item.copyPolicy] ?? item.copyPolicy),
+          item.sourceRevoked ? toneBadge('danger', '来源已撤销') : null),
+        item.summary ? el('p', {}, item.summary) : null,
+        el('div', { class: 'result-box' }, item.content),
+        item.conditions ? el('p', { class: 'muted' }, `适用：${item.conditions}`) : null,
+        item.tags?.length ? el('p', { class: 'muted' }, `标签：${item.tags.join('、')}`) : null,
+        el('dl', { class: 'kv' },
+          el('dt', {}, '作者'),
+          el('dd', {}, item.authorName || item.authorId),
+          el('dt', {}, '空间'),
+          el('dd', {}, item.sourceName || item.workspace),
+          el('dt', {}, '更新时间'),
+          el('dd', {}, formatTime(item.updatedAt)),
+          item.expiresAt ? el('dt', {}, '有效期至') : null,
+          item.expiresAt ? el('dd', {}, formatDate(item.expiresAt)) : null,
+          item.archivedAt ? el('dt', {}, '归档时间') : null,
+          item.archivedAt ? el('dd', {}, formatTime(item.archivedAt)) : null),
+        item.copiedFrom
+          ? el('div', { class: 'note' },
+            `复制自 ${item.copiedFrom.authorName || '成员'} 的`
+            + `${item.copiedFrom.personal ? '个人空间' : `团队 ${item.copiedFrom.workspaceName}`}`
+            + ` v${item.copiedFrom.version}`)
+          : null,
+        item.sourceRevoked
+          ? el('div', { class: 'note warn' },
+            '来源已被撤销。这份副本仍然可用，但引用前请先复核内容是否仍然成立。')
+          : null,
+        lineage.length
+          ? el('div', {},
+            el('div', { class: 'section-title muted' }, '来源链'),
+            el('div', { class: 'list' }, lineage.map((entry) =>
+              el('div', { class: 'list-item static' },
+                el('p', { class: 'title' }, entry.title || entry.id),
+                el('div', { class: 'meta' },
+                  el('span', {}, entry.workspaceName),
+                  el('span', {}, `v${entry.version}`),
+                  el('span', {}, AICD_STATE_LABEL[entry.state] ?? entry.state),
+                  el('span', {}, formatTime(entry.copiedAt)))))))
+          : null,
+        copies.length
+          ? el('div', {},
+            el('div', { class: 'section-title muted' }, '副本去向'),
+            el('div', { class: 'list' }, copies.map((copy) =>
+              el('div', { class: 'list-item static' },
+                el('p', { class: 'title' }, copy.workspaceName),
+                el('div', { class: 'meta' },
+                  el('span', {}, copy.personal ? '个人空间' : '团队空间'),
+                  el('span', {}, AICD_STATE_LABEL[copy.state] ?? copy.state),
+                  el('span', {}, formatTime(copy.copiedAt)))))))
+          : null,
+        assets.length
+          ? el('div', {},
+            el('div', { class: 'section-title muted' }, '证据附件'),
+            el('div', { class: 'list' }, assets.map((asset) =>
+              el('div', { class: 'list-item static' },
+                el('div', { class: 'row spread' },
+                  el('span', {}, asset.name),
+                  el('button', {
+                    class: 'link',
+                    type: 'button',
+                    onclick: () => downloadSpaceFile(asset.taskId, asset),
+                  }, '下载')),
+                el('div', { class: 'meta' },
+                  el('span', {}, asset.role === 'evidence' ? '证据' : '附件'),
+                  el('span', {}, formatBytes(asset.size)),
+                  el('span', { class: 'mono muted' }, asset.sha256.slice(0, 12)))))))
+          : null),
+    );
+  }, '');
+}
+
+function renderAicdInvites() {
+  if (!state.aicdInvites.length) {
+    return el('div', { class: 'empty' }, '没有复制邀请。别人把 AICD 复制给你时，会先在这里等你接受。');
+  }
+  const personal = Boolean(state.tenant?.personal);
+  return el('div', { class: 'list' }, state.aicdInvites.map((invite) => {
+    const pending = invite.status === 'pending';
+    return el('div', { class: 'list-item static' },
+      el('div', { class: 'row spread top' },
+        el('div', { style: 'min-width:0' },
+          el('p', { class: 'title' }, invite.title || invite.knowledgeId),
+          invite.summary ? el('p', { class: 'muted small' }, invite.summary) : null),
+        toneBadge(pending ? 'warn' : 'muted',
+          pending ? '待接受' : invite.status === 'accepted' ? '已接受' : invite.status === 'declined' ? '已拒绝' : '已过期')),
+      el('div', { class: 'meta' },
+        el('span', {}, `来自 ${invite.fromName || invite.fromPrincipal}`),
+        invite.sourceName ? el('span', {}, `来源 ${invite.sourceName}`) : null,
+        el('span', {}, `v${invite.version}`),
+        el('span', {}, `有效至 ${formatDate(invite.expiresAt)}`)),
+      invite.note ? el('p', { class: 'muted' }, invite.note) : null,
+      pending
+        ? el('div', { class: 'row actions-row' },
+          !personal ? el('span', { class: 'muted small' }, '接受前请切换到个人空间') : null,
+          el('button', {
+            class: 'primary',
+            type: 'button',
+            onclick: () => act(
+              () => api(`me/copy-invites/${invite.id}/accept`, { body: {} }),
+              '已复制到个人空间',
+            ),
+          }, '接受'),
+          el('button', {
+            class: 'link',
+            type: 'button',
+            onclick: () => act(
+              () => api(`me/copy-invites/${invite.id}/decline`, { body: {} }),
+              '已拒绝',
+            ),
+          }, '拒绝'))
+        : null);
+  }));
+}
+
 
 function tabButton(id, label) {
   return el('button', {

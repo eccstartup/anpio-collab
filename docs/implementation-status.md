@@ -1,10 +1,28 @@
 # 实现状态
 
-对照 [plan.md](../plan.md)、[第二轮计划](plan-v2.md)、[第三轮计划](plan-v3.md) 与 [第四轮计划](plan-v4.md)，说明本仓库现在做到了什么、哪些只是本机验证、哪些还没开始。
+对照 [plan.md](../plan.md)、[第二轮计划](plan-v2.md)、[第三轮计划](plan-v3.md)、[第四轮计划](plan-v4.md) 与 [第五轮计划](plan-v5.md)，说明本仓库现在做到了什么、哪些只是本机验证、哪些还没开始。
 
-> 结论先行：**阶段 1（本地协作闭环）、阶段 3（知识闭环）已实现；第二轮的身份、协作、监管三块已实现；第三轮的租户、两种登录与 Agent 授权已实现；第四轮补上"登录后补绑 DID"；第五轮把 DID 准入改成"必须已注册"，并补上反向绑邮箱；上一轮加个人资料；本轮把任务改成"交材料让智能体去做"，并允许受派智能体自提交候选经验。阶段 4/5 未开始。** 通过本机测试不等于企业环境验收。
+> 结论先行：**阶段 1（本地协作闭环）、阶段 3（知识闭环）已实现；第二轮的身份、协作、监管三块已实现；第三轮的租户、两种登录与 Agent 授权已实现；第四轮补上"登录后补绑 DID"；第五轮把 DID 准入改成"必须已注册"，并补上反向绑邮箱；再上一轮加个人资料；上一轮把任务改成"交材料让智能体去做"，并允许受派智能体自提交候选经验；本轮完成第五轮计划的第一阶段——手动 AICD 生命周期、复制与来源链、任务房间。第五轮第二至四阶段（对象存储、检索/交接包、语义检索）未开始。** 通过本机测试不等于企业环境验收。
 
-## 任务材料与智能体经验自提交（本轮）
+## AICD 与任务房间（本轮）
+
+| 能力 | 实现位置 | 验证方式 |
+| --- | --- | --- |
+| schema v7：`knowledge` 增 `kind/title/summary/tags/source/evidence_level/copy_policy/archived_at`，`task_id` 可空；新增 `knowledge_lineage`、`knowledge_copy_invites`、`knowledge_assets`、`task_threads`、`space_files`；`task_comments` 增 `kind/thread_id/reply_to/payload`；旧 `task_materials` 回填进 `space_files` | `db/schema.ts` | `tests/aicd.test.ts` + 迁移用例；SQLite 与 PostgreSQL 各跑一遍 |
+| 手动 AICD：草稿、编辑、提交审核、发布（有效期 + 复制策略）、修订、归档、撤销、详情/列表、附件绑定（证据/参考） | `knowledge.ts`、`routes.ts` | 同上（草稿可编辑、缺有效期 400、归档后列表隐藏） |
+| 发布权留在人手里：智能体只能提交候选，创建、发布、撤销一律 403 | `knowledge.ts`、`access.ts` | 同上 |
+| 复制到团队：直接生成独立 `draft`，保留来源链，复制策略继承且只能收紧；团队 AICD 不能带进个人空间 | `knowledge.ts#copy` | 同上（`copiedFrom` 带空间名与版本、放宽策略 400、团队外复制 403） |
+| 复制给他人：7 天邀请—接受，对方接受后才落库；拒绝与过期由邀请状态体现 | `knowledge.ts#invite/accept/decline` | 同上（直接塞副本 403、接受后生成草稿） |
+| 来源治理：`lineage` / `copies` / `copiedFrom`、来源撤销后副本保留但提示复核 | `knowledge.ts`、`app.js` | 同上（撤销后 `sourceRevoked=true`） |
+| 任务房间：概览、线程（可解决）、带类型消息（question/answer/decision/handoff/status）、文件上传/下载/软删除/挂到 AICD、进展/消息/文件/AICD 合并时间线并按类型过滤 | `collab.ts`、`routes.ts`、`app.js` | `tests/aicd.test.ts` 房间用例 + 手工 |
+| 权限：团队任务对真人成员可见、访客 403；智能体仍按子任务与 grant 范围；房间按任务工作空间隔离 | `access.ts`、`collab.ts` | 同上 |
+| 控制台：AICD 分区（列表、详情、复制、来源链、邀请接受/拒绝）、任务「房间」页 | `src/web/app.js`、`app.css` | `tests/web.test.ts` 结构断言 + 手工 |
+
+测试合计 117 项（本轮新增 `tests/aicd.test.ts` 5 项：生命周期与权限、团队复制矩阵、邀请复制与来源撤销、房间合并时间线、团队任务可见性）。SQLite 与 PostgreSQL 跑同一套用例。
+
+第一阶段边界：手动 AICD 的附件只能从任务产出文件里挑（`space_files.task_id` 非空），AICD 侧独立上传与对象存储留到第二阶段；时间线过滤在前端完成，房间仍靠轮询刷新。
+
+## 任务材料与智能体经验自提交（上一轮）
 
 | 能力 | 实现位置 | 验证方式 |
 | --- | --- | --- |

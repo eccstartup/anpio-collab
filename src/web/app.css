@@ -717,6 +717,12 @@ label.field input[type="file"] {
   margin-top: 2px;
 }
 
+.actions-row button[aria-current="true"] {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
 .dot {
   width: 6px;
   height: 6px;

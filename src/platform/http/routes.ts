@@ -609,6 +609,101 @@ export const routes: Route[] = [
   },
   {
     method: 'POST',
+    path: '/v1/tasks/:id/messages',
+    description: '发送房间消息（类型、线程、回复与附件）',
+    write: {
+      execute: async ({ app, principal, params, body }) =>
+        app.collab.addComment(principal, params.id ?? '', body),
+    },
+  },
+  {
+    method: 'GET',
+    path: '/v1/tasks/:id/messages',
+    description: '房间消息，可按线程过滤',
+    read: async ({ app, principal, params, query }) =>
+      app.collab.listComments(principal, params.id ?? '', {
+        threadId: query.get('threadId') ?? undefined,
+        limit: asInteger(Number(query.get('limit') ?? 500), 'limit', { min: 1, max: 500 }),
+      }),
+  },
+  {
+    method: 'GET',
+    path: '/v1/tasks/:id/room',
+    description: '任务房间：进展、对话、文件与 AICD 合并时间线',
+    read: async ({ app, principal, params }) => app.collab.room(principal, params.id ?? ''),
+  },
+  {
+    method: 'GET',
+    path: '/v1/tasks/:id/threads',
+    description: '任务下的对话线程',
+    read: async ({ app, principal, params }) => app.collab.listThreads(principal, params.id ?? ''),
+  },
+  {
+    method: 'POST',
+    path: '/v1/tasks/:id/threads',
+    description: '开启一个对话线程',
+    write: {
+      execute: async ({ app, principal, params, body }) =>
+        app.collab.openThread(principal, params.id ?? '', body),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/tasks/:id/threads/:threadId/resolve',
+    description: '结束线程',
+    write: {
+      execute: async ({ app, principal, params }) =>
+        app.collab.resolveThread(principal, params.id ?? '', params.threadId ?? ''),
+    },
+  },
+  {
+    method: 'GET',
+    path: '/v1/tasks/:id/files',
+    description: '任务空间文件列表',
+    read: async ({ app, principal, params }) => app.collab.listFiles(principal, params.id ?? ''),
+  },
+  {
+    method: 'POST',
+    path: '/v1/tasks/:id/files',
+    description: '上传文件（≤256 KiB 内联，base64）',
+    write: {
+      execute: async ({ app, principal, params, body }) =>
+        app.collab.uploadFile(principal, params.id ?? '', body),
+    },
+  },
+  {
+    method: 'GET',
+    path: '/v1/tasks/:id/files/:fileId',
+    description: '下载文件内容（base64）',
+    read: async ({ app, principal, params }) =>
+      app.collab.downloadFile(principal, params.id ?? '', params.fileId ?? ''),
+  },
+  {
+    method: 'POST',
+    path: '/v1/tasks/:id/files/:fileId/delete',
+    description: '软删除文件',
+    write: {
+      execute: async ({ app, principal, params }) =>
+        app.collab.deleteFile(principal, params.id ?? '', params.fileId ?? ''),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/tasks/:id/files/:fileId/promote',
+    description: '把成果文件提升为 AICD 证据附件',
+    write: {
+      execute: async ({ app, principal, params, body }) => {
+        const input = asObject(body);
+        const knowledgeId = asString(input.knowledgeId, 'knowledgeId', { max: 128 });
+        return app.knowledge.attachAsset(principal, knowledgeId, {
+          fileId: params.fileId ?? '',
+          role: input.role,
+        });
+      },
+    },
+  },
+  {
+    method: 'POST',
     path: '/v1/tasks/:id/offers',
     description: '发布开放子任务，等待能力匹配的智能体认领',
     write: {
@@ -849,6 +944,156 @@ export const routes: Route[] = [
     write: {
       execute: async ({ app, principal, params, body }) =>
         app.knowledge.setShares(principal, params.id ?? '', body),
+    },
+  },
+
+  // ------------------------------------------------------------ AICD（手动发布与管理）
+  {
+    method: 'GET',
+    path: '/v1/aicds',
+    description: 'AICD 列表：本人稿、团队已发布稿与审核人可见的全部状态',
+    read: async ({ app, principal, query }) =>
+      app.knowledge.listAicds(principal, {
+        state: query.get('state') ?? undefined,
+        kind: query.get('kind') ?? undefined,
+        query: parseQuery(query),
+        limit: parseLimit(query, 100),
+      }),
+  },
+  {
+    method: 'POST',
+    path: '/v1/aicds',
+    description: '新建 AICD 草稿（真人，可关联任务）',
+    write: {
+      execute: async ({ app, principal, body }) => app.knowledge.create(principal, body),
+    },
+  },
+  {
+    method: 'GET',
+    path: '/v1/aicds/:id',
+    description: 'AICD 详情（含来源与复制关系）',
+    read: async ({ app, principal, params }) => app.knowledge.detail(principal, params.id ?? ''),
+  },
+  {
+    method: 'POST',
+    path: '/v1/aicds/:id/edit',
+    description: '编辑草稿或候选稿',
+    write: {
+      authorize: async ctx => ({
+        version: (await ctx.app.knowledge.detail(ctx.principal, ctx.params.id ?? '')).version,
+      }),
+      execute: async ({ app, principal, params, body }) =>
+        app.knowledge.updateDraft(principal, params.id ?? '', body),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/aicds/:id/submit',
+    description: '提交审核：draft → candidate',
+    write: {
+      authorize: async ctx => ({
+        version: (await ctx.app.knowledge.detail(ctx.principal, ctx.params.id ?? '')).version,
+      }),
+      execute: async ({ app, principal, params }) => app.knowledge.submit(principal, params.id ?? ''),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/aicds/:id/publish',
+    description: '发布 AICD（个人空间本人；团队需审核人或管理员）',
+    write: {
+      execute: async ({ app, principal, params, body }) =>
+        app.knowledge.publish(principal, params.id ?? '', body),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/aicds/:id/archive',
+    description: '归档 AICD',
+    write: {
+      authorize: async ctx => ({
+        version: (await ctx.app.knowledge.detail(ctx.principal, ctx.params.id ?? '')).version,
+      }),
+      execute: async ({ app, principal, params, body }) =>
+        app.knowledge.archive(principal, params.id ?? '', body),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/aicds/:id/copy',
+    description: '复制到自己的空间、所在团队，或发起跨个人空间邀请',
+    write: {
+      authorize: async ctx => ({
+        version: (await ctx.app.knowledge.detail(ctx.principal, ctx.params.id ?? '')).version,
+      }),
+      execute: async ({ app, principal, params, body }) => app.knowledge.copy(principal, params.id ?? '', body),
+    },
+  },
+  {
+    method: 'GET',
+    path: '/v1/aicds/:id/copies',
+    description: '该 AICD 的复制去向',
+    read: async ({ app, principal, params }) => app.knowledge.copies(principal, params.id ?? ''),
+  },
+  {
+    method: 'GET',
+    path: '/v1/aicds/:id/lineage',
+    description: '来源链（最近 20 代）',
+    read: async ({ app, principal, params }) => app.knowledge.lineage(principal, params.id ?? ''),
+  },
+  {
+    method: 'POST',
+    path: '/v1/aicds/:id/invite',
+    description: '邀请他人复制到其个人空间',
+    write: {
+      authorize: async ctx => ({
+        version: (await ctx.app.knowledge.detail(ctx.principal, ctx.params.id ?? '')).version,
+      }),
+      execute: async ({ app, principal, params, body }) =>
+        app.knowledge.inviteCopy(principal, params.id ?? '', body),
+    },
+  },
+  {
+    method: 'GET',
+    path: '/v1/aicds/:id/assets',
+    description: 'AICD 证据附件',
+    read: async ({ app, principal, params }) => app.knowledge.assets(principal, params.id ?? ''),
+  },
+  {
+    method: 'POST',
+    path: '/v1/aicds/:id/assets',
+    description: '把同团队成果文件挂为证据',
+    write: {
+      authorize: async ctx => ({
+        version: (await ctx.app.knowledge.detail(ctx.principal, ctx.params.id ?? '')).version,
+      }),
+      execute: async ({ app, principal, params, body }) =>
+        app.knowledge.attachAsset(principal, params.id ?? '', body),
+    },
+  },
+  {
+    method: 'GET',
+    path: '/v1/me/copy-invites',
+    description: '复制邀请（默认收到的待处理）',
+    read: async ({ app, principal, query }) => {
+      const direction = query.get('direction') === 'outgoing' ? 'outgoing' : 'incoming';
+      return app.knowledge.copyInvites(principal, direction);
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/me/copy-invites/:id/accept',
+    description: '接受复制邀请，生成独立草稿',
+    write: {
+      execute: async ({ app, principal, params }) => app.knowledge.acceptInvite(principal, params.id ?? ''),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/me/copy-invites/:id/decline',
+    description: '拒绝复制邀请',
+    write: {
+      execute: async ({ app, principal, params }) => app.knowledge.declineInvite(principal, params.id ?? ''),
     },
   },
 

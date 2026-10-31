@@ -15,9 +15,69 @@
  * 因此 `ensureColumns` 在事务外查现有列，事务内只做 CREATE 与 ALTER。
  */
 
+import { createHash } from 'node:crypto';
+
 import type { Database, Queryable } from './driver.ts';
 
 const MIGRATION_LOCK = 190106;
+
+/**
+ * knowledge 的完整结构。
+ *
+ * v7 把 `task_id` 放宽为可空（手动 AICD 不绑任务），SQLite 只能靠重建表
+ * 才能去掉 NOT NULL，所以这份 DDL 同时服务新库与重建路径，避免两处漂移。
+ */
+const KNOWLEDGE_TABLE = `CREATE TABLE IF NOT EXISTS knowledge (
+      id TEXT PRIMARY KEY,
+      workspace TEXT NOT NULL,
+      task_id TEXT REFERENCES tasks(id),
+      content TEXT NOT NULL,
+      conditions TEXT NOT NULL,
+      state TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      author_id TEXT NOT NULL,
+      reviewer_id TEXT,
+      expires_at TEXT,
+      access_mode TEXT NOT NULL DEFAULT 'restricted',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      kind TEXT NOT NULL DEFAULT 'experience',
+      title TEXT NOT NULL DEFAULT '',
+      summary TEXT NOT NULL DEFAULT '',
+      tags TEXT NOT NULL DEFAULT '[]',
+      source TEXT NOT NULL DEFAULT 'task',
+      evidence_level TEXT NOT NULL DEFAULT 'task_verified',
+      copy_policy TEXT NOT NULL DEFAULT 'team',
+      archived_at TEXT
+    )`;
+
+const KNOWLEDGE_INDEXES = [
+  'CREATE INDEX IF NOT EXISTS knowledge_workspace_state ON knowledge(workspace, state, expires_at)',
+];
+
+/**
+ * 依赖 v7 新列的索引必须等补列之后再做：升级库里这些列此刻还不存在，
+ * 提前执行会让整次迁移失败。
+ */
+const POST_COLUMN_STATEMENTS = [
+  'CREATE INDEX IF NOT EXISTS knowledge_workspace_kind ON knowledge(workspace, kind, updated_at DESC)',
+  'CREATE INDEX IF NOT EXISTS task_comments_thread ON task_comments(thread_id, created_at)',
+];
+
+/** 重建 knowledge 时，从更老的库读缺失列所用的默认值。 */
+const LEGACY_KNOWLEDGE_DEFAULTS: Record<string, string> = {
+  reviewer_id: 'NULL',
+  expires_at: 'NULL',
+  access_mode: "'restricted'",
+  kind: "'experience'",
+  title: "''",
+  summary: "''",
+  tags: "'[]'",
+  source: "'task'",
+  evidence_level: "'task_verified'",
+  copy_policy: "'team'",
+  archived_at: 'NULL',
+};
 
 function statements(dialect: 'sqlite' | 'postgres'): string[] {
   const seq = dialect === 'postgres' ? 'BIGSERIAL PRIMARY KEY' : 'INTEGER PRIMARY KEY AUTOINCREMENT';
@@ -152,23 +212,9 @@ function statements(dialect: 'sqlite' | 'postgres'): string[] {
     )`,
     `CREATE INDEX IF NOT EXISTS operations_created ON operations(created_at)`,
 
-    // ---- 知识 ----
-    `CREATE TABLE IF NOT EXISTS knowledge (
-      id TEXT PRIMARY KEY,
-      workspace TEXT NOT NULL,
-      task_id TEXT NOT NULL REFERENCES tasks(id),
-      content TEXT NOT NULL,
-      conditions TEXT NOT NULL,
-      state TEXT NOT NULL,
-      version INTEGER NOT NULL,
-      author_id TEXT NOT NULL,
-      reviewer_id TEXT,
-      expires_at TEXT,
-      access_mode TEXT NOT NULL DEFAULT 'restricted',
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    )`,
-    `CREATE INDEX IF NOT EXISTS knowledge_workspace_state ON knowledge(workspace, state, expires_at)`,
+    // ---- 知识 / AICD ----
+    KNOWLEDGE_TABLE,
+    ...KNOWLEDGE_INDEXES,
 
     `CREATE TABLE IF NOT EXISTS knowledge_versions (
       knowledge_id TEXT NOT NULL REFERENCES knowledge(id),
@@ -178,6 +224,9 @@ function statements(dialect: 'sqlite' | 'postgres'): string[] {
       reviewer_id TEXT NOT NULL,
       expires_at TEXT NOT NULL,
       published_at TEXT NOT NULL,
+      title TEXT NOT NULL DEFAULT '',
+      summary TEXT NOT NULL DEFAULT '',
+      tags TEXT NOT NULL DEFAULT '[]',
       PRIMARY KEY (knowledge_id, version)
     )`,
 
@@ -277,7 +326,12 @@ function statements(dialect: 'sqlite' | 'postgres'): string[] {
       author_id TEXT NOT NULL REFERENCES principals(id),
       body TEXT NOT NULL,
       mentions TEXT NOT NULL DEFAULT '[]',
-      created_at TEXT NOT NULL
+      created_at TEXT NOT NULL,
+      kind TEXT NOT NULL DEFAULT 'comment',
+      thread_id TEXT,
+      reply_to TEXT,
+      payload TEXT NOT NULL DEFAULT '{}',
+      edited_at TEXT
     )`,
     `CREATE INDEX IF NOT EXISTS task_comments_task ON task_comments(task_id, created_at)`,
 
@@ -474,6 +528,111 @@ function statements(dialect: 'sqlite' | 'postgres'): string[] {
       created_at TEXT NOT NULL
     )`,
     `CREATE INDEX IF NOT EXISTS mail_outbox_to ON mail_outbox(to_email, created_at DESC)`,
+
+    // ---- v7：任务房间 ----
+    // 线程是房间里的一等对象；消息仍落在 task_comments，靠 thread_id 归档。
+    `CREATE TABLE IF NOT EXISTS task_threads (
+      id TEXT PRIMARY KEY,
+      workspace TEXT NOT NULL,
+      task_id TEXT NOT NULL REFERENCES tasks(id),
+      topic TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open',
+      opened_by TEXT NOT NULL REFERENCES principals(id),
+      assignee_id TEXT,
+      created_at TEXT NOT NULL,
+      resolved_at TEXT
+    )`,
+    `CREATE INDEX IF NOT EXISTS task_threads_open ON task_threads(task_id, status, created_at DESC)`,
+
+    // 团队空间文件。第一阶段一律内联存 base64；第二阶段把 storage 切到 fs/s3，
+    // 接口不变。sha256 现在只用于校验与展示，字节去重留给对象存储。
+    `CREATE TABLE IF NOT EXISTS space_files (
+      id TEXT PRIMARY KEY,
+      workspace TEXT NOT NULL,
+      task_id TEXT NOT NULL REFERENCES tasks(id),
+      subtask_id TEXT REFERENCES subtasks(id),
+      message_id TEXT REFERENCES task_comments(id),
+      name TEXT NOT NULL,
+      mime TEXT NOT NULL,
+      size INTEGER NOT NULL,
+      sha256 TEXT NOT NULL,
+      storage TEXT NOT NULL DEFAULT 'inline',
+      object_key TEXT NOT NULL,
+      data TEXT,
+      kind TEXT NOT NULL DEFAULT 'intermediate',
+      version INTEGER NOT NULL DEFAULT 1,
+      supersedes_id TEXT,
+      produced_by TEXT NOT NULL REFERENCES principals(id),
+      source TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'ready',
+      created_at TEXT NOT NULL,
+      deleted_at TEXT
+    )`,
+    `CREATE INDEX IF NOT EXISTS space_files_task ON space_files(task_id, created_at DESC, id)`,
+    `CREATE INDEX IF NOT EXISTS space_files_hash ON space_files(workspace, sha256)`,
+
+    `CREATE TABLE IF NOT EXISTS knowledge_assets (
+      id TEXT PRIMARY KEY,
+      knowledge_id TEXT NOT NULL REFERENCES knowledge(id),
+      file_id TEXT NOT NULL REFERENCES space_files(id),
+      role TEXT NOT NULL DEFAULT 'evidence',
+      created_at TEXT NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS knowledge_assets_file ON knowledge_assets(file_id)`,
+    `CREATE INDEX IF NOT EXISTS knowledge_assets_target ON knowledge_assets(knowledge_id, created_at)`,
+
+    `CREATE TABLE IF NOT EXISTS knowledge_usage (
+      knowledge_id TEXT NOT NULL REFERENCES knowledge(id),
+      task_id TEXT NOT NULL REFERENCES tasks(id),
+      version INTEGER NOT NULL,
+      used_at TEXT NOT NULL,
+      PRIMARY KEY (knowledge_id, task_id, version)
+    )`,
+
+    // 复制来源链：child 是副本，parent 是被复制的那一版。
+    `CREATE TABLE IF NOT EXISTS knowledge_lineage (
+      child_id TEXT PRIMARY KEY REFERENCES knowledge(id),
+      parent_id TEXT NOT NULL REFERENCES knowledge(id),
+      parent_version INTEGER NOT NULL,
+      root_id TEXT NOT NULL REFERENCES knowledge(id),
+      source_workspace TEXT NOT NULL,
+      target_workspace TEXT NOT NULL,
+      copied_by TEXT NOT NULL REFERENCES principals(id),
+      copied_at TEXT NOT NULL,
+      include_assets INTEGER NOT NULL DEFAULT 1
+    )`,
+    `CREATE INDEX IF NOT EXISTS knowledge_lineage_parent ON knowledge_lineage(parent_id, parent_version)`,
+
+    // 复制给他人：对方接受后才真正落库。
+    `CREATE TABLE IF NOT EXISTS knowledge_copy_invites (
+      id TEXT PRIMARY KEY,
+      knowledge_id TEXT NOT NULL REFERENCES knowledge(id),
+      version INTEGER NOT NULL,
+      from_principal TEXT NOT NULL REFERENCES principals(id),
+      target_principal TEXT NOT NULL REFERENCES principals(id),
+      target_workspace TEXT NOT NULL REFERENCES tenants(id),
+      note TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'pending',
+      accepted_knowledge_id TEXT REFERENCES knowledge(id),
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      resolved_at TEXT
+    )`,
+    `CREATE INDEX IF NOT EXISTS knowledge_copy_invites_target
+       ON knowledge_copy_invites(target_principal, status, created_at)`,
+
+    // AICD 审计：手动 AICD 没有任务事件流，动作单独记在这里。
+    `CREATE TABLE IF NOT EXISTS knowledge_events (
+      seq ${seq},
+      id TEXT NOT NULL UNIQUE,
+      workspace TEXT NOT NULL,
+      knowledge_id TEXT NOT NULL REFERENCES knowledge(id),
+      actor_id TEXT NOT NULL,
+      action TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      recorded_at TEXT NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS knowledge_events_target ON knowledge_events(knowledge_id, seq)`,
   ];
 }
 
@@ -493,9 +652,27 @@ const ADDED_COLUMNS: { table: string; column: string; definition: string }[] = [
   { table: 'accounts', column: 'avatar', definition: "TEXT NOT NULL DEFAULT ''" },
   { table: 'accounts', column: 'title', definition: "TEXT NOT NULL DEFAULT ''" },
   { table: 'accounts', column: 'bio', definition: "TEXT NOT NULL DEFAULT ''" },
+  // v7 AICD：旧知识条目一律视为来自任务验收的经验。
+  { table: 'knowledge', column: 'kind', definition: "TEXT NOT NULL DEFAULT 'experience'" },
+  { table: 'knowledge', column: 'title', definition: "TEXT NOT NULL DEFAULT ''" },
+  { table: 'knowledge', column: 'summary', definition: "TEXT NOT NULL DEFAULT ''" },
+  { table: 'knowledge', column: 'tags', definition: "TEXT NOT NULL DEFAULT '[]'" },
+  { table: 'knowledge', column: 'source', definition: "TEXT NOT NULL DEFAULT 'task'" },
+  { table: 'knowledge', column: 'evidence_level', definition: "TEXT NOT NULL DEFAULT 'task_verified'" },
+  { table: 'knowledge', column: 'copy_policy', definition: "TEXT NOT NULL DEFAULT 'team'" },
+  { table: 'knowledge', column: 'archived_at', definition: 'TEXT' },
+  { table: 'knowledge_versions', column: 'title', definition: "TEXT NOT NULL DEFAULT ''" },
+  { table: 'knowledge_versions', column: 'summary', definition: "TEXT NOT NULL DEFAULT ''" },
+  { table: 'knowledge_versions', column: 'tags', definition: "TEXT NOT NULL DEFAULT '[]'" },
+  // v7 任务房间：评论带类型与线程，才能承载提问、交接与决定。
+  { table: 'task_comments', column: 'kind', definition: "TEXT NOT NULL DEFAULT 'comment'" },
+  { table: 'task_comments', column: 'thread_id', definition: 'TEXT' },
+  { table: 'task_comments', column: 'reply_to', definition: 'TEXT' },
+  { table: 'task_comments', column: 'payload', definition: "TEXT NOT NULL DEFAULT '{}'" },
+  { table: 'task_comments', column: 'edited_at', definition: 'TEXT' },
 ];
 
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 async function existingColumns(db: Database, table: string): Promise<Set<string> | null> {
   try {
@@ -526,6 +703,104 @@ async function existingColumns(db: Database, table: string): Promise<Set<string>
 }
 
 /**
+ * SQLite 不支持 `ALTER COLUMN ... DROP NOT NULL`，只能重建 knowledge。
+ * 返回 true 表示老表把 task_id 钉死了，或者干脆没有这一列。
+ */
+async function sqliteNeedsKnowledgeRebuild(db: Database): Promise<boolean> {
+  const rows = await db.read.all<{ name: string; notnull: number }>('PRAGMA table_info(knowledge)');
+  if (rows.length === 0) return false;
+  const taskId = rows.find(row => String(row.name) === 'task_id');
+  return !taskId || Number(taskId.notnull) === 1;
+}
+
+/**
+ * 重建时子表（versions / grants / refs / shares / assets）的 FK 仍指向
+ * `knowledge`。legacy_alter_table 让 RENAME 不重写这些引用，foreign_keys=OFF
+ * 让 DROP 旧表不触发级联删除。两个 PRAGMA 都必须在事务外设置。
+ */
+async function rebuildSqliteKnowledge(tx: Queryable): Promise<void> {
+  const columns = new Set(
+    (await tx.all<{ name: string }>('PRAGMA table_info(knowledge)')).map(row => String(row.name)),
+  );
+  const target = [
+    'id',
+    'workspace',
+    'task_id',
+    'content',
+    'conditions',
+    'state',
+    'version',
+    'author_id',
+    'reviewer_id',
+    'expires_at',
+    'access_mode',
+    'created_at',
+    'updated_at',
+    'kind',
+    'title',
+    'summary',
+    'tags',
+    'source',
+    'evidence_level',
+    'copy_policy',
+    'archived_at',
+  ];
+  const values = target.map(column =>
+    columns.has(column) ? column : (LEGACY_KNOWLEDGE_DEFAULTS[column] ?? 'NULL'),
+  );
+  await tx.run('ALTER TABLE knowledge RENAME TO knowledge_v6_rebuild');
+  await tx.run(KNOWLEDGE_TABLE);
+  await tx.run(
+    `INSERT INTO knowledge (${target.join(', ')}) SELECT ${values.join(', ')} FROM knowledge_v6_rebuild`,
+  );
+  await tx.run('DROP TABLE knowledge_v6_rebuild');
+  for (const statement of KNOWLEDGE_INDEXES) await tx.run(statement);
+}
+
+async function postgresTaskIdNullable(db: Database): Promise<boolean> {
+  const row = await db.read.one<{ is_nullable: string }>(
+    `SELECT is_nullable FROM information_schema.columns
+     WHERE table_schema = current_schema() AND table_name = 'knowledge' AND column_name = 'task_id'`,
+  );
+  return !row || String(row.is_nullable) === 'YES';
+}
+
+/** v7 回填：把旧 task_materials 搬进 space_files，字节不丢、来源可追。 */
+async function backfillSpaceFiles(tx: Queryable): Promise<void> {
+  const rows = await tx.all<Record<string, unknown>>(
+    `SELECT m.*, t.workspace AS workspace FROM task_materials m JOIN tasks t ON t.id = m.task_id`,
+  );
+  for (const row of rows) {
+    const id = `sf_${String(row.id)}`;
+    const exists = await tx.one('SELECT 1 AS present FROM space_files WHERE id = :id', { id });
+    if (exists) continue;
+    const data = String(row.data ?? '');
+    const sha256 = createHash('sha256').update(Buffer.from(data, 'base64')).digest('hex');
+    await tx.run(
+      `INSERT INTO space_files(id, workspace, task_id, subtask_id, message_id, name, mime, size, sha256,
+                               storage, object_key, data, kind, version, supersedes_id, produced_by,
+                               source, status, created_at, deleted_at)
+       VALUES(:id, :workspace, :taskId, NULL, NULL, :name, :mime, :size, :sha256,
+              'inline', :objectKey, :data, 'input', 1, NULL, :producedBy,
+              'human_upload', 'ready', :createdAt, NULL)`,
+      {
+        id,
+        workspace: String(row.workspace),
+        taskId: String(row.task_id),
+        name: String(row.name),
+        mime: String(row.mime),
+        size: Number(row.size),
+        sha256,
+        objectKey: `inline:${sha256}`,
+        data,
+        producedBy: String(row.uploaded_by),
+        createdAt: String(row.created_at),
+      },
+    );
+  }
+}
+
+/**
  * 建表并记录版本。整个 DDL 在一个事务里完成：PostgreSQL 用咨询锁避免
  * 多实例同时迁移，SQLite 由驱动的写互斥量保证串行。
  */
@@ -538,56 +813,88 @@ export async function migrate(db: Database, now: () => string): Promise<void> {
     // 表不存在时 CREATE 语句会带上该列；只有升级既有库才需要 ALTER。
     if (columns && !columns.has(item.column)) pending.push(item);
   }
+  const rebuildKnowledge = db.dialect === 'sqlite' && (await sqliteNeedsKnowledgeRebuild(db));
+  const dropNotNull = db.dialect === 'postgres' && !(await postgresTaskIdNullable(db));
 
-  await db.transaction(async (tx: Queryable) => {
-    if (db.dialect === 'postgres') {
-      await tx.one('SELECT pg_advisory_xact_lock(:key) AS locked', { key: MIGRATION_LOCK });
-    }
-    for (const statement of list) {
-      await tx.run(statement);
-    }
-    for (const item of pending) {
-      await tx.run(`ALTER TABLE ${item.table} ADD COLUMN ${item.column} ${item.definition}`);
-    }
-    // v3 升级回填：老库没有 tenant_role，默认值 'member' 会让原来的管理员
-    // 突然管不了成员。按既有能力角色把管理员补回来；每个租户保证有一个所有者。
-    await tx.run(
-      `UPDATE principals SET tenant_role = 'admin'
-       WHERE tenant_role = 'member' AND roles LIKE '%"admin"%'`,
-    );
-    const orphans = await tx.all<{ workspace: string }>(
-      `SELECT workspace FROM principals
-       WHERE active = 1
-       GROUP BY workspace
-       HAVING SUM(CASE WHEN tenant_role = 'owner' THEN 1 ELSE 0 END) = 0`,
-    );
-    for (const orphan of orphans) {
-      const candidate = await tx.one<{ id: string }>(
-        `SELECT id FROM principals
-         WHERE workspace = :workspace AND active = 1
-         ORDER BY CASE WHEN roles LIKE '%"admin"%' THEN 0 ELSE 1 END, created_at, id
-         LIMIT 1`,
-        { workspace: String(orphan.workspace) },
+  if (db.dialect === 'sqlite') {
+    await db.exec('PRAGMA legacy_alter_table=ON; PRAGMA foreign_keys=OFF');
+  }
+  try {
+    await db.transaction(async (tx: Queryable) => {
+      if (db.dialect === 'postgres') {
+        await tx.one('SELECT pg_advisory_xact_lock(:key) AS locked', { key: MIGRATION_LOCK });
+      }
+      for (const statement of list) {
+        await tx.run(statement);
+      }
+      for (const item of pending) {
+        await tx.run(`ALTER TABLE ${item.table} ADD COLUMN ${item.column} ${item.definition}`);
+      }
+      if (dropNotNull) {
+        await tx.run('ALTER TABLE knowledge ALTER COLUMN task_id DROP NOT NULL');
+      }
+      if (rebuildKnowledge) await rebuildSqliteKnowledge(tx);
+      for (const statement of POST_COLUMN_STATEMENTS) {
+        await tx.run(statement);
+      }
+      // v7 回填：旧条目没有标题时，用正文开头补一个，列表不至于全是空白。
+      await tx.run(`UPDATE knowledge SET title = substr(content, 1, 60) WHERE title = ''`);
+      await tx.run(
+        `UPDATE knowledge_versions SET title = (
+           SELECT k.title FROM knowledge k WHERE k.id = knowledge_versions.knowledge_id
+         ) WHERE title = ''`,
       );
-      if (candidate) {
-        await tx.run(`UPDATE principals SET tenant_role = 'owner' WHERE id = :id`, {
-          id: String(candidate.id),
+      await backfillSpaceFiles(tx);
+      // v3 升级回填：老库没有 tenant_role，默认值 'member' 会让原来的管理员
+      // 突然管不了成员。按既有能力角色把管理员补回来；每个租户保证有一个所有者。
+      await tx.run(
+        `UPDATE principals SET tenant_role = 'admin'
+         WHERE tenant_role = 'member' AND roles LIKE '%"admin"%'`,
+      );
+      const orphans = await tx.all<{ workspace: string }>(
+        `SELECT workspace FROM principals
+         WHERE active = 1
+         GROUP BY workspace
+         HAVING SUM(CASE WHEN tenant_role = 'owner' THEN 1 ELSE 0 END) = 0`,
+      );
+      for (const orphan of orphans) {
+        const candidate = await tx.one<{ id: string }>(
+          `SELECT id FROM principals
+           WHERE workspace = :workspace AND active = 1
+           ORDER BY CASE WHEN roles LIKE '%"admin"%' THEN 0 ELSE 1 END, created_at, id
+           LIMIT 1`,
+          { workspace: String(orphan.workspace) },
+        );
+        if (candidate) {
+          await tx.run(`UPDATE principals SET tenant_role = 'owner' WHERE id = :id`, {
+            id: String(candidate.id),
+          });
+        }
+      }
+      const current = await tx.one<{ version: number }>(
+        'SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1',
+      );
+      if (!current) {
+        await tx.run('INSERT INTO schema_migrations(version, applied_at) VALUES(:version, :appliedAt)', {
+          version: SCHEMA_VERSION,
+          appliedAt: now(),
+        });
+      } else if (Number(current.version) < SCHEMA_VERSION) {
+        await tx.run('INSERT INTO schema_migrations(version, applied_at) VALUES(:version, :appliedAt)', {
+          version: SCHEMA_VERSION,
+          appliedAt: now(),
         });
       }
+    });
+  } finally {
+    if (db.dialect === 'sqlite') {
+      await db.exec('PRAGMA legacy_alter_table=OFF; PRAGMA foreign_keys=ON');
     }
-    const current = await tx.one<{ version: number }>(
-      'SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1',
-    );
-    if (!current) {
-      await tx.run('INSERT INTO schema_migrations(version, applied_at) VALUES(:version, :appliedAt)', {
-        version: SCHEMA_VERSION,
-        appliedAt: now(),
-      });
-    } else if (Number(current.version) < SCHEMA_VERSION) {
-      await tx.run('INSERT INTO schema_migrations(version, applied_at) VALUES(:version, :appliedAt)', {
-        version: SCHEMA_VERSION,
-        appliedAt: now(),
-      });
+  }
+  if (db.dialect === 'sqlite' && rebuildKnowledge) {
+    const broken = await db.read.all<Record<string, unknown>>('PRAGMA foreign_key_check');
+    if (broken.length > 0) {
+      throw new Error(`knowledge 重建后存在外键不一致：${JSON.stringify(broken.slice(0, 5))}`);
     }
-  });
+  }
 }

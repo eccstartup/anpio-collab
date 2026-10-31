@@ -112,10 +112,14 @@ export function toEvent(row: Row): TaskEvent {
 }
 
 export function toKnowledge(row: Row, accessMode: 'workspace' | 'restricted' = 'restricted'): Knowledge {
+  const kinds = ['experience', 'playbook', 'checklist', 'decision', 'report', 'handoff'];
+  const sources = ['task', 'manual', 'agent'];
+  const levels = ['task_verified', 'manual', 'imported'];
+  const policies = ['none', 'team', 'tenant'];
   return {
     id: text(row.id),
     workspace: text(row.workspace),
-    sourceTaskId: text(row.task_id),
+    sourceTaskId: row.task_id === null || row.task_id === undefined ? null : text(row.task_id),
     content: text(row.content),
     conditions: text(row.conditions),
     state: text(row.state) as Knowledge['state'],
@@ -126,6 +130,18 @@ export function toKnowledge(row: Row, accessMode: 'workspace' | 'restricted' = '
     accessMode,
     createdAt: text(row.created_at),
     updatedAt: text(row.updated_at),
+    kind: (kinds.includes(text(row.kind)) ? text(row.kind) : 'experience') as Knowledge['kind'],
+    title: text(row.title),
+    summary: text(row.summary),
+    tags: parseJson<string[]>(row.tags, []),
+    source: (sources.includes(text(row.source)) ? text(row.source) : 'task') as Knowledge['source'],
+    evidenceLevel: (levels.includes(text(row.evidence_level))
+      ? text(row.evidence_level)
+      : 'task_verified') as Knowledge['evidenceLevel'],
+    copyPolicy: (policies.includes(text(row.copy_policy))
+      ? text(row.copy_policy)
+      : 'team') as Knowledge['copyPolicy'],
+    archivedAt: row.archived_at === null || row.archived_at === undefined ? null : text(row.archived_at),
   };
 }
 

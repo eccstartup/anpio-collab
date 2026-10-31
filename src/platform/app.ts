@@ -74,9 +74,6 @@ export async function createApp(db: Database, options: AppOptions = {}): Promise
 
   const audit = new AuditService(ctx);
   const notifications = new NotificationService(ctx);
-  const knowledge = new KnowledgeService(ctx);
-  const tasks = new TaskService(ctx, notifications, knowledge);
-  const subtasks = new SubtaskService(ctx, notifications);
   const principals = new PrincipalService(ctx);
   const workspace = process.env.COLLAB_WORKSPACE ?? 'local';
 
@@ -90,6 +87,9 @@ export async function createApp(db: Database, options: AppOptions = {}): Promise
       options.mail?.exposeOutbox ?? (process.env.COLLAB_DEV_MAIL ?? '1') !== '0',
   });
   const tenants = new TenantService(ctx, accounts, mail);
+  const knowledge = new KnowledgeService(ctx, tenants, accounts);
+  const tasks = new TaskService(ctx, notifications, knowledge);
+  const subtasks = new SubtaskService(ctx, notifications);
 
   const identity = new IdentityService(
     ctx,

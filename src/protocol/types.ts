@@ -209,8 +209,23 @@ export type TaskEvent = {
   recordedAt: string;
 };
 
-export const KNOWLEDGE_STATES = ['candidate', 'published', 'revoked'] as const;
+export const KNOWLEDGE_STATES = ['draft', 'candidate', 'published', 'archived', 'revoked'] as const;
 export type KnowledgeState = (typeof KNOWLEDGE_STATES)[number];
+
+/** AICD = AI 协作文档；经验只是第一种 kind。 */
+export const AICD_KINDS = ['experience', 'playbook', 'checklist', 'decision', 'report', 'handoff'] as const;
+export type AicdKind = (typeof AICD_KINDS)[number];
+
+/** 来路：任务验收沉淀、人手动编写、智能体候选。 */
+export const AICD_SOURCES = ['task', 'manual', 'agent'] as const;
+export type AicdSource = (typeof AICD_SOURCES)[number];
+
+export const EVIDENCE_LEVELS = ['task_verified', 'manual', 'imported'] as const;
+export type EvidenceLevel = (typeof EVIDENCE_LEVELS)[number];
+
+/** 复制策略：none 禁止；team 只在本团队；tenant 可到成员个人空间。 */
+export const COPY_POLICIES = ['none', 'team', 'tenant'] as const;
+export type CopyPolicy = (typeof COPY_POLICIES)[number];
 
 /** 知识可见范围：workspace 表示全工作空间，restricted 表示仅授权主体。 */
 export type AccessMode = 'workspace' | 'restricted';
@@ -218,7 +233,8 @@ export type AccessMode = 'workspace' | 'restricted';
 export type Knowledge = {
   id: string;
   workspace: string;
-  sourceTaskId: string;
+  /** 手动 AICD 不绑任务，因此可空。 */
+  sourceTaskId: string | null;
   content: string;
   conditions: string;
   state: KnowledgeState;
@@ -229,12 +245,83 @@ export type Knowledge = {
   accessMode: AccessMode;
   createdAt: string;
   updatedAt: string;
+  kind: AicdKind;
+  title: string;
+  summary: string;
+  tags: string[];
+  source: AicdSource;
+  evidenceLevel: EvidenceLevel;
+  copyPolicy: CopyPolicy;
+  archivedAt: string | null;
   /** 列表补充的展示信息：作者姓名与来源空间。 */
   authorName?: string;
   sourceName?: string;
   sourcePersonal?: boolean;
   /** 仅来源空间条目携带：已分享到的团队。 */
   sharedTeams?: { id: string; name: string }[];
+  /** 副本的来源链；根条目为空。 */
+  copiedFrom?: CopiedFrom | null;
+  /** 来源已被撤销：副本仍可用，但必须提示复核。 */
+  sourceRevoked?: boolean;
+  /** 来源空间可见：被复制到哪些空间。 */
+  copies?: AicdCopyTarget[];
+};
+
+export type CopiedFrom = {
+  id: string;
+  version: number;
+  workspace: string;
+  workspaceName: string;
+  personal: boolean;
+  authorName: string;
+  state: KnowledgeState;
+  revoked: boolean;
+};
+
+export type AicdCopyTarget = {
+  workspace: string;
+  workspaceName: string;
+  personal: boolean;
+  knowledgeId: string;
+  copiedAt: string;
+  state: KnowledgeState;
+};
+
+export type KnowledgeVersion = {
+  version: number;
+  title: string;
+  summary: string;
+  content: string;
+  conditions: string;
+  tags: string[];
+  reviewerId: string;
+  expiresAt: string;
+  publishedAt: string;
+};
+
+export const COPY_INVITE_STATUSES = ['pending', 'accepted', 'declined', 'expired'] as const;
+export type CopyInviteStatus = (typeof COPY_INVITE_STATUSES)[number];
+
+/** 复制给他人：对方接受后才落库。 */
+export type CopyInvite = {
+  id: string;
+  knowledgeId: string;
+  version: number;
+  fromPrincipal: string;
+  fromName: string;
+  targetPrincipal: string;
+  targetWorkspace: string;
+  note: string;
+  status: CopyInviteStatus;
+  acceptedKnowledgeId: string | null;
+  createdAt: string;
+  expiresAt: string;
+  resolvedAt: string | null;
+  /** 邀请里展示来源摘要，不必先读来源才能判断。 */
+  title?: string;
+  summary?: string;
+  kind?: AicdKind;
+  sourceName?: string;
 };
 
 export type Notification = {
@@ -275,13 +362,37 @@ export type EventType =
   | 'knowledge_referenced'
   | 'knowledge_shared'
   | 'comment_added'
+  | 'message_added'
+  | 'thread_opened'
+  | 'thread_resolved'
+  | 'file_uploaded'
+  | 'file_deleted'
+  | 'aicd_created'
+  | 'aicd_updated'
+  | 'aicd_submitted'
+  | 'aicd_archived'
+  | 'aicd_copied'
+  | 'aicd_copy_invited'
+  | 'aicd_copy_accepted'
+  | 'aicd_copy_declined'
   | 'offer_published'
   | 'offer_claimed'
   | 'offer_withdrawn';
 
 // ---------------------------------------------------------------- 协作
 
-/** 任务评论：人和智能体共用一条时间线，提及者收到通知。 */
+export const MESSAGE_KINDS = [
+  'comment',
+  'question',
+  'answer',
+  'handoff',
+  'decision',
+  'status',
+  'system',
+] as const;
+export type MessageKind = (typeof MESSAGE_KINDS)[number];
+
+/** 任务房间消息：人和智能体共用一条时间线，提及者收到通知。 */
 export type TaskComment = {
   id: string;
   taskId: string;
@@ -292,10 +403,84 @@ export type TaskComment = {
   body: string;
   mentions: string[];
   createdAt: string;
+  /** 消息类型；决定 UI 呈现与通知方式。 */
+  kind: MessageKind;
+  threadId: string | null;
+  replyTo: string | null;
+  /** 结构化字段：to / blocking / subtaskId / decision 等。 */
+  payload: Record<string, unknown>;
+  editedAt: string | null;
+  /** 消息附带的文件。 */
+  fileIds?: string[];
   /** 仅在"我的提醒"里出现，避免为它多造一个类型。 */
   taskTitle?: string;
   /** 提醒行自身的 ID；确认已读时用它，而不是评论 ID。 */
   mentionId?: string;
+};
+
+export const THREAD_STATUSES = ['open', 'resolved'] as const;
+export type ThreadStatus = (typeof THREAD_STATUSES)[number];
+
+export type TaskThread = {
+  id: string;
+  workspace: string;
+  taskId: string;
+  topic: string;
+  status: ThreadStatus;
+  openedBy: string;
+  openedByName: string;
+  assigneeId: string | null;
+  createdAt: string;
+  resolvedAt: string | null;
+  messageCount: number;
+};
+
+export const SPACE_FILE_KINDS = ['input', 'intermediate', 'output', 'evidence'] as const;
+export type SpaceFileKind = (typeof SPACE_FILE_KINDS)[number];
+
+export type SpaceFile = {
+  id: string;
+  workspace: string;
+  taskId: string;
+  subtaskId: string | null;
+  messageId: string | null;
+  name: string;
+  mime: string;
+  size: number;
+  sha256: string;
+  storage: 'inline' | 'fs' | 's3';
+  kind: SpaceFileKind;
+  version: number;
+  supersedesId: string | null;
+  producedBy: string;
+  producedByName: string;
+  source: 'human_upload' | 'agent_upload' | 'tool_output';
+  status: 'pending' | 'ready' | 'quarantined' | 'deleted';
+  createdAt: string;
+  deletedAt: string | null;
+};
+
+export type RoomActivity = {
+  at: string;
+  /** event / message / file / knowledge */
+  stream: 'event' | 'message' | 'file' | 'knowledge';
+  type: string;
+  actorId: string;
+  actorName: string;
+  summary: string;
+  taskId: string;
+  payload: Record<string, unknown>;
+};
+
+export type TaskRoom = {
+  task: Task;
+  participants: { id: string; displayName: string; kind: PrincipalKind; avatar: string; role: string }[];
+  counts: { messages: number; threadsOpen: number; files: number; knowledge: number };
+  threads: TaskThread[];
+  messages: TaskComment[];
+  files: SpaceFile[];
+  activity: RoomActivity[];
+  knowledge: Knowledge[];
 };
 
 export const OFFER_STATUSES = ['open', 'claimed', 'withdrawn'] as const;
