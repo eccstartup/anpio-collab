@@ -735,6 +735,92 @@ export class CollabService {
     return { id: fileId, status: 'deleted' };
   }
 
+  /**
+   * 回收超过保留期的软删除对象。
+   *
+   * 只处理"所有引用它的文件都已软删除、且最后一条删除时间早于保留期"的对象；
+   * 默认只预览（apply=false），真正删除前先移除对象字节，再删对象记录。
+   */
+  async retention(actor: Principal, days = 30, apply = false): Promise<{
+    days: number;
+    cutoff: string;
+    applied: boolean;
+    candidates: { objectKey: string; sha256: string; storage: string; size: number; fileCount: number; lastDeleted: string }[];
+    candidatesTruncated: boolean;
+    removed: number;
+    removedBytes: number;
+    skipped: { objectKey: string; reason: string }[];
+  }> {
+    if (!hasAnyRole(actor, 'admin')) throw forbidden('只有管理员可以回收文件对象');
+    const cutoff = new Date(Date.parse(this.ctx.now()) - days * 86_400_000).toISOString();
+    const rows = await this.ctx.db.read.all(
+      `SELECT o.sha256, o.storage, o.size, o.object_key,
+         (SELECT COUNT(*) FROM space_files f
+           WHERE f.workspace = o.workspace AND f.object_key = o.object_key AND f.status = 'ready') AS ready_files,
+         (SELECT COUNT(*) FROM space_files f
+           WHERE f.workspace = o.workspace AND f.object_key = o.object_key) AS file_count,
+         (SELECT MAX(f.deleted_at) FROM space_files f
+           WHERE f.workspace = o.workspace AND f.object_key = o.object_key) AS last_deleted
+       FROM space_objects o
+       WHERE o.workspace = :workspace AND o.deleted_at IS NULL`,
+      { workspace: actor.workspace },
+    );
+    const all = rows
+      .filter(row => Number(row.ready_files) === 0
+        && Number(row.file_count) > 0
+        && row.last_deleted !== null
+        && row.last_deleted !== undefined
+        && Date.parse(String(row.last_deleted)) <= Date.parse(cutoff))
+      .map(row => ({
+        objectKey: String(row.object_key),
+        sha256: String(row.sha256),
+        storage: String(row.storage),
+        size: Number(row.size),
+        fileCount: Number(row.file_count),
+        lastDeleted: String(row.last_deleted),
+      }));
+
+    const skipped: { objectKey: string; reason: string }[] = [];
+    let removed = 0;
+    let removedBytes = 0;
+    if (apply) {
+      for (const candidate of all) {
+        if (candidate.storage !== this.storage.kind) {
+          skipped.push({ objectKey: candidate.objectKey, reason: `对象由 ${candidate.storage} 存储保存，当前后端为 ${this.storage.kind}` });
+          continue;
+        }
+        try {
+          await this.storage.remove(candidate.objectKey);
+          await this.ctx.db.transaction(async tx => {
+            await tx.run(
+              `DELETE FROM space_objects
+               WHERE workspace = :workspace AND sha256 = :sha256 AND storage = :storage`,
+              { workspace: actor.workspace, sha256: candidate.sha256, storage: candidate.storage },
+            );
+          });
+          removed += 1;
+          removedBytes += candidate.size;
+        } catch (error) {
+          skipped.push({
+            objectKey: candidate.objectKey,
+            reason: error instanceof Error ? error.message : '删除对象失败',
+          });
+        }
+      }
+    }
+
+    return {
+      days,
+      cutoff,
+      applied: apply,
+      candidates: all.slice(0, 200),
+      candidatesTruncated: all.length > 200,
+      removed,
+      removedBytes,
+      skipped,
+    };
+  }
+
   // ---------------------------------------------------------------- 对象存储上传
 
   /**
@@ -1535,6 +1621,7 @@ export class CollabService {
       `SELECT c.id, c.body, c.payload, c.created_at, c.task_id, t.title AS task_title
        FROM task_comments c JOIN tasks t ON t.id = c.task_id
        WHERE t.workspace = :workspace AND c.kind = 'question' AND c.payload LIKE :needle
+         AND t.archived_at IS NULL
          AND NOT EXISTS (SELECT 1 FROM task_comments a WHERE a.task_id = c.task_id AND a.reply_to = c.id)
          AND NOT EXISTS (SELECT 1 FROM task_threads th WHERE th.id = c.thread_id AND th.status = 'resolved')
          AND ${this.visibleTaskSql}
@@ -1561,6 +1648,7 @@ export class CollabService {
        JOIN tasks t ON t.id = m.task_id
        WHERE m.workspace = :workspace AND m.recipient_id = :principal AND m.read_at IS NULL
          AND c.kind <> 'question'
+         AND t.archived_at IS NULL
          AND ${this.visibleTaskSql}
        ORDER BY m.created_at DESC LIMIT 50`,
       params,
@@ -1569,6 +1657,7 @@ export class CollabService {
     const reviewRows = await this.ctx.db.read.all(
       `SELECT t.id, t.title, t.updated_at FROM tasks t
        WHERE t.workspace = :workspace AND t.status = 'review'
+         AND t.archived_at IS NULL
          AND (t.owner_id = :principal
            OR EXISTS (SELECT 1 FROM task_coordinators tc WHERE tc.task_id = t.id AND tc.principal_id = :principal)
            OR :canReview = 1)
@@ -1579,7 +1668,7 @@ export class CollabService {
     const proposalRows = await this.ctx.db.read.all(
       `SELECT t.id, t.title, t.created_at FROM tasks t
        WHERE t.workspace = :workspace AND t.origin = 'agent' AND t.status = 'pending'
-         AND t.adopted_at IS NULL
+         AND t.adopted_at IS NULL AND t.archived_at IS NULL
          AND (t.owner_id = :principal OR :teamVisible = 1 OR :canReview = 1)
        ORDER BY t.created_at DESC LIMIT 50`,
       params,

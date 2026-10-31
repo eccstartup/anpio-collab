@@ -222,3 +222,42 @@ test('取消任务：未核验子任务一并取消并通知', async () => {
     await harness.close();
   }
 });
+
+test('归档任务：只归档已结束任务，列表、首页与超时提醒都隐藏', async () => {
+  const harness = await startHarness();
+  try {
+    const owner = await register(harness, 'owner1', ['owner']);
+    const outsider = await register(harness, 'owner2', ['owner']);
+    const created = await owner.createTask(TASK_INPUT, 'create-archive');
+
+    await expectStatus(owner.archiveTask(created.id, 'archive-open'), 409);
+
+    await owner.cancel(created.id, '需求取消', 'cancel-archive');
+    await expectStatus(outsider.archiveTask(created.id, 'archive-outsider'), 403);
+
+    const archived = await owner.archiveTask(created.id, 'archive');
+    assert.ok(archived.archivedAt);
+    const view = (await owner.task(created.id)) as {
+      task: { archivedAt: string | null };
+      events: { type: string }[];
+    };
+    assert.equal(view.task.archivedAt, archived.archivedAt);
+    assert.ok(view.events.some((event) => event.type === 'task_archived'));
+
+    const visible = (await owner.tasks()) as { id: string }[];
+    assert.ok(!visible.some((item) => item.id === created.id));
+    const all = (await owner.tasks({ includeArchived: true })) as { id: string; archivedAt?: string | null }[];
+    assert.ok(all.some((item) => item.id === created.id && item.archivedAt));
+
+    await expectStatus(owner.archiveTask(created.id, 'archive-again'), 409);
+
+    await owner.unarchiveTask(created.id, 'unarchive');
+    const restored = (await owner.tasks()) as { id: string }[];
+    assert.ok(restored.some((item) => item.id === created.id));
+    const after = (await owner.task(created.id)) as { task: { archivedAt: string | null } };
+    assert.equal(after.task.archivedAt, null);
+    await expectStatus(owner.unarchiveTask(created.id, 'unarchive-again'), 409);
+  } finally {
+    await harness.close();
+  }
+});

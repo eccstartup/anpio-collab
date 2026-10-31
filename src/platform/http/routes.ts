@@ -9,7 +9,7 @@
  */
 
 import { forbidden, invalid } from '../../protocol/errors.ts';
-import { asEnum, asInteger, asObject, asString } from '../../protocol/parse.ts';
+import { asBoolean, asEnum, asInteger, asObject, asString } from '../../protocol/parse.ts';
 import { TASK_STATUSES } from '../../protocol/types.ts';
 import {
   agentSubtask,
@@ -455,9 +455,13 @@ export const routes: Route[] = [
   {
     method: 'GET',
     path: '/v1/tasks',
-    description: '可见任务列表，支持 status / q 过滤',
+    description: '可见任务列表，支持 status / q 过滤；默认不含归档任务',
     read: async ({ app, principal, query }) =>
-      app.tasks.list(principal, { status: parseStatus(query), q: parseQuery(query) || undefined }),
+      app.tasks.list(principal, {
+        status: parseStatus(query),
+        q: parseQuery(query) || undefined,
+        includeArchived: query.get('includeArchived') === '1',
+      }),
   },
   {
     method: 'GET',
@@ -469,6 +473,7 @@ export const routes: Route[] = [
         offset: parseOffset(query),
         status: parseStatus(query),
         q: parseQuery(query) || undefined,
+        includeArchived: query.get('includeArchived') === '1',
       }),
   },
   {
@@ -576,6 +581,24 @@ export const routes: Route[] = [
     write: {
       authorize: ctx => onTask(ctx, 'owner'),
       execute: async ({ app, principal, params, body }) => app.tasks.cancel(principal, params.id ?? '', body),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/tasks/:id/archive',
+    description: '归档已完成或已取消的任务（负责人）',
+    write: {
+      authorize: ctx => onTask(ctx, 'owner'),
+      execute: async ({ app, principal, params }) => app.tasks.archive(principal, params.id ?? ''),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/v1/tasks/:id/unarchive',
+    description: '撤销归档（负责人）',
+    write: {
+      authorize: ctx => onTask(ctx, 'owner'),
+      execute: async ({ app, principal, params }) => app.tasks.unarchive(principal, params.id ?? ''),
     },
   },
   {
@@ -1323,5 +1346,25 @@ export const routes: Route[] = [
     description: '最近的操作审计（管理员）',
     read: async ({ app, principal, query }) =>
       app.audit.list(principal, asInteger(Number(query.get('limit') ?? 200), 'limit', { min: 1, max: 500 })),
+  },
+  {
+    method: 'GET',
+    path: '/v1/audit/report',
+    description: '按动作、结果、日期与主体聚合最近 N 天的审计（管理员）',
+    read: async ({ app, principal, query }) =>
+      app.audit.report(principal, asInteger(Number(query.get('days') ?? 7), 'days', { min: 1, max: 365 })),
+  },
+  {
+    method: 'POST',
+    path: '/v1/maintenance/retention',
+    description: '回收超过保留期的软删除文件对象（管理员；默认只预览）',
+    write: {
+      execute: async ({ app, principal, body }) => {
+        const input = asObject(body ?? {});
+        const days = asInteger(Number(input.days ?? 30), 'days', { min: 1, max: 3650 });
+        const apply = input.apply === undefined ? false : asBoolean(input.apply, 'apply');
+        return app.collab.retention(principal, days, apply);
+      },
+    },
   },
 ];

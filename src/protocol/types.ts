@@ -178,6 +178,8 @@ export type Task = {
   originPrincipalId: string | null;
   /** 智能体提案被人接管的时间；为空表示仍在提案池里。 */
   adoptedAt: string | null;
+  /** 归档时间；归档不改状态，只让任务退出常规列表与监管。 */
+  archivedAt: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -334,6 +336,8 @@ export type EventType =
   | 'task_created'
   | 'task_cancelled'
   | 'task_adopted'
+  | 'task_archived'
+  | 'task_unarchived'
   | 'coordinator_delegated'
   | 'coordinator_removed'
   | 'subtask_invited'

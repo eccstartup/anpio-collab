@@ -25,7 +25,17 @@ test('非管理员不能管理主体、不能读审计', async () => {
     await expectStatus(owner.deactivatePrincipal('agent1', 'owner-deactivate'), 403);
     await expectStatus(agent.audit(), 403);
     await expectStatus(owner.audit(), 403);
+    await expectStatus(owner.auditReport(7), 403);
     assert.equal((await harness.admin.audit()).length > 0, true);
+
+    const report = await harness.admin.auditReport(7);
+    assert.ok(report.totals.entries > 0);
+    assert.equal(
+      report.byDay.reduce((sum, day) => sum + day.total, 0),
+      report.totals.entries,
+    );
+    assert.ok(report.totals.denied >= 1);
+    assert.ok(report.byAction.some(item => item.denied >= 1));
   } finally {
     await harness.close();
   }

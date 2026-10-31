@@ -19,6 +19,16 @@ export type AuditEntry = {
   recordedAt: string;
 };
 
+export type AuditReport = {
+  days: number;
+  since: string;
+  generatedAt: string;
+  totals: { entries: number; denied: number; byOutcome: Record<string, number> };
+  byAction: { action: string; total: number; denied: number }[];
+  byDay: { day: string; total: number; denied: number }[];
+  topPrincipals: { principalId: string; total: number }[];
+};
+
 export type AuditActor = { id: string; workspace: string };
 
 export class AuditService {
@@ -58,5 +68,61 @@ export class AuditService {
       outcome: String(row.outcome),
       recordedAt: String(row.recorded_at),
     }));
+  }
+
+  /** 按动作、结果、日期与主体聚合最近 N 天的审计；只做统计，不改数据。 */
+  async report(actor: Principal, days = 7): Promise<AuditReport> {
+    if (!hasAnyRole(actor, 'admin')) throw forbidden('只有管理员可以查看审计');
+    const generatedAt = this.ctx.now();
+    const since = new Date(Date.parse(generatedAt) - days * 86_400_000).toISOString();
+    const rows = await this.ctx.db.read.all(
+      `SELECT action, outcome, principal_id, substr(recorded_at, 1, 10) AS day, COUNT(*) AS count
+       FROM audit
+       WHERE workspace = :workspace AND recorded_at >= :since
+       GROUP BY action, outcome, principal_id, substr(recorded_at, 1, 10)`,
+      { workspace: actor.workspace, since },
+    );
+
+    const totals = { entries: 0, denied: 0, byOutcome: {} as Record<string, number> };
+    const actions = new Map<string, { total: number; denied: number }>();
+    const daysMap = new Map<string, { total: number; denied: number }>();
+    const principals = new Map<string, number>();
+    for (const row of rows) {
+      const count = Number(row.count);
+      const action = String(row.action);
+      const outcome = String(row.outcome);
+      const day = String(row.day);
+      const principalId = String(row.principal_id);
+      const denied = outcome.startsWith('denied') ? count : 0;
+      totals.entries += count;
+      totals.denied += denied;
+      totals.byOutcome[outcome] = (totals.byOutcome[outcome] ?? 0) + count;
+      const actionRow = actions.get(action) ?? { total: 0, denied: 0 };
+      actionRow.total += count;
+      actionRow.denied += denied;
+      actions.set(action, actionRow);
+      const dayRow = daysMap.get(day) ?? { total: 0, denied: 0 };
+      dayRow.total += count;
+      dayRow.denied += denied;
+      daysMap.set(day, dayRow);
+      principals.set(principalId, (principals.get(principalId) ?? 0) + count);
+    }
+
+    return {
+      days,
+      since,
+      generatedAt,
+      totals,
+      byAction: [...actions.entries()]
+        .map(([action, value]) => ({ action, ...value }))
+        .sort((a, b) => b.total - a.total || a.action.localeCompare(b.action)),
+      byDay: [...daysMap.entries()]
+        .map(([day, value]) => ({ day, ...value }))
+        .sort((a, b) => a.day.localeCompare(b.day)),
+      topPrincipals: [...principals.entries()]
+        .map(([principalId, total]) => ({ principalId, total }))
+        .sort((a, b) => b.total - a.total || a.principalId.localeCompare(b.principalId))
+        .slice(0, 20),
+    };
   }
 }

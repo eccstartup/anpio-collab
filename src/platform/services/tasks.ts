@@ -35,6 +35,7 @@ const PENDING_SUBTASK_STATUSES = ['invited', 'accepted', 'returned', 'rejected',
 export type TaskFilters = {
   status?: TaskStatus;
   q?: string;
+  includeArchived?: boolean;
   limit: number;
   offset: number;
 };
@@ -57,6 +58,8 @@ export type TaskListItem = {
   origin: 'human' | 'agent';
   /** 提案是否已被人接管。 */
   adopted: boolean;
+  /** 归档时间；默认列表不返回归档任务。 */
+  archivedAt: string | null;
 };
 
 /** 任务可见性：管理员、负责人、协调者、受派智能体；团队任务对本团队成员开放。 */
@@ -79,7 +82,7 @@ export type ActivityItem = {
 
 const LIST_COLUMNS = `
   t.id, t.title, t.type, t.status, t.priority, t.owner_id, t.due_at, t.version, t.created_at, t.updated_at,
-  t.origin, t.adopted_at,
+  t.origin, t.adopted_at, t.archived_at,
   p.display_name AS owner_name,
   (SELECT COUNT(*) FROM subtasks s WHERE s.task_id = t.id) AS subtask_count,
   (SELECT COUNT(*) FROM subtasks s WHERE s.task_id = t.id AND s.status IN ('submitted','verified')) AS subtask_done
@@ -102,6 +105,8 @@ function toListItem(row: Row): TaskListItem {
     subtaskDone: Number(row.subtask_done ?? 0),
     origin: row.origin === 'agent' ? 'agent' : 'human',
     adopted: row.adopted_at !== null && row.adopted_at !== undefined,
+    archivedAt:
+      row.archived_at === null || row.archived_at === undefined ? null : String(row.archived_at),
   };
 }
 
@@ -243,6 +248,7 @@ export class TaskService {
       conditions.push('t.status = :status');
       params.status = filters.status;
     }
+    if (!filters.includeArchived) conditions.push('t.archived_at IS NULL');
     if (filters.q) {
       conditions.push('(LOWER(t.title) LIKE :q OR LOWER(t.goal) LIKE :q)');
       params.q = `%${filters.q.toLowerCase()}%`;
@@ -796,6 +802,56 @@ export class TaskService {
         payload: { note, cancelledSubtasks: open.length },
       });
       return { status: 'cancelled' as TaskStatus, version: event.taskVersion };
+    });
+  }
+
+  // ---------------------------------------------------------------- 归档
+
+  /**
+   * 归档：只加时间戳，不改状态，也不删事件、消息与文件。
+   * 只有已结束的任务可以归档；运行中的任务先取消或验收，避免把活埋掉。
+   */
+  async archive(actor: Principal, taskId: string): Promise<{ archivedAt: string; version: number }> {
+    const task = await readTask(this.ctx, actor, taskId);
+    assertOwner(actor, task);
+    if (task.archivedAt) throw conflict('任务已归档');
+    if (task.status !== 'completed' && task.status !== 'cancelled') {
+      throw conflict('只有已完成或已取消的任务可以归档');
+    }
+    const now = this.ctx.now();
+    return this.ctx.db.transaction(async tx => {
+      await tx.run('UPDATE tasks SET archived_at = :at, updated_at = :at WHERE id = :taskId', {
+        at: now,
+        taskId,
+      });
+      const event = await appendEvent(this.ctx, tx, {
+        taskId,
+        actorId: actor.id,
+        type: 'task_archived',
+        payload: { status: task.status },
+      });
+      return { archivedAt: now, version: event.taskVersion };
+    });
+  }
+
+  /** 撤销归档；历史与文件原样保留。 */
+  async unarchive(actor: Principal, taskId: string): Promise<{ archivedAt: null; version: number }> {
+    const task = await readTask(this.ctx, actor, taskId);
+    assertOwner(actor, task);
+    if (!task.archivedAt) throw conflict('任务没有归档');
+    const now = this.ctx.now();
+    return this.ctx.db.transaction(async tx => {
+      await tx.run('UPDATE tasks SET archived_at = NULL, updated_at = :at WHERE id = :taskId', {
+        at: now,
+        taskId,
+      });
+      const event = await appendEvent(this.ctx, tx, {
+        taskId,
+        actorId: actor.id,
+        type: 'task_unarchived',
+        payload: {},
+      });
+      return { archivedAt: null, version: event.taskVersion };
     });
   }
 

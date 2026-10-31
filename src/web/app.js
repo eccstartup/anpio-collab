@@ -214,6 +214,7 @@ const state = {
   view: 'home',
   tab: 'aicds',
   tasks: [],
+  includeArchived: false,
   activity: [],
   taskId: null,
   taskTab: 'detail',
@@ -231,6 +232,7 @@ const state = {
   candidates: [],
   pending: [],
   audit: [],
+  auditReport: null,
   query: '',
   inbox: [],
   mentions: [],
@@ -786,7 +788,7 @@ async function refresh() {
       }
     }
     if (state.view === 'tasks') {
-      state.tasks = await api('tasks');
+      state.tasks = await api(state.includeArchived ? 'tasks?includeArchived=1' : 'tasks');
       if (state.taskId) {
         const id = encodeURIComponent(state.taskId);
         state.detail = await api(`tasks/${id}`);
@@ -826,7 +828,10 @@ async function refresh() {
       state.oversight = await api('oversight');
       state.presence = await api('agent/presence').catch(() => []);
     }
-    if (state.view === 'audit') state.audit = await api('audit');
+    if (state.view === 'audit') {
+      state.audit = await api('audit');
+      state.auditReport = await api('audit/report?days=7').catch(() => null);
+    }
     if (state.view === 'agents') {
       state.grants = await api('agents');
       state.pendingAgents = canManageTenant() ? await api('agents/pending').catch(() => []) : [];
@@ -1157,7 +1162,8 @@ function taskRow(task) {
       el('span', { class: 'row', style: 'gap:8px' },
         task.priority === 'high' ? el('span', { class: 'dot', title: '高优先级' }) : null,
         el('span', { class: 'title' }, task.title),
-        task.origin === 'agent' && !task.adopted ? toneBadge('warn', '提案待接管') : null),
+        task.origin === 'agent' && !task.adopted ? toneBadge('warn', '提案待接管') : null,
+        task.archivedAt ? toneBadge('muted', '已归档') : null),
       badge(task.status),
     ),
     el(
@@ -1192,10 +1198,21 @@ function renderTaskList() {
     'div',
     { class: 'row spread', style: 'margin-bottom:16px' },
     el('div', { class: 'search', style: 'margin:0' }, search),
-    hasRole('owner', 'admin') || hasRole('agent')
-      ? el('button', { class: 'accent', type: 'button', onclick: openCreateTask },
-        hasRole('owner', 'admin') ? '新建任务' : '发起提案')
-      : null,
+    el('div', { class: 'row', style: 'gap:12px;align-items:center' },
+      el('label', { class: 'row', style: 'gap:6px;font-size:12.5px;color:var(--muted)' },
+        el('input', {
+          type: 'checkbox',
+          checked: state.includeArchived,
+          onchange: (event) => {
+            state.includeArchived = event.target.checked;
+            refresh();
+          },
+        }),
+        '显示已归档'),
+      hasRole('owner', 'admin') || hasRole('agent')
+        ? el('button', { class: 'accent', type: 'button', onclick: openCreateTask },
+          hasRole('owner', 'admin') ? '新建任务' : '发起提案')
+        : null),
   );
 
   const list = filtered.length
@@ -1350,7 +1367,8 @@ function renderTaskDetail() {
     { class: 'detail-head' },
     el('div', { class: 'row' }, badge(task.status), el('span', { class: 'badge' }, task.type),
       el('span', { class: 'badge' }, `优先级 ${task.priority}`),
-      task.origin === 'agent' ? toneBadge(task.adopted ? 'muted' : 'warn', task.adopted ? '智能体提案（已接管）' : '智能体提案（待接管）') : null),
+      task.origin === 'agent' ? toneBadge(task.adopted ? 'muted' : 'warn', task.adopted ? '智能体提案（已接管）' : '智能体提案（待接管）') : null,
+      task.archivedAt ? toneBadge('muted', '已归档') : null),
     el('h3', { class: 'detail-title' }, task.title),
     hasGoal ? el('p', { class: 'lede tight' }, task.goal) : null,
   );
@@ -1978,6 +1996,24 @@ function renderTaskActions(detail, owner) {
   }
   if (owner && !['completed', 'cancelled'].includes(task.status)) {
     buttons.push(el('button', { type: 'button', class: 'ghost', onclick: () => openCancel(task) }, '取消任务'));
+  }
+  if (owner && ['completed', 'cancelled'].includes(task.status)) {
+    buttons.push(task.archivedAt
+      ? el('button', {
+        type: 'button',
+        onclick: () => act(async () => {
+          await api(`tasks/${task.id}/unarchive`, { body: {} });
+          refresh();
+        }, '已取消归档'),
+      }, '取消归档')
+      : el('button', {
+        type: 'button',
+        class: 'ghost',
+        onclick: () => act(async () => {
+          await api(`tasks/${task.id}/archive`, { body: {} });
+          refresh();
+        }, '已归档，可从列表「显示已归档」找回'),
+      }, '归档任务'));
   }
   return buttons.length ? frag(...buttons) : null;
 }
@@ -4038,8 +4074,35 @@ const shortPath = (path) => path.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0
 
 function renderAudit() {
   if (!hasRole('admin')) return el('div', { class: 'empty' }, '只有管理员可以查看审计。');
-  if (!state.audit.length) return el('div', { class: 'empty' }, '暂无记录。');
+  const report = state.auditReport;
+  const summary = report
+    ? el('div', { class: 'grid' },
+      statCard('近 7 天操作', report.totals.entries, '写操作、重放、拒绝与敏感读取'),
+      statCard('被拒绝', report.totals.denied,
+        report.totals.entries ? `${Math.round((report.totals.denied / report.totals.entries) * 100)}%` : '0%'),
+      statCard('覆盖天数', report.byDay.length, `${report.days} 天窗口`),
+      statCard('活跃主体', report.topPrincipals.length, '按记录数取前 20'))
+    : null;
+  const byAction = report?.byAction.length
+    ? el('div', { class: 'card' },
+      el('div', { class: 'card-head' },
+        el('h3', {}, '按接口'),
+        el('span', { class: 'muted' }, `自 ${formatTime(report.since)} 起`)),
+      el('div', { class: 'table-wrap' }, el('table', {},
+        el('thead', {}, el('tr', {},
+          el('th', {}, '接口'), el('th', {}, '次数'), el('th', {}, '被拒绝'))),
+        el('tbody', {}, report.byAction.slice(0, 12).map(item =>
+          el('tr', {},
+            el('td', { class: 'mono', title: item.action }, shortPath(item.action)),
+            el('td', {}, String(item.total)),
+            el('td', {}, item.denied ? el('span', { class: 'badge', dataset: { tone: 'danger' } }, String(item.denied)) : '—')))))))
+    : null;
+  if (!state.audit.length) {
+    return frag(summary, byAction, el('div', { class: 'empty' }, '暂无记录。'));
+  }
   return frag(
+    summary,
+    byAction,
     el('p', { class: 'hint tight' },
       '写操作、幂等重放、被拒绝的请求与少数敏感读取会留痕；普通读取不记录，避免审计表被轮询淹没。'),
     el('div', { class: 'card' },

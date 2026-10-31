@@ -64,6 +64,7 @@ export type TaskListItem = {
   updatedAt: string;
   subtaskCount: number;
   subtaskDone: number;
+  archivedAt?: string | null;
 };
 
 /** 任务引用的经验：正文取自被钉住的那一版，修订后仍能看到当时的依据。 */
@@ -195,4 +196,25 @@ export type AuditEntry = {
   action: string;
   outcome: string;
   recordedAt: string;
+};
+
+export type AuditReport = {
+  days: number;
+  since: string;
+  generatedAt: string;
+  totals: { entries: number; denied: number; byOutcome: Record<string, number> };
+  byAction: { action: string; total: number; denied: number }[];
+  byDay: { day: string; total: number; denied: number }[];
+  topPrincipals: { principalId: string; total: number }[];
+};
+
+export type RetentionResult = {
+  days: number;
+  cutoff: string;
+  applied: boolean;
+  candidates: { objectKey: string; sha256: string; storage: string; size: number; fileCount: number; lastDeleted: string }[];
+  candidatesTruncated: boolean;
+  removed: number;
+  removedBytes: number;
+  skipped: { objectKey: string; reason: string }[];
 };

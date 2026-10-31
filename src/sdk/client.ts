@@ -9,7 +9,9 @@
  */
 
 import type {
-  ActivityItem,  AuditEntry,
+  ActivityItem,
+  AuditEntry,
+  AuditReport,
   Evidence,
   InboxItem,
   KnowledgeSearch,
@@ -19,6 +21,7 @@ import type {
   MessageKind,
   NotificationView,
   PrincipalView,
+  RetentionResult,
   SpaceFile,
   StatusChange,
   SubtaskRef,
@@ -34,6 +37,7 @@ import type {
 export type {
   ActivityItem,
   AuditEntry,
+  AuditReport,
   Evidence,
   InboxItem,
   KnowledgeSearch,
@@ -43,6 +47,7 @@ export type {
   MessageKind,
   NotificationView,
   PrincipalView,
+  RetentionResult,
   SpaceFile,
   StatusChange,
   SubtaskRef,
@@ -272,10 +277,11 @@ export class CollabClient {
   }
 
   // ------------------------------------------------------------ 任务
-  tasks(filters: { status?: string; q?: string } = {}) {
+  tasks(filters: { status?: string; q?: string; includeArchived?: boolean } = {}) {
     const params = new URLSearchParams();
     if (filters.status) params.set('status', filters.status);
     if (filters.q) params.set('q', filters.q);
+    if (filters.includeArchived) params.set('includeArchived', '1');
     const suffix = params.size ? `?${params}` : '';
     return this.request<TaskListItem[]>(`tasks${suffix}`);
   }
@@ -579,6 +585,20 @@ export class CollabClient {
     });
   }
 
+  archiveTask(taskId: string, operationId: string) {
+    return this.request<{ archivedAt: string; version: number }>(
+      `tasks/${encodeURIComponent(taskId)}/archive`,
+      { body: {}, operationId },
+    );
+  }
+
+  unarchiveTask(taskId: string, operationId: string) {
+    return this.request<{ archivedAt: null; version: number }>(
+      `tasks/${encodeURIComponent(taskId)}/unarchive`,
+      { body: {}, operationId },
+    );
+  }
+
   // ------------------------------------------------------------ 子任务
   inbox() {
     return this.request<InboxItem[]>('inbox');
@@ -839,5 +859,13 @@ export class CollabClient {
 
   audit() {
     return this.request<AuditEntry[]>('audit');
+  }
+
+  auditReport(days = 7) {
+    return this.request<AuditReport>(`audit/report?days=${encodeURIComponent(String(days))}`);
+  }
+
+  retention(days = 30, apply = false, operationId = `maintenance:retention:${Date.now()}`) {
+    return this.request<RetentionResult>('maintenance/retention', { body: { days, apply }, operationId });
   }
 }

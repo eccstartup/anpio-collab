@@ -78,6 +78,7 @@ export function toTask(row: Row): Task {
         ? null
         : text(row.origin_principal_id),
     adoptedAt: row.adopted_at === null || row.adopted_at === undefined ? null : text(row.adopted_at),
+    archivedAt: row.archived_at === null || row.archived_at === undefined ? null : text(row.archived_at),
     createdAt: text(row.created_at),
     updatedAt: text(row.updated_at),
   };

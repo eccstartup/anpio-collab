@@ -267,3 +267,51 @@ test('软删除立即不可读，对象字节保留以便按保留期回收', as
     await harness.close();
   }
 });
+
+test('保留期回收：默认只预览，确认后才删除对象字节与记录', async () => {
+  const harness = await startHarness({ workspace: 'acme' });
+  try {
+    const owner = await register(harness, 'owner1', ['owner']);
+    const { file, sha256 } = await upload(harness, Buffer.from('过期附件', 'utf8'));
+    await ok(await post(harness, `/v1/space/files/${file.id}/delete`, {}));
+    await expectStatus(owner.retention(30, false, 'retention-owner'), 403);
+
+    const recent = await harness.admin.retention(30, false, 'retention-recent');
+    assert.equal(recent.applied, false);
+    assert.ok(!recent.candidates.some(item => item.sha256 === sha256));
+
+    await harness.db.run(
+      "UPDATE space_files SET deleted_at = '2020-01-01T00:00:00.000Z' WHERE sha256 = :sha",
+      { sha: sha256 },
+    );
+    const preview = await harness.admin.retention(30, false, 'retention-preview');
+    assert.equal(preview.applied, false);
+    assert.ok(preview.candidates.some(item => item.sha256 === sha256));
+    assert.ok(
+      await harness.db.read.one(
+        'SELECT 1 AS present FROM space_objects WHERE workspace = :workspace AND sha256 = :sha',
+        { workspace: 'acme', sha: sha256 },
+      ),
+      '预览不应删除对象',
+    );
+
+    const applied = await harness.admin.retention(30, true, 'retention-apply');
+    assert.equal(applied.applied, true);
+    assert.ok(applied.removed >= 1);
+    assert.ok(applied.removedBytes > 0);
+    assert.equal(
+      await harness.db.read.one(
+        'SELECT 1 AS present FROM space_objects WHERE workspace = :workspace AND sha256 = :sha',
+        { workspace: 'acme', sha: sha256 },
+      ),
+      undefined,
+    );
+
+    const missing = await fetch(`${harness.url}/v1/space/files/${file.id}/content`, {
+      headers: authHeaders(),
+    });
+    assert.equal(missing.status, 404);
+  } finally {
+    await harness.close();
+  }
+});

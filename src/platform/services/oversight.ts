@@ -111,7 +111,7 @@ export class OversightService {
     const overdue = await this.ctx.db.read.all(
       `SELECT s.*, t.title AS task_title FROM subtasks s JOIN tasks t ON t.id = s.task_id
        WHERE t.workspace = :workspace AND s.status IN ('invited','accepted','returned')
-         AND s.due_at < :now AND t.status IN ('pending','running')
+         AND s.due_at < :now AND t.status IN ('pending','running') AND t.archived_at IS NULL
        ORDER BY s.due_at`,
       { workspace, now },
     );
@@ -131,6 +131,7 @@ export class OversightService {
     const stalled = await this.ctx.db.read.all(
       `SELECT s.*, t.title AS task_title FROM subtasks s JOIN tasks t ON t.id = s.task_id
        WHERE t.workspace = :workspace AND s.status = 'accepted' AND s.updated_at < :before
+         AND t.archived_at IS NULL
        ORDER BY s.updated_at`,
       { workspace, before: hoursAgo(now, t.stalledSubtaskHours) },
     );
@@ -150,6 +151,7 @@ export class OversightService {
     const unverified = await this.ctx.db.read.all(
       `SELECT s.*, t.title AS task_title FROM subtasks s JOIN tasks t ON t.id = s.task_id
        WHERE t.workspace = :workspace AND s.status = 'submitted' AND s.updated_at < :before
+         AND t.archived_at IS NULL
        ORDER BY s.updated_at`,
       { workspace, before: hoursAgo(now, t.unverifiedHours) },
     );
@@ -168,7 +170,8 @@ export class OversightService {
     // 4. 任务整体停滞。
     const stalledTasks = await this.ctx.db.read.all(
       `SELECT t.* FROM tasks t
-       WHERE t.workspace = :workspace AND t.status = 'running' AND t.updated_at < :before`,
+       WHERE t.workspace = :workspace AND t.status = 'running' AND t.updated_at < :before
+         AND t.archived_at IS NULL`,
       { workspace, before: hoursAgo(now, t.stalledTaskHours) },
     );
     for (const row of stalledTasks) {
@@ -186,7 +189,8 @@ export class OversightService {
     // 5. 待验收积压。
     const backlog = await this.ctx.db.read.all(
       `SELECT t.* FROM tasks t
-       WHERE t.workspace = :workspace AND t.status = 'review' AND t.updated_at < :before`,
+       WHERE t.workspace = :workspace AND t.status = 'review' AND t.updated_at < :before
+         AND t.archived_at IS NULL`,
       { workspace, before: hoursAgo(now, t.reviewBacklogHours) },
     );
     for (const row of backlog) {
@@ -206,7 +210,7 @@ export class OversightService {
       `SELECT p.id, p.display_name, a.last_seen_at,
               (SELECT COUNT(*) FROM subtasks s JOIN tasks t2 ON t2.id = s.task_id
                WHERE s.agent_id = p.id AND s.status IN ('invited','accepted','returned')
-                 AND t2.status IN ('pending','running')) AS open_count
+                 AND t2.status IN ('pending','running') AND t2.archived_at IS NULL) AS open_count
        FROM principals p LEFT JOIN agent_presence a ON a.principal_id = p.id
        WHERE p.workspace = :workspace AND p.kind = 'agent' AND p.active = 1`,
       { workspace },
@@ -234,7 +238,8 @@ export class OversightService {
     const unadopted = await this.ctx.db.read.all(
       `SELECT t.* FROM tasks t
        WHERE t.workspace = :workspace AND t.origin = 'agent' AND t.adopted_at IS NULL
-         AND t.status IN ('pending','running') AND t.created_at < :before`,
+         AND t.status IN ('pending','running') AND t.created_at < :before
+         AND t.archived_at IS NULL`,
       { workspace, before: hoursAgo(now, t.unadoptedHours) },
     );
     for (const row of unadopted) {
@@ -291,6 +296,7 @@ export class OversightService {
     const questions = await this.ctx.db.read.all(
       `SELECT c.*, t.title AS task_title FROM task_comments c JOIN tasks t ON t.id = c.task_id
        WHERE t.workspace = :workspace AND c.kind = 'question' AND c.created_at < :before
+         AND t.archived_at IS NULL
          AND NOT EXISTS (
            SELECT 1 FROM task_comments a WHERE a.task_id = c.task_id AND a.reply_to = c.id)
          AND NOT EXISTS (
@@ -317,6 +323,7 @@ export class OversightService {
        JOIN task_comments c ON c.id = m.comment_id
        JOIN tasks t ON t.id = m.task_id
        WHERE t.workspace = :workspace AND m.read_at IS NULL AND m.created_at < :before
+         AND t.archived_at IS NULL
        ORDER BY m.created_at`,
       { workspace, before: hoursAgo(now, t.pendingMessageHours) },
     );
@@ -456,12 +463,12 @@ export class OversightService {
 
     const counts = await this.ctx.db.read.one<Record<string, unknown>>(
       `SELECT
-         (SELECT COUNT(*) FROM tasks WHERE workspace = :workspace AND status IN ('pending','running','review')) AS open_tasks,
-         (SELECT COUNT(*) FROM tasks WHERE workspace = :workspace AND status = 'review') AS in_review,
+         (SELECT COUNT(*) FROM tasks WHERE workspace = :workspace AND status IN ('pending','running','review') AND archived_at IS NULL) AS open_tasks,
+         (SELECT COUNT(*) FROM tasks WHERE workspace = :workspace AND status = 'review' AND archived_at IS NULL) AS in_review,
          (SELECT COUNT(*) FROM subtasks s JOIN tasks t ON t.id = s.task_id
-          WHERE t.workspace = :workspace AND s.status IN ('invited','accepted','returned') AND s.due_at < :now) AS overdue_subtasks,
+          WHERE t.workspace = :workspace AND s.status IN ('invited','accepted','returned') AND s.due_at < :now AND t.archived_at IS NULL) AS overdue_subtasks,
          (SELECT COUNT(*) FROM subtasks s JOIN tasks t ON t.id = s.task_id
-          WHERE t.workspace = :workspace AND s.status IN ('invited','accepted')) AS active_subtasks,
+          WHERE t.workspace = :workspace AND s.status IN ('invited','accepted') AND t.archived_at IS NULL) AS active_subtasks,
          (SELECT COUNT(*) FROM principals WHERE workspace = :workspace AND active = 0) AS pending_principals,
          (SELECT COUNT(*) FROM alerts WHERE workspace = :workspace AND status <> 'resolved') AS open_alerts`,
       { workspace, now },
@@ -477,6 +484,7 @@ export class OversightService {
               (SELECT COUNT(*) FROM subtasks s WHERE s.task_id = t.id AND s.status IN ('invited','accepted')) AS active
        FROM tasks t
        WHERE t.workspace = :workspace AND t.status IN ('pending','running','review')
+         AND t.archived_at IS NULL
        ORDER BY t.due_at LIMIT 100`,
       { workspace, now },
     );

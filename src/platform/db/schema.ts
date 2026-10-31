@@ -14,6 +14,7 @@
  *  - v8 AICD 视为普通文档：默认 kind=document，版本有效期可空。
  *  - v9 本地对象存储：文件可以脱离任务，上传分三步（申请、直传、确认）。
  *  - v10 房间已读游标：未读按每人每任务记录，不改变任务版本。
+ *  - v11 任务归档：归档只加时间戳，不改状态，也不删版本与文件。
  *
  * 补列必须先于事务探测（只读连接看不到未提交的 DDL），
  * 因此 `ensureColumns` 在事务外查现有列，事务内只做 CREATE 与 ALTER。
@@ -179,6 +180,7 @@ function statements(dialect: 'sqlite' | 'postgres'): string[] {
       origin TEXT NOT NULL DEFAULT 'human',
       origin_principal_id TEXT,
       adopted_at TEXT,
+      archived_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     )`,
@@ -304,6 +306,7 @@ function statements(dialect: 'sqlite' | 'postgres'): string[] {
       recorded_at TEXT NOT NULL
     )`,
     `CREATE INDEX IF NOT EXISTS audit_workspace ON audit(workspace, seq DESC)`,
+    `CREATE INDEX IF NOT EXISTS audit_workspace_time ON audit(workspace, recorded_at)`,
 
     // ---- v2：ANP 身份 ----
     `CREATE TABLE IF NOT EXISTS anp_nonces (
@@ -706,6 +709,7 @@ const ADDED_COLUMNS: { table: string; column: string; definition: string }[] = [
   { table: 'tasks', column: 'origin', definition: "TEXT NOT NULL DEFAULT 'human'" },
   { table: 'tasks', column: 'origin_principal_id', definition: 'TEXT' },
   { table: 'tasks', column: 'adopted_at', definition: 'TEXT' },
+  { table: 'tasks', column: 'archived_at', definition: 'TEXT' },
   { table: 'principals', column: 'account_id', definition: 'TEXT' },
   { table: 'principals', column: 'tenant_role', definition: "TEXT NOT NULL DEFAULT 'member'" },
   // v4 个人资料。老主体保持空值，展示时回落到姓名首字或 DID handle。
@@ -734,7 +738,7 @@ const ADDED_COLUMNS: { table: string; column: string; definition: string }[] = [
   { table: 'task_comments', column: 'edited_at', definition: 'TEXT' },
 ];
 
-export const SCHEMA_VERSION = 10;
+export const SCHEMA_VERSION = 11;
 
 async function existingColumns(db: Database, table: string): Promise<Set<string> | null> {
   try {
