@@ -23,7 +23,13 @@ import { hashToken } from './principals.ts';
 import type { TenantService } from './tenants.ts';
 import { rolesFor } from './tenants.ts';
 
-const DEFAULT_SCOPES: AgentScope[] = ['tasks:read', 'tasks:submit', 'offers:claim', 'comments:write'];
+const DEFAULT_SCOPES: AgentScope[] = [
+  'tasks:read',
+  'tasks:submit',
+  'offers:claim',
+  'comments:write',
+  'presence:write',
+];
 const DEVICE_TTL_SECONDS = 600;
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 

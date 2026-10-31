@@ -20,6 +20,7 @@ import {
   isCoordinator,
   loadTask,
   readTask,
+  requireAgentScope,
   requireRole,
 } from './access.ts';
 import { appendEvent, latestSeq } from './events.ts';
@@ -241,12 +242,14 @@ export class TaskService {
   }
 
   async list(actor: Principal, filters: Omit<TaskFilters, 'limit' | 'offset'> = {}): Promise<TaskListItem[]> {
+    await requireAgentScope(this.ctx, actor, 'tasks:read');
     const { sql, params } = this.buildListSql(actor, { ...filters, limit: 500, offset: 0 });
     const rows = await this.ctx.db.read.all(sql, params);
     return rows.map(toListItem);
   }
 
   async page(actor: Principal, filters: TaskFilters): Promise<{ items: TaskListItem[]; nextOffset: number | null }> {
+    await requireAgentScope(this.ctx, actor, 'tasks:read');
     // 多取一条用来判断是否还有下一页，避免额外 count 查询。
     const { sql, params } = this.buildListSql(actor, { ...filters, limit: filters.limit + 1 });
     const rows = await this.ctx.db.read.all(sql, params);
@@ -290,6 +293,7 @@ export class TaskService {
   }
 
   async detail(actor: Principal, taskId: string): Promise<Record<string, unknown>> {
+    await requireAgentScope(this.ctx, actor, 'tasks:read');
     const task = await readTask(this.ctx, actor, taskId);
     const unrestricted =
       hasAnyRole(actor, 'admin') || task.ownerId === actor.id || (await isCoordinator(this.ctx, actor, task.id));
@@ -384,12 +388,14 @@ export class TaskService {
 
   /** 任务材料目录：能读任务的人都能看。 */
   async materials(actor: Principal, taskId: string) {
+    await requireAgentScope(this.ctx, actor, 'tasks:read');
     await readTask(this.ctx, actor, taskId);
     return listMaterials(this.ctx.db.read, taskId);
   }
 
   /** 材料正文：下载与智能体取用共用。 */
   async material(actor: Principal, taskId: string, materialId: string) {
+    await requireAgentScope(this.ctx, actor, 'tasks:read');
     await readTask(this.ctx, actor, taskId);
     return requireMaterial(this.ctx.db.read, taskId, materialId);
   }

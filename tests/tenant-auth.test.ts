@@ -292,6 +292,177 @@ test('Agent 授权：申请 → 人批准 → 换成令牌 → 撤销后立即�
   }
 });
 
+test('Agent 授权：没勾读任务与上报在线时，对应接口一律拒绝', async () => {
+  const harness = await startHarness({ workspace: 'acme' });
+  try {
+    const owner = await emailLogin(harness, 'owner@example.com');
+    const request = await json<{ deviceCode: string; userCode: string }>(
+      await post(harness, '/auth/agent/request', {
+        did: harness.did.identity('narrow-agent').did,
+        name: '范围很窄的 Agent',
+      }),
+    );
+    const approved = await post(
+      harness,
+      '/v1/agents/approve',
+      { userCode: request.userCode, scopes: ['tasks:submit'] },
+      owner.token,
+    );
+    assert.equal(approved.status, 200, await approved.clone().text());
+    const agent = await json<{ token: string; principal: { id: string } }>(
+      await post(harness, '/auth/agent/token', { deviceCode: request.deviceCode }),
+    );
+
+    assert.equal((await get(harness, '/v1/tasks', agent.token)).status, 403, '没勾读任务就不能列任务');
+    assert.equal((await get(harness, '/v1/tasks/page', agent.token)).status, 403, '分页读取同样受范围约束');
+    assert.equal((await get(harness, '/v1/inbox', agent.token)).status, 403, '待办里含任务内容，也要读任务范围');
+    assert.equal(
+      (await get(harness, '/v1/knowledge/missing/evidence', agent.token)).status,
+      403,
+      '知识证据也受读经验库范围约束',
+    );
+    assert.equal(
+      (await post(harness, '/v1/agent/heartbeat', { state: 'online' }, agent.token)).status,
+      403,
+      '没勾上报在线状态就不能心跳',
+    );
+
+    // 已被指派也读不到材料：可见性之外还有范围这一层。
+    const created = await post(
+      harness,
+      '/v1/tasks',
+      {
+        title: '指派给窄范围 Agent 的任务',
+        type: 'shortage-analysis',
+        goal: '验证材料读取',
+        acceptance: '材料接口受范围约束',
+        input: { material: 'M-1', quantity: 1 },
+      },
+      owner.token,
+    );
+    assert.equal(created.status, 200, await created.clone().text());
+    const task = await json<{ id: string }>(created);
+    const assigned = await post(
+      harness,
+      `/v1/tasks/${task.id}/assign`,
+      { agent: agent.principal.id, kind: 'inventory' },
+      owner.token,
+    );
+    assert.equal(assigned.status, 200, await assigned.clone().text());
+    assert.equal(
+      (await get(harness, `/v1/tasks/${task.id}/materials`, agent.token)).status,
+      403,
+      '没勾读任务也读不到任务材料',
+    );
+    assert.equal((await get(harness, '/v1/me/mentions', agent.token)).status, 403, '提及里含任务内容，也要读任务范围');
+  } finally {
+    await harness.close();
+  }
+});
+
+test('Agent 授权：只有读任务时，不能推进子任务状态', async () => {
+  const harness = await startHarness({ workspace: 'acme' });
+  try {
+    const owner = await emailLogin(harness, 'owner@example.com');
+    const request = await json<{ deviceCode: string; userCode: string }>(
+      await post(harness, '/auth/agent/request', {
+        did: harness.did.identity('readonly-agent').did,
+        name: '只读任务 Agent',
+      }),
+    );
+    const approved = await post(
+      harness,
+      '/v1/agents/approve',
+      { userCode: request.userCode, scopes: ['tasks:read'] },
+      owner.token,
+    );
+    assert.equal(approved.status, 200, await approved.clone().text());
+    const grant = await json<{ principalId: string }>(approved);
+    const agent = await json<{ token: string }>(
+      await post(harness, '/auth/agent/token', { deviceCode: request.deviceCode }),
+    );
+
+    const created = await post(
+      harness,
+      '/v1/tasks',
+      {
+        title: '只读 Agent 的任务',
+        type: 'shortage-analysis',
+        goal: '验证子任务动作',
+        acceptance: '只有读任务范围',
+        input: { material: 'M-2', quantity: 2 },
+      },
+      owner.token,
+    );
+    const task = await json<{ id: string }>(created);
+    const assigned = await post(
+      harness,
+      `/v1/tasks/${task.id}/assign`,
+      { agent: grant.principalId, kind: 'inventory' },
+      owner.token,
+    );
+    assert.equal(assigned.status, 200, await assigned.clone().text());
+    const subtask = await json<{ id: string }>(assigned);
+
+    assert.equal((await get(harness, `/v1/tasks/${task.id}`, agent.token)).status, 200, '读任务范围应保留');
+    assert.equal(
+      (await post(harness, `/v1/subtasks/${subtask.id}/accept`, {}, agent.token)).status,
+      403,
+      '没有提交范围不能接受子任务',
+    );
+    assert.equal(
+      (await post(harness, `/v1/subtasks/${subtask.id}/reject`, { reason: '不做' }, agent.token)).status,
+      403,
+    );
+    assert.equal(
+      (await post(harness, `/v1/subtasks/${subtask.id}/progress`, { text: '进行中' }, agent.token)).status,
+      403,
+    );
+    assert.equal(
+      (
+        await post(
+          harness,
+          `/v1/subtasks/${subtask.id}/outcome-unknown`,
+          { reason: '无法确认', externalOperationId: 'op-1' },
+          agent.token,
+        )
+      ).status,
+      403,
+    );
+  } finally {
+    await harness.close();
+  }
+});
+
+test('Agent 授权：默认范围包含读任务与上报在线，默认 Agent 仍能工作', async () => {
+  const harness = await startHarness({ workspace: 'acme' });
+  try {
+    const owner = await emailLogin(harness, 'owner@example.com');
+    const request = await json<{ deviceCode: string; userCode: string }>(
+      await post(harness, '/auth/agent/request', {
+        did: harness.did.identity('default-agent').did,
+        name: '默认范围 Agent',
+      }),
+    );
+    const approved = await post(harness, '/v1/agents/approve', { userCode: request.userCode }, owner.token);
+    assert.equal(approved.status, 200, await approved.clone().text());
+    const agent = await json<{ token: string; scopes: string[] }>(
+      await post(harness, '/auth/agent/token', { deviceCode: request.deviceCode }),
+    );
+
+    assert.ok(agent.scopes.includes('tasks:read'), '默认应能读任务');
+    assert.ok(agent.scopes.includes('presence:write'), '默认应能上报在线状态');
+    assert.equal((await get(harness, '/v1/tasks', agent.token)).status, 200);
+    assert.equal(
+      (await post(harness, '/v1/agent/heartbeat', { state: 'online' }, agent.token)).status,
+      200,
+      '默认范围应允许心跳',
+    );
+  } finally {
+    await harness.close();
+  }
+});
+
 test('Agent 授权：共用账号模式不会新建主体，撤销时也不停用本人', async () => {
   const harness = await startHarness({ workspace: 'acme' });
   try {

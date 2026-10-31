@@ -131,7 +131,7 @@ https://collab.example.com/login?ticket=Yl9m...
 
 ⑤ 人在控制台输入 user_code → 看到 Agent 的名字、DID 指纹、请求的能力
    → 选择授权范围与期限 → 点「批准」
-      范围默认：tasks:read / tasks:submit / offers:claim / comments:write
+      范围默认：tasks:read / tasks:submit / offers:claim / comments:write / presence:write
       期限默认：30 天（可选 7 / 30 / 90 / 不过期）
 
 ⑥ Agent 下一次轮询 → 200 { token, principal, scopes, expiresAt }

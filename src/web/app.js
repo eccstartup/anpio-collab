@@ -2763,7 +2763,7 @@ function approveAgent(prefill = '') {
         name: 'scopes',
         label: '授权范围',
         type: 'checkbox-group',
-        value: ['tasks:read', 'tasks:submit', 'offers:claim', 'comments:write'],
+        value: ['tasks:read', 'tasks:submit', 'offers:claim', 'comments:write', 'presence:write'],
         options: SCOPE_OPTIONS,
       },
       {

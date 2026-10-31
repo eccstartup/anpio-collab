@@ -385,6 +385,7 @@ export class KnowledgeService {
 
   /** 来源空间看到的分享集合；已停用团队也会返回，便于撤回。 */
   async shares(actor: Principal, id: string): Promise<{ teams: { id: string; name: string; status: string }[] }> {
+    await requireAgentScope(this.ctx, actor, 'knowledge:read');
     const item = await this.requireItem(actor, id);
     const rows = await this.ctx.db.read.all(
       `SELECT t.id, t.name, t.status
@@ -610,6 +611,7 @@ export class KnowledgeService {
 
   /** 当前有效版本的证据包。 */
   async currentEvidence(actor: Principal, id: string): Promise<Record<string, unknown>> {
+    await requireAgentScope(this.ctx, actor, 'knowledge:read');
     const item = await this.loadReadable(actor, id);
     if (
       !item ||
@@ -638,6 +640,7 @@ export class KnowledgeService {
     knowledgeId: string,
     version: number,
   ): Promise<Record<string, unknown>> {
+    await requireAgentScope(this.ctx, actor, 'knowledge:read');
     const task = await readTask(this.ctx, actor, taskId);
     if (task.ownerId !== actor.id && !hasAnyRole(actor, 'admin')) {
       throw forbidden('只有负责人或管理员可以读取任务证据');
@@ -673,6 +676,7 @@ export class KnowledgeService {
 
   /** 任务引用一条当前有效的经验，固定到具体版本。 */
   async reference(actor: Principal, taskId: string, body: unknown): Promise<{ id: string; version: number }> {
+    await requireAgentScope(this.ctx, actor, 'knowledge:read');
     const task = await readTask(this.ctx, actor, taskId);
     assertOwner(actor, task);
     if (task.status === 'cancelled') throw conflict('已取消的任务不能引用知识');

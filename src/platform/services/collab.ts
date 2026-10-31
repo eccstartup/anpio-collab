@@ -149,6 +149,7 @@ export class CollabService {
   }
 
   async listComments(actor: Principal, taskId: string): Promise<TaskComment[]> {
+    await requireAgentScope(this.ctx, actor, 'tasks:read');
     const task = await readTask(this.ctx, actor, taskId);
     const rows = await this.ctx.db.read.all(
       `SELECT c.*, p.display_name AS author_name, p.avatar AS author_avatar, p.kind AS author_kind
@@ -161,6 +162,7 @@ export class CollabService {
 
   /** 我被提及但还没读的评论。 */
   async mentions(actor: Principal): Promise<TaskComment[]> {
+    await requireAgentScope(this.ctx, actor, 'tasks:read');
     const rows = await this.ctx.db.read.all(
       `SELECT c.*, m.id AS mention_id, p.display_name AS author_name, p.avatar AS author_avatar,
               p.kind AS author_kind, t.title AS task_title
@@ -262,6 +264,7 @@ export class CollabService {
   }
 
   async listOffers(actor: Principal, taskId: string): Promise<TaskOffer[]> {
+    await requireAgentScope(this.ctx, actor, 'tasks:read');
     const task = await readTask(this.ctx, actor, taskId);
     const rows = await this.ctx.db.read.all(
       'SELECT * FROM task_offers WHERE task_id = :taskId ORDER BY created_at DESC LIMIT 100',
@@ -393,6 +396,7 @@ export class CollabService {
     if (actor.kind !== 'agent' && actor.kind !== 'service' && !hasAnyRole(actor, 'admin')) {
       throw forbidden('只有智能体或服务账号上报心跳');
     }
+    await requireAgentScope(this.ctx, actor, 'presence:write');
     const input = body && typeof body === 'object' ? asObject(body) : {};
     const state = input.state === undefined ? 'online' : (String(input.state) as Presence['state']);
     if (!PRESENCE_STATES.includes(state)) throw invalid(`state 必须是 ${PRESENCE_STATES.join(' / ')} 之一`);

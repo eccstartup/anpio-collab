@@ -73,6 +73,7 @@ export class SubtaskService {
   /** 智能体待办：已邀请、已接受、被退回，且依赖已满足的子任务。 */
   async inbox(actor: Principal): Promise<InboxItem[]> {
     requireRole(actor, 'agent', 'admin');
+    await requireAgentScope(this.ctx, actor, 'tasks:read');
     const rows = await this.ctx.db.read.all(
       `SELECT s.*, t.title, t.type, t.priority, t.acceptance, t.input,
               (SELECT COUNT(*) FROM subtask_dependencies d WHERE d.subtask_id = s.id) AS dependency_count,
@@ -170,6 +171,7 @@ export class SubtaskService {
 
   async reject(actor: Principal, subtaskId: string, body: unknown): Promise<{ id: string; status: string; version: number }> {
     const subtask = await agentSubtask(this.ctx, actor, subtaskId);
+    await requireAgentScope(this.ctx, actor, 'tasks:submit');
     if (!['invited', 'returned'].includes(subtask.status)) throw conflict('只有已邀请或被退回的子任务可以拒绝');
     const reason = asString(asObject(body).reason, 'reason', { max: 2000 });
     return this.applyTransition(actor, subtask, 'rejected', {
@@ -196,6 +198,7 @@ export class SubtaskService {
   /** 进度记录不改变状态，只写事件，便于长任务被他人观察。 */
   async progress(actor: Principal, subtaskId: string, body: unknown): Promise<{ id: string; status: string; version: number }> {
     const subtask = await agentSubtask(this.ctx, actor, subtaskId);
+    await requireAgentScope(this.ctx, actor, 'tasks:submit');
     if (subtask.status !== 'accepted') throw conflict('只有已接受的子任务可以记录进度');
     const text = asString(asObject(body).text, 'text', { max: 2000 });
     const task = await readTask(this.ctx, actor, subtask.taskId);
@@ -214,6 +217,7 @@ export class SubtaskService {
   /** 结果未知：已完成可能有副作用的操作但无法确认结果，必须由人核对。 */
   async outcomeUnknown(actor: Principal, subtaskId: string, body: unknown): Promise<{ id: string; status: string; version: number }> {
     const subtask = await agentSubtask(this.ctx, actor, subtaskId);
+    await requireAgentScope(this.ctx, actor, 'tasks:submit');
     if (subtask.status !== 'accepted') throw conflict('只有已接受的子任务可以标记结果未知');
     const input = asObject(body);
     const reason = asString(input.reason, 'reason', { max: 2000 });
