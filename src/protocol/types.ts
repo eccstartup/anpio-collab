@@ -266,13 +266,13 @@ export type TaskRequest = {
 export const KNOWLEDGE_STATES = ['draft', 'candidate', 'published', 'archived', 'revoked'] as const;
 export type KnowledgeState = (typeof KNOWLEDGE_STATES)[number];
 
-/** AICD 的普通文档类型；其余 kind 只是可选的用途标签，不附带额外生命周期。 */
-export const AICD_KINDS = ['document', 'experience', 'playbook', 'checklist', 'decision', 'report', 'handoff'] as const;
-export type AicdKind = (typeof AICD_KINDS)[number];
+/** 文档类型；其余 kind 只是可选的用途标签，不附带额外生命周期。 */
+export const DOCUMENT_KINDS = ['document', 'experience', 'playbook', 'checklist', 'decision', 'report', 'handoff'] as const;
+export type DocumentKind = (typeof DOCUMENT_KINDS)[number];
 
 /** 来路：任务验收沉淀、人手动编写、智能体候选。 */
-export const AICD_SOURCES = ['task', 'manual', 'agent'] as const;
-export type AicdSource = (typeof AICD_SOURCES)[number];
+export const DOCUMENT_SOURCES = ['task', 'manual', 'agent'] as const;
+export type DocumentSource = (typeof DOCUMENT_SOURCES)[number];
 
 export const EVIDENCE_LEVELS = ['task_verified', 'manual', 'imported'] as const;
 export type EvidenceLevel = (typeof EVIDENCE_LEVELS)[number];
@@ -295,11 +295,11 @@ export type Knowledge = {
   accessMode: AccessMode;
   createdAt: string;
   updatedAt: string;
-  kind: AicdKind;
+  kind: DocumentKind;
   title: string;
   summary: string;
   tags: string[];
-  source: AicdSource;
+  source: DocumentSource;
   evidenceLevel: EvidenceLevel;
   archivedAt: string | null;
   /** 列表补充的展示信息：作者姓名与来源空间。 */
@@ -313,7 +313,7 @@ export type Knowledge = {
   /** 来源已被撤销：副本仍可用，但必须提示复核。 */
   sourceRevoked?: boolean;
   /** 来源空间可见：被复制到哪些空间。 */
-  copies?: AicdCopyTarget[];
+  copies?: DocumentCopyTarget[];
 };
 
 export type CopiedFrom = {
@@ -327,7 +327,7 @@ export type CopiedFrom = {
   revoked: boolean;
 };
 
-export type AicdCopyTarget = {
+export type DocumentCopyTarget = {
   workspace: string;
   workspaceName: string;
   personal: boolean;
@@ -369,7 +369,7 @@ export type CopyInvite = {
   /** 邀请里展示来源摘要，不必先读来源才能判断。 */
   title?: string;
   summary?: string;
-  kind?: AicdKind;
+  kind?: DocumentKind;
   sourceName?: string;
 };
 
@@ -489,14 +489,14 @@ export type EventType =
   | 'thread_resolved'
   | 'file_uploaded'
   | 'file_deleted'
-  | 'aicd_created'
-  | 'aicd_updated'
-  | 'aicd_submitted'
-  | 'aicd_archived'
-  | 'aicd_copied'
-  | 'aicd_copy_invited'
-  | 'aicd_copy_accepted'
-  | 'aicd_copy_declined'
+  | 'document_created'
+  | 'document_updated'
+  | 'document_submitted'
+  | 'document_archived'
+  | 'document_copied'
+  | 'document_copy_invited'
+  | 'document_copy_accepted'
+  | 'document_copy_declined'
   | 'offer_published'
   | 'offer_claimed'
   | 'offer_withdrawn'
@@ -574,7 +574,7 @@ export type SpaceFileKind = (typeof SPACE_FILE_KINDS)[number];
 export type SpaceFile = {
   id: string;
   workspace: string;
-  /** 独立附件（例如 AICD 的附件）不属于任何任务。 */
+  /** 独立附件（例如文档的附件）不属于任何任务。 */
   taskId: string | null;
   subtaskId: string | null;
   messageId: string | null;

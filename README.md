@@ -843,7 +843,7 @@ npm run backup -- ./collab.sqlite3 /secure/collab-backup-20261031.sqlite3
 | 子任务 | `POST /v1/subtasks/:id/accept|reject|submit|progress|timeout|return|outcome-unknown` |
 | 房间 | `GET /v1/tasks/:id/room`、`/messages`、`/threads`、`/files`、`/read`、`/context-pack` |
 | 文件 | `POST /v1/space/files/upload-url`、`PUT /v1/space/uploads/:token`、`POST /v1/space/uploads/:id/complete`、`GET /v1/space/files/:id/content` |
-| 经验 | `GET|POST /v1/knowledge`、`/v1/knowledge/:id/publish|revise|revoke|shares|versions`、`POST /v1/aicds/:id/copy`、`GET /v1/aicds/:id/lineage` |
+| 经验 | `GET|POST /v1/knowledge`、`/v1/knowledge/:id/publish|revise|revoke|shares|versions`、`POST /v1/documents/:id/copy`、`GET /v1/documents/:id/lineage` |
 | 信箱 | `POST /v1/mail/sessions`、`GET /v1/mail/sessions/:id/messages|events`、`GET /v1/mail/messages/:id`、`POST .../ack|nack` |
 | 内置智能体 | `GET|POST /v1/embedded/agents`、`/v1/embedded/providers`、`POST /v1/embedded/agents/:id/run`、`GET /v1/embedded/agents/:id/runs`、`POST /v1/embedded/runs/:id/log|heartbeat|finish` |
 | 监管 | `GET /v1/oversight`（总览）、`POST /v1/oversight/scan`、`POST /v1/oversight/alerts/:id/ack|resolve` |

@@ -208,14 +208,14 @@ const EVENT_LABELS: Record<string, string> = {
   request_countered: '协作请求还价',
   request_confirmed: '确认还价',
   request_withdrawn: '撤回协作请求',
-  aicd_created: '创建经验',
-  aicd_updated: '编辑经验',
-  aicd_submitted: '提交经验审核',
-  aicd_archived: '归档经验',
-  aicd_copied: '复制经验',
-  aicd_copy_invited: '发起复制邀请',
-  aicd_copy_accepted: '接受复制邀请',
-  aicd_copy_declined: '拒绝复制邀请',
+  document_created: '创建经验',
+  document_updated: '编辑经验',
+  document_submitted: '提交经验审核',
+  document_archived: '归档经验',
+  document_copied: '复制经验',
+  document_copy_invited: '发起复制邀请',
+  document_copy_accepted: '接受复制邀请',
+  document_copy_declined: '拒绝复制邀请',
 };
 
 function eventSummary(type: string, payload: Record<string, unknown>): string {
@@ -1424,7 +1424,7 @@ export class CollabService {
       activity.push({
         at: item.updatedAt,
         stream: 'knowledge',
-        type: `aicd_${item.state}`,
+        type: `document_${item.state}`,
         actorId: item.authorId,
         actorName: item.authorName ?? item.authorId,
         summary: item.title,

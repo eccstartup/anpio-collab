@@ -1416,10 +1416,10 @@ export const routes: Route[] = [
   // ------------------------------------------------------------文档（手动发布与管理）
   {
     method: 'GET',
-    path: '/v1/aicds',
+    path: '/v1/documents',
     description: '文档列表：本人稿、团队已发布稿与审核人可见的全部状态',
     read: async ({ app, principal, query }) =>
-      app.knowledge.listAicds(principal, {
+      app.knowledge.listDocuments(principal, {
         state: query.get('state') ?? undefined,
         kind: query.get('kind') ?? undefined,
         query: parseQuery(query),
@@ -1428,7 +1428,7 @@ export const routes: Route[] = [
   },
   {
     method: 'POST',
-    path: '/v1/aicds',
+    path: '/v1/documents',
     description: '新建文档草稿（真人，可关联任务）',
     write: {
       execute: async ({ app, principal, body }) => app.knowledge.create(principal, body),
@@ -1436,13 +1436,13 @@ export const routes: Route[] = [
   },
   {
     method: 'GET',
-    path: '/v1/aicds/:id',
+    path: '/v1/documents/:id',
     description: '文档详情（含来源与复制关系）',
     read: async ({ app, principal, params }) => app.knowledge.detail(principal, params.id ?? ''),
   },
   {
     method: 'POST',
-    path: '/v1/aicds/:id/edit',
+    path: '/v1/documents/:id/edit',
     description: '编辑草稿或候选稿',
     write: {
       authorize: async ctx => ({
@@ -1454,7 +1454,7 @@ export const routes: Route[] = [
   },
   {
     method: 'POST',
-    path: '/v1/aicds/:id/submit',
+    path: '/v1/documents/:id/submit',
     description: '提交审核：draft → candidate',
     write: {
       authorize: async ctx => ({
@@ -1465,7 +1465,7 @@ export const routes: Route[] = [
   },
   {
     method: 'POST',
-    path: '/v1/aicds/:id/publish',
+    path: '/v1/documents/:id/publish',
     description: '发布文档（个人空间本人；团队需审核人或管理员）',
     write: {
       execute: async ({ app, principal, params, body }) =>
@@ -1474,7 +1474,7 @@ export const routes: Route[] = [
   },
   {
     method: 'POST',
-    path: '/v1/aicds/:id/archive',
+    path: '/v1/documents/:id/archive',
     description: '归档文档',
     write: {
       authorize: async ctx => ({
@@ -1486,7 +1486,7 @@ export const routes: Route[] = [
   },
   {
     method: 'POST',
-    path: '/v1/aicds/:id/delete',
+    path: '/v1/documents/:id/delete',
     description: '删除文档（仅无副本、未被引用的草稿或待审核稿）',
     write: {
       authorize: async ctx => ({
@@ -1497,7 +1497,7 @@ export const routes: Route[] = [
   },
   {
     method: 'POST',
-    path: '/v1/aicds/:id/copy',
+    path: '/v1/documents/:id/copy',
     description: '复制到自己的空间、所在团队，或发起跨个人空间邀请',
     write: {
       authorize: async ctx => ({
@@ -1508,19 +1508,19 @@ export const routes: Route[] = [
   },
   {
     method: 'GET',
-    path: '/v1/aicds/:id/copies',
+    path: '/v1/documents/:id/copies',
     description: '该文档的复制去向',
     read: async ({ app, principal, params }) => app.knowledge.copies(principal, params.id ?? ''),
   },
   {
     method: 'GET',
-    path: '/v1/aicds/:id/lineage',
+    path: '/v1/documents/:id/lineage',
     description: '来源链（最近 20 代）',
     read: async ({ app, principal, params }) => app.knowledge.lineage(principal, params.id ?? ''),
   },
   {
     method: 'POST',
-    path: '/v1/aicds/:id/invite',
+    path: '/v1/documents/:id/invite',
     description: '邀请他人复制到其个人空间',
     write: {
       authorize: async ctx => ({
@@ -1532,13 +1532,13 @@ export const routes: Route[] = [
   },
   {
     method: 'GET',
-    path: '/v1/aicds/:id/assets',
+    path: '/v1/documents/:id/assets',
     description: '文档证据附件',
     read: async ({ app, principal, params }) => app.knowledge.assets(principal, params.id ?? ''),
   },
   {
     method: 'POST',
-    path: '/v1/aicds/:id/assets',
+    path: '/v1/documents/:id/assets',
     description: '把同团队成果文件挂为证据',
     write: {
       authorize: async ctx => ({
@@ -1550,7 +1550,7 @@ export const routes: Route[] = [
   },
   {
     method: 'POST',
-    path: '/v1/aicds/:id',
+    path: '/v1/documents/:id',
     description: '编辑草稿或候选稿（/edit 的别名）',
     write: {
       authorize: async ctx => ({
@@ -1562,7 +1562,7 @@ export const routes: Route[] = [
   },
   {
     method: 'POST',
-    path: '/v1/aicds/:id/revise',
+    path: '/v1/documents/:id/revise',
     description: '生成新版本候选',
     write: {
       execute: async ({ app, principal, params, body }) =>
@@ -1571,7 +1571,7 @@ export const routes: Route[] = [
   },
   {
     method: 'POST',
-    path: '/v1/aicds/:id/revoke',
+    path: '/v1/documents/:id/revoke',
     description: '撤销已发布文档',
     write: {
       execute: async ({ app, principal, params, body }) =>
@@ -1580,7 +1580,7 @@ export const routes: Route[] = [
   },
   {
     method: 'POST',
-    path: '/v1/aicds/:id/access',
+    path: '/v1/documents/:id/access',
     description: '调整共享范围',
     write: {
       execute: async ({ app, principal, params, body }) =>
@@ -1589,32 +1589,32 @@ export const routes: Route[] = [
   },
   {
     method: 'GET',
-    path: '/v1/aicds/:id/versions',
+    path: '/v1/documents/:id/versions',
     description: '已发布版本快照（审核人或管理员）',
     read: async ({ app, principal, params }) => app.knowledge.versions(principal, params.id ?? ''),
   },
   {
     method: 'GET',
-    path: '/v1/aicds/:id/usage',
+    path: '/v1/documents/:id/usage',
     description: '文档被任务引用的使用记录',
     read: async ({ app, principal, params }) => app.knowledge.usage(principal, params.id ?? ''),
   },
   {
     method: 'GET',
-    path: '/v1/aicds/:id/evidence',
+    path: '/v1/documents/:id/evidence',
     description: '当前有效版本的证据包',
     auditRead: true,
     read: async ({ app, principal, params }) => app.knowledge.currentEvidence(principal, params.id ?? ''),
   },
   {
     method: 'GET',
-    path: '/v1/aicds/:id/shares',
+    path: '/v1/documents/:id/shares',
     description: '个人文档分享到的团队（仅来源空间）',
     read: async ({ app, principal, params }) => app.knowledge.shares(principal, params.id ?? ''),
   },
   {
     method: 'POST',
-    path: '/v1/aicds/:id/shares',
+    path: '/v1/documents/:id/shares',
     description: '把个人文档分享给一个或多个团队（整单替换）',
     write: {
       execute: async ({ app, principal, params, body }) =>

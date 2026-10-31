@@ -118,7 +118,7 @@ const RULE_LABEL = {
 const PRESENCE_LABEL = { online: '在线', busy: '忙碌', offline: '离线' };
 const PRESENCE_TONE = { online: 'ok', busy: 'warn', offline: 'muted' };
 
-const AICD_KIND_LABEL = {
+const DOCUMENT_KIND_LABEL = {
   experience: '经验',
   playbook: '做法',
   checklist: '清单',
@@ -127,14 +127,14 @@ const AICD_KIND_LABEL = {
   handoff: '交接说明',
 };
 
-const AICD_STATE_LABEL = {
+const DOCUMENT_STATE_LABEL = {
   draft: '草稿',
   candidate: '待审核',
   published: '已发布',
   archived: '已归档',
   revoked: '已撤销',
 };
-const AICD_STATE_TONE = {
+const DOCUMENT_STATE_TONE = {
   draft: 'muted',
   candidate: 'warn',
   published: 'ok',
@@ -222,7 +222,7 @@ const state = {
   method: '',
   me: null,
   view: 'home',
-  tab: 'aicds',
+  tab: 'documents',
   tasks: [],
   includeArchived: false,
   activity: [],
@@ -241,9 +241,9 @@ const state = {
   requestInbox: [],
   myAgents: [],
   knowledge: [],
-  aicds: [],
-  aicdState: '',
-  aicdInvites: [],
+  documents: [],
+  documentState: '',
+  documentInvites: [],
   candidates: [],
   pending: [],
   audit: [],
@@ -861,11 +861,11 @@ async function refresh() {
       if (state.tab === 'published') {
         state.knowledge = await api(`knowledge${state.query ? `?q=${encodeURIComponent(state.query)}` : ''}`);
       }
-      if (state.tab === 'aicds') {
-        state.aicds = await api(`aicds${state.aicdState ? `?state=${encodeURIComponent(state.aicdState)}` : ''}`);
+      if (state.tab === 'documents') {
+        state.documents = await api(`documents${state.documentState ? `?state=${encodeURIComponent(state.documentState)}` : ''}`);
       }
       if (hasRole('reviewer', 'admin')) state.candidates = await api('knowledge/candidates');
-      state.aicdInvites = await api('me/copy-invites').catch(() => []);
+      state.documentInvites = await api('me/copy-invites').catch(() => []);
     }
     if (state.view === 'directory') {
       state.tenantDetail = await api('tenants/current').catch(() => null);
@@ -1922,12 +1922,12 @@ function openUploadFile(task) {
 
 function openPromoteFile(task, file) {
   act(async () => {
-    const items = await api('aicds');
+    const items = await api('documents');
     const options = items
       .filter((item) => item.state !== 'archived' && item.state !== 'revoked')
       .map((item) => ({
         value: item.id,
-        label: `${item.title}（${AICD_STATE_LABEL[item.state] ?? item.state}）`,
+        label: `${item.title}（${DOCUMENT_STATE_LABEL[item.state] ?? item.state}）`,
       }));
     if (!options.length) {
       toast('先建一条经验，再把成果挂成证据', 'error');
@@ -1991,16 +1991,16 @@ function renderRoomKnowledge(room) {
       el('div', { class: 'list-item static' },
         el('div', { class: 'row spread top' },
           el('span', { class: 'title' }, item.title || item.content.slice(0, 40)),
-          toneBadge(AICD_STATE_TONE[item.state] ?? 'muted', AICD_STATE_LABEL[item.state] ?? item.state)),
+          toneBadge(DOCUMENT_STATE_TONE[item.state] ?? 'muted', DOCUMENT_STATE_LABEL[item.state] ?? item.state)),
         el('div', { class: 'meta' },
-          el('span', {}, AICD_KIND_LABEL[item.kind] ?? item.kind),
+          el('span', {}, DOCUMENT_KIND_LABEL[item.kind] ?? item.kind),
           el('span', {}, `v${item.version}`),
           el('span', {}, `适用：${item.conditions || '—'}`)),
         el('div', { class: 'row actions-row' },
           el('button', {
             class: 'link',
             type: 'button',
-            onclick: () => openAicdDetail(item.id),
+            onclick: () => openDocumentDetail(item.id),
           }, '详情'))))));
 }
 
@@ -2821,9 +2821,9 @@ function openReturn(subtask) {
 // ---------------------------------------------------------------- 经验库
 
 function renderKnowledge() {
-  const pendingInvites = state.aicdInvites.filter((invite) => invite.status === 'pending').length;
+  const pendingInvites = state.documentInvites.filter((invite) => invite.status === 'pending').length;
   const tabs = el('div', { class: 'tabs' },
-    tabButton('aicds', '经验'),
+    tabButton('documents', '经验'),
     tabButton('published', '已发布'),
     hasRole('reviewer', 'admin') ? tabButton('candidates', `待审核 ${state.candidates.length ? `(${state.candidates.length})` : ''}`) : null,
     tabButton('invites', pendingInvites ? `复制邀请 (${pendingInvites})` : '复制邀请'));
@@ -2842,18 +2842,18 @@ function renderKnowledge() {
   };
   const search = el('div', { class: 'search' }, input, el('button', { type: 'button', onclick: runSearch }, '检索'));
 
-  if (state.tab === 'aicds') return frag(tabs, renderAicds());
-  if (state.tab === 'invites') return frag(tabs, renderAicdInvites());
+  if (state.tab === 'documents') return frag(tabs, renderDocuments());
+  if (state.tab === 'invites') return frag(tabs, renderDocumentInvites());
   const body = state.tab === 'candidates' && hasRole('reviewer', 'admin')
     ? renderCandidates()
     : renderPublished();
   return frag(tabs, state.tab === 'published' ? search : null, body);
 }
 
-function renderAicds() {
+function renderDocuments() {
   const filter = el('select', {
     onchange: (event) => {
-      state.aicdState = event.target.value;
+      state.documentState = event.target.value;
       refresh();
     },
   }, [
@@ -2865,22 +2865,22 @@ function renderAicds() {
     ['revoked', '已撤销'],
   ].map(([value, label]) => {
     const node = el('option', { value }, label);
-    if (value === state.aicdState) node.selected = true;
+    if (value === state.documentState) node.selected = true;
     return node;
   }));
 
   const toolbar = el('div', { class: 'toolbar' },
     filter,
     !isAgentSide() && !isGuest()
-      ? el('button', { class: 'primary', type: 'button', onclick: openCreateAicd }, '新建经验')
+      ? el('button', { class: 'primary', type: 'button', onclick: openCreateDocument }, '新建经验')
       : null);
 
-  if (!state.aicds.length) {
+  if (!state.documents.length) {
     return frag(toolbar, el('div', { class: 'empty' },
       '还没有经验。新建一条草稿，写清适用条件与有效期，再提交审核。'));
   }
 
-  return frag(toolbar, el('div', { class: 'list' }, state.aicds.map((item) => {
+  return frag(toolbar, el('div', { class: 'list' }, state.documents.map((item) => {
     const mine = item.authorId === state.me.id;
     const manage = mine || hasRole('admin', 'reviewer');
     const personal = Boolean(state.tenant?.personal);
@@ -2890,8 +2890,8 @@ function renderAicds() {
           el('p', { class: 'title' }, item.title || item.content.slice(0, 60)),
           item.summary ? el('p', { class: 'muted small' }, item.summary) : null),
         el('div', { class: 'row' },
-          toneBadge(AICD_STATE_TONE[item.state] ?? 'muted', AICD_STATE_LABEL[item.state] ?? item.state),
-          toneBadge('muted', AICD_KIND_LABEL[item.kind] ?? item.kind))),
+          toneBadge(DOCUMENT_STATE_TONE[item.state] ?? 'muted', DOCUMENT_STATE_LABEL[item.state] ?? item.state),
+          toneBadge('muted', DOCUMENT_KIND_LABEL[item.kind] ?? item.kind))),
       el('div', { class: 'meta' },
         el('span', {}, `v${item.version}`),
         el('span', {}, `作者 ${item.authorName || item.authorId}`),
@@ -2906,32 +2906,32 @@ function renderAicds() {
       item.sourceRevoked
         ? el('div', { class: 'note warn' }, '来源已被撤销：这份副本仍可用，但引用前请先复核。')
         : null,
-      el('div', { class: 'row actions-row' }, aicdActionButtons(item, manage, personal)));
+      el('div', { class: 'row actions-row' }, documentActionButtons(item, manage, personal)));
   })));
 }
 
-function aicdActionButtons(item, manage, personal) {
+function documentActionButtons(item, manage, personal) {
   const buttons = [
-    el('button', { class: 'link', type: 'button', onclick: () => openAicdDetail(item.id) }, '详情'),
+    el('button', { class: 'link', type: 'button', onclick: () => openDocumentDetail(item.id) }, '详情'),
   ];
   if (manage && (item.state === 'draft' || item.state === 'candidate')) {
-    buttons.push(el('button', { class: 'link', type: 'button', onclick: () => openEditAicd(item) }, '编辑'));
+    buttons.push(el('button', { class: 'link', type: 'button', onclick: () => openEditDocument(item) }, '编辑'));
     buttons.push(el('button', {
       class: 'link danger',
       type: 'button',
-      onclick: () => openDeleteAicd(item),
+      onclick: () => openDeleteDocument(item),
     }, '删除'));
     if (item.state === 'draft') {
       buttons.push(el('button', {
         class: 'link',
         type: 'button',
-        onclick: () => openSubmitAicd(item),
+        onclick: () => openSubmitDocument(item),
       }, '提交审核'));
     } else if (personal || hasRole('reviewer', 'admin')) {
       buttons.push(el('button', {
         class: 'link',
         type: 'button',
-        onclick: () => openPublishAicd(item),
+        onclick: () => openPublishDocument(item),
       }, '发布'));
     }
   }
@@ -2946,13 +2946,13 @@ function aicdActionButtons(item, manage, personal) {
     buttons.push(el('button', {
       class: 'link',
       type: 'button',
-      onclick: () => openCopyAicd(item),
+      onclick: () => openCopyDocument(item),
     }, '复制'));
     if (manage) {
       buttons.push(el('button', {
         class: 'link',
         type: 'button',
-        onclick: () => openInviteAicd(item),
+        onclick: () => openInviteDocument(item),
       }, '邀请他人复制'));
     }
   }
@@ -2960,17 +2960,17 @@ function aicdActionButtons(item, manage, personal) {
     buttons.push(el('button', {
       class: 'link danger',
       type: 'button',
-      onclick: () => openArchiveAicd(item),
+      onclick: () => openArchiveDocument(item),
     }, '归档'));
   }
   return buttons;
 }
 
-const AICD_KIND_OPTIONS = Object.entries(AICD_KIND_LABEL).map(([value, label]) => ({ value, label }));
+const DOCUMENT_KIND_OPTIONS = Object.entries(DOCUMENT_KIND_LABEL).map(([value, label]) => ({ value, label }));
 
-function aicdFields(item = {}) {
+function documentFields(item = {}) {
   return [
-    { name: 'kind', label: '类型', type: 'select', value: item.kind ?? 'experience', options: AICD_KIND_OPTIONS },
+    { name: 'kind', label: '类型', type: 'select', value: item.kind ?? 'experience', options: DOCUMENT_KIND_OPTIONS },
     { name: 'title', label: '标题', value: item.title ?? '', required: true, placeholder: '一句话说明它解决什么问题' },
     { name: 'summary', label: '摘要', value: item.summary ?? '', placeholder: '列表里展示的一句话' },
     { name: 'content', label: '正文', type: 'textarea', value: item.content ?? '', required: true },
@@ -2986,7 +2986,7 @@ function aicdFields(item = {}) {
   ];
 }
 
-function aicdBody(values) {
+function documentBody(values) {
   return {
     kind: values.kind,
     title: values.title,
@@ -2997,48 +2997,48 @@ function aicdBody(values) {
   };
 }
 
-function openCreateAicd() {
+function openCreateDocument() {
   openDialog({
     title: '新建经验',
     description: state.tenant?.personal
       ? '先存成草稿；发布后在个人空间生效，再复制给团队。'
       : '先存成草稿；提交审核后由你、审核人或管理员发布。',
     submitLabel: '保存草稿',
-    fields: aicdFields(),
+    fields: documentFields(),
     onSubmit: (values) => act(
-      () => api('aicds', { body: aicdBody(values) }),
+      () => api('documents', { body: documentBody(values) }),
       '草稿已保存',
     ),
   });
 }
 
-function openEditAicd(item) {
+function openEditDocument(item) {
   openDialog({
     title: '编辑经验',
     description: '草稿与待审核稿可以直接改。',
     submitLabel: '保存',
-    fields: aicdFields(item),
+    fields: documentFields(item),
     onSubmit: (values) => act(
-      () => api(`aicds/${item.id}/edit`, { body: aicdBody(values), expectedVersion: item.version }),
+      () => api(`documents/${item.id}/edit`, { body: documentBody(values), expectedVersion: item.version }),
       '已保存',
     ),
   });
 }
 
-function openSubmitAicd(item) {
+function openSubmitDocument(item) {
   openDialog({
     title: '提交审核',
     description: '提交后状态变成待审核；发布前还能继续编辑。',
     submitLabel: '提交审核',
     fields: [],
     onSubmit: () => act(
-      () => api(`aicds/${item.id}/submit`, { body: {}, expectedVersion: item.version }),
+      () => api(`documents/${item.id}/submit`, { body: {}, expectedVersion: item.version }),
       '已提交审核',
     ),
   });
 }
 
-function openPublishAicd(item) {
+function openPublishDocument(item) {
   const expires = new Date(Date.now() + 365 * 86_400_000).toISOString().slice(0, 10);
   openDialog({
     title: '发布经验',
@@ -3050,7 +3050,7 @@ function openPublishAicd(item) {
       { name: 'expiresAt', label: '有效期至', type: 'date', value: expires, required: true },
     ],
     onSubmit: (values) => act(
-      () => api(`aicds/${item.id}/publish`, {
+      () => api(`documents/${item.id}/publish`, {
         body: { expiresAt: new Date(`${values.expiresAt}T00:00:00Z`).toISOString() },
       }),
       '已发布',
@@ -3058,14 +3058,14 @@ function openPublishAicd(item) {
   });
 }
 
-function openArchiveAicd(item) {
+function openArchiveDocument(item) {
   openDialog({
     title: '归档经验',
     description: '归档后不再出现在常规列表，但版本、来源链与副本都保留。',
     submitLabel: '归档',
     fields: [{ name: 'reason', label: '原因', type: 'textarea', placeholder: '可选' }],
     onSubmit: (values) => act(
-      () => api(`aicds/${item.id}/archive`, {
+      () => api(`documents/${item.id}/archive`, {
         body: { reason: values.reason || undefined },
         expectedVersion: item.version,
       }),
@@ -3074,20 +3074,20 @@ function openArchiveAicd(item) {
   });
 }
 
-function openDeleteAicd(item) {
+function openDeleteDocument(item) {
   openDialog({
     title: '删除经验',
     description: '删除后不可恢复；已有副本或被任务引用的条目不能删除。',
     submitLabel: '删除',
     fields: [],
     onSubmit: () => act(
-      () => api(`aicds/${item.id}/delete`, { body: {}, expectedVersion: item.version }),
+      () => api(`documents/${item.id}/delete`, { body: {}, expectedVersion: item.version }),
       '已删除',
     ),
   });
 }
 
-function openCopyAicd(item) {
+function openCopyDocument(item) {
   const options = state.tenants
     .filter((tenant) => !tenant.personal && ['owner', 'admin', 'member'].includes(tenant.role))
     .map((tenant) => ({
@@ -3106,7 +3106,7 @@ function openCopyAicd(item) {
       { name: 'targetWorkspace', label: '目标团队', type: 'select', options },
     ],
     onSubmit: (values) => act(
-      () => api(`aicds/${item.id}/copy`, {
+      () => api(`documents/${item.id}/copy`, {
         body: { targetWorkspace: values.targetWorkspace },
         expectedVersion: item.version,
       }),
@@ -3115,7 +3115,7 @@ function openCopyAicd(item) {
   });
 }
 
-function openInviteAicd(item) {
+function openInviteDocument(item) {
   openDialog({
     title: '邀请他人复制',
     description: '对方接受后，会在其个人空间生成独立草稿；邀请 7 天内有效。',
@@ -3125,7 +3125,7 @@ function openInviteAicd(item) {
       { name: 'note', label: '附言', type: 'textarea', placeholder: '可选' },
     ],
     onSubmit: (values) => act(
-      () => api(`aicds/${item.id}/invite`, {
+      () => api(`documents/${item.id}/invite`, {
         body: { targetPrincipal: values.targetPrincipal, note: values.note || undefined },
         expectedVersion: item.version,
       }),
@@ -3134,20 +3134,20 @@ function openInviteAicd(item) {
   });
 }
 
-function openAicdDetail(id) {
+function openDocumentDetail(id) {
   act(async () => {
     const [item, assets, copies, lineage] = await Promise.all([
-      api(`aicds/${encodeURIComponent(id)}`),
-      api(`aicds/${encodeURIComponent(id)}/assets`).catch(() => []),
-      api(`aicds/${encodeURIComponent(id)}/copies`).catch(() => []),
-      api(`aicds/${encodeURIComponent(id)}/lineage`).catch(() => []),
+      api(`documents/${encodeURIComponent(id)}`),
+      api(`documents/${encodeURIComponent(id)}/assets`).catch(() => []),
+      api(`documents/${encodeURIComponent(id)}/copies`).catch(() => []),
+      api(`documents/${encodeURIComponent(id)}/lineage`).catch(() => []),
     ]);
     showPanel(
       item.title || '经验',
-      `${AICD_KIND_LABEL[item.kind] ?? item.kind} · v${item.version} · ${EVIDENCE_LABEL[item.evidenceLevel] ?? item.evidenceLevel}`,
+      `${DOCUMENT_KIND_LABEL[item.kind] ?? item.kind} · v${item.version} · ${EVIDENCE_LABEL[item.evidenceLevel] ?? item.evidenceLevel}`,
       el('div', { class: 'stack' },
         el('div', { class: 'row' },
-          toneBadge(AICD_STATE_TONE[item.state] ?? 'muted', AICD_STATE_LABEL[item.state] ?? item.state),
+          toneBadge(DOCUMENT_STATE_TONE[item.state] ?? 'muted', DOCUMENT_STATE_LABEL[item.state] ?? item.state),
           item.sourceRevoked ? toneBadge('danger', '来源已撤销') : null),
         item.summary ? el('p', {}, item.summary) : null,
         el('div', { class: 'result-box' }, item.content),
@@ -3183,7 +3183,7 @@ function openAicdDetail(id) {
                 el('div', { class: 'meta' },
                   el('span', {}, entry.workspaceName),
                   el('span', {}, `v${entry.version}`),
-                  el('span', {}, AICD_STATE_LABEL[entry.state] ?? entry.state),
+                  el('span', {}, DOCUMENT_STATE_LABEL[entry.state] ?? entry.state),
                   el('span', {}, formatTime(entry.copiedAt)))))))
           : null,
         copies.length
@@ -3194,7 +3194,7 @@ function openAicdDetail(id) {
                 el('p', { class: 'title' }, copy.workspaceName),
                 el('div', { class: 'meta' },
                   el('span', {}, copy.personal ? '个人空间' : '团队空间'),
-                  el('span', {}, AICD_STATE_LABEL[copy.state] ?? copy.state),
+                  el('span', {}, DOCUMENT_STATE_LABEL[copy.state] ?? copy.state),
                   el('span', {}, formatTime(copy.copiedAt)))))))
           : null,
         assets.length
@@ -3218,12 +3218,12 @@ function openAicdDetail(id) {
   }, '');
 }
 
-function renderAicdInvites() {
-  if (!state.aicdInvites.length) {
+function renderDocumentInvites() {
+  if (!state.documentInvites.length) {
     return el('div', { class: 'empty' }, '没有复制邀请。别人把经验复制给你时，会先在这里等你接受。');
   }
   const personal = Boolean(state.tenant?.personal);
-  return el('div', { class: 'list' }, state.aicdInvites.map((invite) => {
+  return el('div', { class: 'list' }, state.documentInvites.map((invite) => {
     const pending = invite.status === 'pending';
     return el('div', { class: 'list-item static' },
       el('div', { class: 'row spread top' },
@@ -3310,7 +3310,7 @@ function renderPublished() {
             ? el('button', { class: 'link', type: 'button', onclick: () => openShareKnowledge(item) }, '分享给团队')
             : el('button', { class: 'link', type: 'button', onclick: () => openAccess(item) }, '调整范围'),
           el('button', { class: 'link', type: 'button', onclick: () => openVersions(item) }, '版本历史'),
-          el('button', { class: 'link danger', type: 'button', onclick: () => openArchiveAicd(item) }, '归档'),
+          el('button', { class: 'link danger', type: 'button', onclick: () => openArchiveDocument(item) }, '归档'),
           el('button', { class: 'link danger', type: 'button', onclick: () => openRevoke(item) }, '撤销'))
         : null,
     );

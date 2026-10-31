@@ -76,7 +76,7 @@ const createDraft = async (
   harness: Harness,
   token: string,
   overrides: Record<string, unknown> = {},
-): Promise<Item> => json<Item>(await call(harness, 'POST', '/v1/aicds', token, draft(overrides)));
+): Promise<Item> => json<Item>(await call(harness, 'POST', '/v1/documents', token, draft(overrides)));
 
 const publishDraft = async (
   harness: Harness,
@@ -84,9 +84,9 @@ const publishDraft = async (
   item: Item,
   body: Record<string, unknown> = {},
 ): Promise<void> => {
-  await json(await call(harness, 'POST', `/v1/aicds/${item.id}/submit`, token, undefined, item.version));
+  await json(await call(harness, 'POST', `/v1/documents/${item.id}/submit`, token, undefined, item.version));
   await json(
-    await call(harness, 'POST', `/v1/aicds/${item.id}/publish`, token, {
+    await call(harness, 'POST', `/v1/documents/${item.id}/publish`, token, {
       expiresAt: FUTURE,
       ...body,
     }),
@@ -105,17 +105,17 @@ test('经验手动生命周期：草稿可编辑、提交后发布，智能体�
 
     const removable = await createDraft(harness, alice.token, { title: '只用于删除的草稿' });
     const removed = await json<{ id: string; deleted: boolean }>(
-      await call(harness, 'POST', `/v1/aicds/${removable.id}/delete`, alice.token, {}, removable.version),
+      await call(harness, 'POST', `/v1/documents/${removable.id}/delete`, alice.token, {}, removable.version),
     );
     assert.equal(removed.deleted, true);
     assert.equal(
-      (await call(harness, 'GET', `/v1/aicds/${removable.id}`, alice.token)).status,
+      (await call(harness, 'GET', `/v1/documents/${removable.id}`, alice.token)).status,
       404,
       '删除后不能再读到',
     );
 
     const edited = await json<Item>(
-      await call(harness, 'POST', `/v1/aicds/${created.id}/edit`, alice.token, {
+      await call(harness, 'POST', `/v1/documents/${created.id}/edit`, alice.token, {
         title: '缺料时先查库存快照',
         tags: ['库存'],
       }, 1),
@@ -123,27 +123,27 @@ test('经验手动生命周期：草稿可编辑、提交后发布，智能体�
     assert.equal(edited.title, '缺料时先查库存快照');
 
     const submitted = await json<Item>(
-      await call(harness, 'POST', `/v1/aicds/${created.id}/submit`, alice.token, undefined, 1),
+      await call(harness, 'POST', `/v1/documents/${created.id}/submit`, alice.token, undefined, 1),
     );
     assert.equal(submitted.state, 'candidate');
 
-    const token = harness.token('inv-aicd');
+    const token = harness.token('inv-doc');
     await harness.admin.registerPrincipal(
-      { id: 'inv-aicd', roles: ['agent'], token, displayName: 'inv-aicd' },
-      'register:inv-aicd',
+      { id: 'inv-doc', roles: ['agent'], token, displayName: 'inv-doc' },
+      'register:inv-doc',
     );
     const agent = harness.client(token);
     await expectStatus(
-      agent.request('aicds', { method: 'POST', body: draft(), operationId: 'agent-create' }),
+      agent.request('documents', { method: 'POST', body: draft(), operationId: 'agent-create' }),
       403,
     );
 
     const published = await json<Item>(
-      await call(harness, 'POST', `/v1/aicds/${created.id}/publish`, alice.token, {}),
+      await call(harness, 'POST', `/v1/documents/${created.id}/publish`, alice.token, {}),
     );
     assert.equal(published.state, 'published');
     const noExpiry = await json<Item & { expiresAt: string | null; conditions: string }>(
-      await call(harness, 'GET', `/v1/aicds/${created.id}`, alice.token),
+      await call(harness, 'GET', `/v1/documents/${created.id}`, alice.token),
     );
     assert.equal(noExpiry.expiresAt, null, '普通文档可以不设有效期');
     assert.equal(noExpiry.conditions, '', '普通文档不要求适用条件');
@@ -151,7 +151,7 @@ test('经验手动生命周期：草稿可编辑、提交后发布，智能体�
     const deletePublished = await call(
       harness,
       'POST',
-      `/v1/aicds/${created.id}/delete`,
+      `/v1/documents/${created.id}/delete`,
       alice.token,
       {},
       published.version,
@@ -167,16 +167,16 @@ test('经验手动生命周期：草稿可编辑、提交后发布，智能体�
       403,
     );
 
-    const list = await json<Item[]>(await call(harness, 'GET', '/v1/aicds', alice.token));
+    const list = await json<Item[]>(await call(harness, 'GET', '/v1/documents', alice.token));
     assert.equal(list.length, 1);
     assert.equal(list[0].state, 'published');
 
     const archived = await json<Item>(
-      await call(harness, 'POST', `/v1/aicds/${created.id}/archive`, alice.token, { reason: '过期' }, 1),
+      await call(harness, 'POST', `/v1/documents/${created.id}/archive`, alice.token, { reason: '过期' }, 1),
     );
     assert.equal(archived.state, 'archived');
     assert.ok(archived.archivedAt);
-    const afterArchive = await json<Item[]>(await call(harness, 'GET', '/v1/aicds', alice.token));
+    const afterArchive = await json<Item[]>(await call(harness, 'GET', '/v1/documents', alice.token));
     assert.equal(afterArchive.length, 0, '归档后默认列表不再显示');
   } finally {
     await harness.close();
@@ -198,7 +198,7 @@ test('复制到自己的团队：选择目标团队生成独立草稿、保留�
     );
 
     const child = await json<Item>(
-      await call(harness, 'POST', `/v1/aicds/${source.id}/copy`, personal.token, {
+      await call(harness, 'POST', `/v1/documents/${source.id}/copy`, personal.token, {
         targetWorkspace: team.tenant.id,
       }),
     );
@@ -211,12 +211,12 @@ test('复制到自己的团队：选择目标团队生成独立草稿、保留�
     const teamSession = await json<{ token: string }>(
       await call(harness, 'POST', '/v1/me/switch', personal.token, { tenantId: team.tenant.id }),
     );
-    const inTeam = await json<Item>(await call(harness, 'GET', `/v1/aicds/${child.id}`, teamSession.token));
+    const inTeam = await json<Item>(await call(harness, 'GET', `/v1/documents/${child.id}`, teamSession.token));
     assert.equal(inTeam.copiedFrom?.id, source.id);
     assert.equal(inTeam.authorName, 'alice');
 
     const lineage = await json<{ id: string }[]>(
-      await call(harness, 'GET', `/v1/aicds/${child.id}/lineage`, teamSession.token),
+      await call(harness, 'GET', `/v1/documents/${child.id}/lineage`, teamSession.token),
     );
     assert.deepEqual(lineage.map(entry => entry.id), [source.id]);
 
@@ -231,28 +231,28 @@ test('复制到自己的团队：选择目标团队生成独立草稿、保留�
       }),
     );
     await json(
-      await call(harness, 'POST', `/v1/aicds/${child.id}/assets`, teamSession.token, {
+      await call(harness, 'POST', `/v1/documents/${child.id}/assets`, teamSession.token, {
         fileId: file.id,
         role: 'evidence',
       }, child.version),
     );
     const assets = await json<{ fileId: string }[]>(
-      await call(harness, 'GET', `/v1/aicds/${child.id}/assets`, teamSession.token),
+      await call(harness, 'GET', `/v1/documents/${child.id}/assets`, teamSession.token),
     );
     assert.deepEqual(assets.map(entry => entry.fileId), [file.id]);
 
     await publishDraft(harness, teamSession.token, child);
 
-    const missingTarget = await call(harness, 'POST', `/v1/aicds/${child.id}/copy`, teamSession.token, {});
+    const missingTarget = await call(harness, 'POST', `/v1/documents/${child.id}/copy`, teamSession.token, {});
     assert.equal(missingTarget.status, 400, '复制必须选择目标团队');
 
-    const out = await call(harness, 'POST', `/v1/aicds/${child.id}/copy`, teamSession.token, {
+    const out = await call(harness, 'POST', `/v1/documents/${child.id}/copy`, teamSession.token, {
       targetWorkspace: 'personal',
     });
     assert.equal(out.status, 400, '复制目标必须是团队');
 
     const forked = await json<Item>(
-      await call(harness, 'POST', `/v1/aicds/${child.id}/copy`, teamSession.token, {
+      await call(harness, 'POST', `/v1/documents/${child.id}/copy`, teamSession.token, {
         targetWorkspace: team.tenant.id,
       }),
     );
@@ -260,12 +260,12 @@ test('复制到自己的团队：选择目标团队生成独立草稿、保留�
     assert.equal(forked.copiedFrom?.id, child.id);
 
     const destinations = await json<{ knowledgeId: string }[]>(
-      await call(harness, 'GET', `/v1/aicds/${child.id}/copies`, teamSession.token),
+      await call(harness, 'GET', `/v1/documents/${child.id}/copies`, teamSession.token),
     );
     assert.deepEqual(destinations.map(entry => entry.knowledgeId), [forked.id]);
 
     const copiedAssets = await json<{ fileId: string }[]>(
-      await call(harness, 'GET', `/v1/aicds/${forked.id}/assets`, teamSession.token),
+      await call(harness, 'GET', `/v1/documents/${forked.id}/assets`, teamSession.token),
     );
     assert.deepEqual(copiedAssets.map(entry => entry.fileId), [file.id]);
   } finally {
@@ -281,13 +281,13 @@ test('复制到他人：必须由对方接受邀请，来源撤销后副本给�
     const source = await createDraft(harness, alice.token);
     await publishDraft(harness, alice.token, source);
 
-    const direct = await call(harness, 'POST', `/v1/aicds/${source.id}/copy`, alice.token, {
+    const direct = await call(harness, 'POST', `/v1/documents/${source.id}/copy`, alice.token, {
       targetWorkspace: bob.tenant.id,
     });
     assert.equal(direct.status, 403, '不能直接把副本塞进别人的个人空间');
 
     const invite = await json<{ id: string; status: string }>(
-      await call(harness, 'POST', `/v1/aicds/${source.id}/invite`, alice.token, {
+      await call(harness, 'POST', `/v1/documents/${source.id}/invite`, alice.token, {
         targetPrincipal: bob.principal.id,
         note: '供参考',
       }, 1),
@@ -308,16 +308,16 @@ test('复制到他人：必须由对方接受邀请，来源撤销后副本给�
     assert.equal(copy.copiedFrom?.id, source.id);
     assert.equal(copy.copiedFrom?.workspaceName, alice.tenant.name);
 
-    const detail = await json<Item>(await call(harness, 'GET', `/v1/aicds/${copy.id}`, bob.token));
+    const detail = await json<Item>(await call(harness, 'GET', `/v1/documents/${copy.id}`, bob.token));
     assert.equal(detail.sourceRevoked, false);
 
     await json(
       await call(harness, 'POST', `/v1/knowledge/${source.id}/revoke`, alice.token, { reason: '数据失效' }),
     );
-    const revokedView = await json<Item>(await call(harness, 'GET', `/v1/aicds/${copy.id}`, bob.token));
+    const revokedView = await json<Item>(await call(harness, 'GET', `/v1/documents/${copy.id}`, bob.token));
     assert.equal(revokedView.sourceRevoked, true, '来源撤销后副本应提示');
 
-    const secondInvite = await call(harness, 'POST', `/v1/aicds/${source.id}/invite`, alice.token, {
+    const secondInvite = await call(harness, 'POST', `/v1/documents/${source.id}/invite`, alice.token, {
       targetPrincipal: bob.principal.id,
     });
     assert.equal(secondInvite.status, 409, '已撤销的来源不能再邀请复制');
@@ -417,13 +417,13 @@ test('任务房间：线程、消息、文件与进展合并成一条时间线',
       }),
     );
     const assets = await json<{ fileId: string }[]>(
-      await call(harness, 'GET', `/v1/aicds/${note.id}/assets`, ADMIN_TOKEN),
+      await call(harness, 'GET', `/v1/documents/${note.id}/assets`, ADMIN_TOKEN),
     );
     assert.deepEqual(assets.map(entry => entry.fileId), [file.id]);
 
     const publishedNote = await createDraft(harness, ADMIN_TOKEN, { title: '补货结论' });
     await json(
-      await call(harness, 'POST', `/v1/aicds/${publishedNote.id}/assets`, ADMIN_TOKEN, {
+      await call(harness, 'POST', `/v1/documents/${publishedNote.id}/assets`, ADMIN_TOKEN, {
         fileId: file.id,
         role: 'evidence',
       }, publishedNote.version),
@@ -436,7 +436,7 @@ test('任务房间：线程、消息、文件与进展合并成一条时间线',
     assert.deepEqual(roomWithKnowledge.knowledge.map(entry => entry.id), [publishedNote.id]);
     assert.ok(
       roomWithKnowledge.activity.some(
-        entry => entry.stream === 'knowledge' && entry.type === 'aicd_published',
+        entry => entry.stream === 'knowledge' && entry.type === 'document_published',
       ),
       '挂到任务文件上的经验出现在任务时间线里',
     );

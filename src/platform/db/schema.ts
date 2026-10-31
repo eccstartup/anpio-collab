@@ -11,7 +11,7 @@
  *  - v3 账号、租户与 Agent 设备授权；
  *  - v4 个人资料：姓名、头像、头衔、简介。
  *  - v7 知识文档与任务房间。
- *  - v8 AICD 视为普通文档：默认 kind=document，版本有效期可空。
+ *  - v8 知识条目统一按普通文档处理：默认 kind=document，版本有效期可空。
  *  - v9 本地对象存储：文件可以脱离任务，上传分三步（申请、直传、确认）。
  *  - v10 房间已读游标：未读按每人每任务记录，不改变任务版本。
  *  - v11 任务归档：归档只加时间戳，不改状态，也不删版本与文件。
@@ -62,7 +62,7 @@ const KNOWLEDGE_INDEXES = [
 ];
 
 /**
- * 发布快照。AICD 是普通文档，expires_at 可空——没有有效期并不等于永久有效，
+ * 发布快照。知识条目是普通文档，expires_at 可空——没有有效期并不等于永久有效，
  * 只是不按时间自动失效；撤销与归档仍然由人决定。
  */
 const KNOWLEDGE_VERSIONS_TABLE = `CREATE TABLE IF NOT EXISTS knowledge_versions (
@@ -80,7 +80,7 @@ const KNOWLEDGE_VERSIONS_TABLE = `CREATE TABLE IF NOT EXISTS knowledge_versions 
     )`;
 
 /**
- * v9：文件不再必须属于任务。AICD 附件可以先独立上传，再挂到文档上。
+ * v9：文件不再必须属于任务。附件可以先独立上传，再挂到文档上。
  * SQLite 只能重建表来去掉 `task_id NOT NULL`，因此这份 DDL 同时服务新库与重建。
  */
 const SPACE_FILES_TABLE = `CREATE TABLE IF NOT EXISTS space_files (
@@ -1190,6 +1190,11 @@ export async function migrate(db: Database, now: () => string): Promise<void> {
          ) WHERE title = ''`,
       );
       await backfillSpaceFiles(tx);
+      // 文档事件曾用 aicd_ 前缀，旧库里的历史事件与知识审计一并改用 document_。
+      await tx.run("UPDATE events SET type = replace(type, 'aicd_', 'document_') WHERE type LIKE 'aicd_%'");
+      await tx.run(
+        "UPDATE knowledge_events SET action = replace(action, 'aicd_', 'document_') WHERE action LIKE 'aicd_%'",
+      );
       // v13：已授权的智能体不必重新批准就能收发信件。
       const grants = await tx.all<{ id: string; scopes: string }>('SELECT id, scopes FROM agent_grants');
       for (const grant of grants) {

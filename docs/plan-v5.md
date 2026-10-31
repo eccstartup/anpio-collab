@@ -216,32 +216,32 @@ CREATE INDEX knowledge_copy_invites_target ON knowledge_copy_invites(target_prin
 ### 3.6 接口
 
 ```text
-GET    /v1/aicds?q=&state=&kind=&scope=         列表；分页
-POST   /v1/aicds                                新建草稿；kind 默认 document
-GET    /v1/aicds/:id                            详情（含来源、附件、复制关系）
-POST   /v1/aicds/:id                            更新草稿（If-Match；/edit 同义）
-POST   /v1/aicds/:id/submit                     草稿 → 候选
-POST   /v1/aicds/:id/publish                    { expiresAt?, audience?, evidenceLevel? }
-POST   /v1/aicds/:id/revise                     生成新版本候选
-POST   /v1/aicds/:id/archive                    归档
-POST   /v1/aicds/:id/revoke                     { reason }
-POST   /v1/aicds/:id/access                     调整共享范围
-GET    /v1/aicds/:id/versions                   版本历史（含 diff 所需字段）
-GET    /v1/aicds/:id/evidence                   当前有效版本的证据包
-POST   /v1/aicds/:id/shares                     个人文档分享到团队（整单替换，只读实时）
-GET    /v1/aicds/:id/shares                     已分享到的团队
-POST   /v1/aicds/:id/copy                       { targetWorkspace }  立即在目标团队生成独立草稿
-POST   /v1/aicds/:id/invite                     { targetPrincipal }  邀请他人复制到其个人空间
-POST   /v1/aicds/:id/assets                     绑定团队空间文件
-GET    /v1/aicds/:id/usage                      被哪些任务引用、引用的是哪一版
-GET    /v1/aicds/:id/copies                     被复制到哪些空间（来源空间可见）
-GET    /v1/aicds/:id/lineage                    来源链（副本详情里也能看）
+GET    /v1/documents?q=&state=&kind=&scope=         列表；分页
+POST   /v1/documents                                新建草稿；kind 默认 document
+GET    /v1/documents/:id                            详情（含来源、附件、复制关系）
+POST   /v1/documents/:id                            更新草稿（If-Match；/edit 同义）
+POST   /v1/documents/:id/submit                     草稿 → 候选
+POST   /v1/documents/:id/publish                    { expiresAt?, audience?, evidenceLevel? }
+POST   /v1/documents/:id/revise                     生成新版本候选
+POST   /v1/documents/:id/archive                    归档
+POST   /v1/documents/:id/revoke                     { reason }
+POST   /v1/documents/:id/access                     调整共享范围
+GET    /v1/documents/:id/versions                   版本历史（含 diff 所需字段）
+GET    /v1/documents/:id/evidence                   当前有效版本的证据包
+POST   /v1/documents/:id/shares                     个人文档分享到团队（整单替换，只读实时）
+GET    /v1/documents/:id/shares                     已分享到的团队
+POST   /v1/documents/:id/copy                       { targetWorkspace }  立即在目标团队生成独立草稿
+POST   /v1/documents/:id/invite                     { targetPrincipal }  邀请他人复制到其个人空间
+POST   /v1/documents/:id/assets                     绑定团队空间文件
+GET    /v1/documents/:id/usage                      被哪些任务引用、引用的是哪一版
+GET    /v1/documents/:id/copies                     被复制到哪些空间（来源空间可见）
+GET    /v1/documents/:id/lineage                    来源链（副本详情里也能看）
 GET    /v1/me/copy-invites                      别人复制给我的文档邀请
 POST   /v1/me/copy-invites/:id/accept           接受后落为目标个人空间的草稿
 POST   /v1/me/copy-invites/:id/decline          拒绝，不产生数据
 ```
 
-兼容策略：`/v1/knowledge/*` 保留一个版本，内部转调文档服务；控制台与 SDK 先切到 `/v1/aicds`。这样老测试与老客户端不会一夜失效。
+兼容策略：`/v1/knowledge/*` 保留一个版本，内部转调文档服务；控制台与 SDK 先切到 `/v1/documents`。这样老测试与老客户端不会一夜失效。
 
 ### 3.7 界面
 
@@ -554,7 +554,7 @@ GET    /v1/space/search?q=&kind=                跨任务检索消息 / 文件 /
 - 权限：团队任务对成员可见；智能体仍按子任务与 grant 范围。
 - 测试：经验生命周期、手动发布权限、复制目标选择、复制邀请接受/拒绝、复制到非成员团队拒绝、消息可见性、文件鉴权、迁移回填；SQLite 与 PostgreSQL 各跑一遍。
 
-实施说明：以上均已完成，验收见 `tests/aicd.test.ts`。两条边界留在第二阶段：手动经验的附件目前只能引用任务产出文件（`space_files.task_id` 非空），尚无独立上传；合并时间线的类型过滤在客户端完成。
+实施说明：以上均已完成，验收见 `tests/documents.test.ts`。两条边界留在第二阶段：手动经验的附件目前只能引用任务产出文件（`space_files.task_id` 非空），尚无独立上传；合并时间线的类型过滤在客户端完成。
 
 ### 第二阶段：对象存储与智能体协作
 

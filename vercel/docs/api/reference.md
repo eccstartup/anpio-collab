@@ -659,28 +659,28 @@ Idempotency-Key: offer-research-1
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `GET` | `/v1/aicds` | 文档列表（按状态、类型、查询过滤） |
-| `POST` | `/v1/aicds` | 新建草稿（真人） |
-| `GET` | `/v1/aicds/:id` | 详情（含来源与复制关系） |
-| `POST` | `/v1/aicds/:id/edit` | 编辑草稿或候选稿 |
-| `POST` | `/v1/aicds/:id/submit` | 提交审核：`draft → candidate` |
-| `POST` | `/v1/aicds/:id/publish` | 发布 |
-| `POST` | `/v1/aicds/:id/archive` | 归档 |
-| `POST` | `/v1/aicds/:id/delete` | 删除（仅无副本、未被引用的草稿/候选） |
-| `POST` | `/v1/aicds/:id/copy` | 复制到空间、团队或发起邀请 |
-| `GET` | `/v1/aicds/:id/copies` | 副本列表 |
-| `GET` | `/v1/aicds/:id/lineage` | 来源链 |
-| `POST` | `/v1/aicds/:id/invite` | 发起复制邀请 |
-| `GET` | `/v1/aicds/:id/assets` | 附件列表 |
-| `POST` | `/v1/aicds/:id/assets` | 添加附件 |
-| `POST` | `/v1/aicds/:id/revise` | 修订 |
-| `POST` | `/v1/aicds/:id/revoke` | 撤销 |
-| `POST` | `/v1/aicds/:id/access` | 调整范围 |
-| `GET` | `/v1/aicds/:id/versions` | 版本列表 |
-| `GET` | `/v1/aicds/:id/usage` | 被引用情况 |
-| `GET` | `/v1/aicds/:id/evidence` | 证据包 |
-| `GET` | `/v1/aicds/:id/shares` | 分享目标 |
-| `POST` | `/v1/aicds/:id/shares` | 替换分享集合 |
+| `GET` | `/v1/documents` | 文档列表（按状态、类型、查询过滤） |
+| `POST` | `/v1/documents` | 新建草稿（真人） |
+| `GET` | `/v1/documents/:id` | 详情（含来源与复制关系） |
+| `POST` | `/v1/documents/:id/edit` | 编辑草稿或候选稿 |
+| `POST` | `/v1/documents/:id/submit` | 提交审核：`draft → candidate` |
+| `POST` | `/v1/documents/:id/publish` | 发布 |
+| `POST` | `/v1/documents/:id/archive` | 归档 |
+| `POST` | `/v1/documents/:id/delete` | 删除（仅无副本、未被引用的草稿/候选） |
+| `POST` | `/v1/documents/:id/copy` | 复制到空间、团队或发起邀请 |
+| `GET` | `/v1/documents/:id/copies` | 副本列表 |
+| `GET` | `/v1/documents/:id/lineage` | 来源链 |
+| `POST` | `/v1/documents/:id/invite` | 发起复制邀请 |
+| `GET` | `/v1/documents/:id/assets` | 附件列表 |
+| `POST` | `/v1/documents/:id/assets` | 添加附件 |
+| `POST` | `/v1/documents/:id/revise` | 修订 |
+| `POST` | `/v1/documents/:id/revoke` | 撤销 |
+| `POST` | `/v1/documents/:id/access` | 调整范围 |
+| `GET` | `/v1/documents/:id/versions` | 版本列表 |
+| `GET` | `/v1/documents/:id/usage` | 被引用情况 |
+| `GET` | `/v1/documents/:id/evidence` | 证据包 |
+| `GET` | `/v1/documents/:id/shares` | 分享目标 |
+| `POST` | `/v1/documents/:id/shares` | 替换分享集合 |
 
 ### 新建草稿
 

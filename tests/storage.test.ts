@@ -4,7 +4,7 @@
  * 钉住几条容易退化的语义：
  *  - 上传地址只接受 PUT，令牌过期或哈希不符都不能写入；
  *  - 同一团队同一份内容只落一个对象，但可以有多个文件记录；
- *  - 文件不必属于任务，AICD 可以直接挂附件；
+ *  - 文件不必属于任务，文档 可以直接挂附件；
  *  - 下载支持 Range，软删除后立即不可读。
  */
 
@@ -207,11 +207,11 @@ test('任务文件走新上传接口后进入房间时间线，任务内可下�
   }
 });
 
-test('AICD 独立附件：不绑任务也能上传、挂到文档并读取', async () => {
+test('文档 独立附件：不绑任务也能上传、挂到文档并读取', async () => {
   const harness = await startHarness({ workspace: 'acme' });
   try {
     const doc = await ok<any>(
-      await post(harness, '/v1/aicds', {
+      await post(harness, '/v1/documents', {
         kind: 'document',
         title: '补货检查表',
         content: '先看库存，再确认供应商交期。',
@@ -228,12 +228,12 @@ test('AICD 独立附件：不绑任务也能上传、挂到文档并读取', asy
     await expectStatus(other.downloadFile(file.id), 403);
 
     const attached = await ok<any>(
-      await post(harness, `/v1/aicds/${doc.id}/assets`, { fileId: file.id, role: 'attachment' }),
+      await post(harness, `/v1/documents/${doc.id}/assets`, { fileId: file.id, role: 'attachment' }),
     );
     assert.equal(attached.fileId, file.id);
 
     const assets = await ok<any[]>(
-      await fetch(`${harness.url}/v1/aicds/${doc.id}/assets`, { headers: authHeaders() }),
+      await fetch(`${harness.url}/v1/documents/${doc.id}/assets`, { headers: authHeaders() }),
     );
     assert.equal(assets.length, 1);
     assert.equal(assets[0].taskId, null);

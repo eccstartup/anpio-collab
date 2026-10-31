@@ -8,9 +8,9 @@
 
 import { conflict, forbidden, invalid, notFound } from '../../protocol/errors.ts';
 import type {
-  AicdCopyTarget,
-  AicdKind,
-  AicdSource,
+  DocumentCopyTarget,
+  DocumentKind,
+  DocumentSource,
   CopiedFrom,
   CopyInvite,
   EventType,
@@ -21,7 +21,7 @@ import type {
   Principal,
 } from '../../protocol/types.ts';
 import {
-  AICD_KINDS,
+  DOCUMENT_KINDS,
   COPY_INVITE_STATUSES,
   EVIDENCE_LEVELS,
 } from '../../protocol/types.ts';
@@ -368,7 +368,7 @@ export class KnowledgeService {
     if (actor.kind !== 'human') throw forbidden('只有人可以创建文档');
     if (actor.tenantRole === 'guest') throw forbidden('访客不能创建文档');
     const input = asObject(body);
-    const kind = input.kind === undefined ? 'document' : asEnum(input.kind, 'kind', AICD_KINDS);
+    const kind = input.kind === undefined ? 'document' : asEnum(input.kind, 'kind', DOCUMENT_KINDS);
     const title = asString(input.title, 'title', { max: 200 });
     const content = asString(input.content, 'content', { max: 8000 });
     const summary = asOptionalString(input.summary, 'summary', { max: 500 }) ?? '';
@@ -378,7 +378,7 @@ export class KnowledgeService {
     if (meta && meta.status !== 'active') throw forbidden('当前空间不可用');
 
     let sourceTaskId: string | null = null;
-    let source: AicdSource = 'manual';
+    let source: DocumentSource = 'manual';
     if (input.taskId !== undefined) {
       const taskId = asString(input.taskId, 'taskId', { max: 128 });
       const task = await readTask(this.ctx, actor, taskId);
@@ -423,9 +423,9 @@ export class KnowledgeService {
         tx,
         actor,
         { id, workspace: actor.workspace, sourceTaskId },
-        'aicd_created',
+        'document_created',
         { kind, title },
-        'aicd_created',
+        'document_created',
       );
       return this.loadTx(tx, actor.workspace, id);
     });
@@ -458,7 +458,7 @@ export class KnowledgeService {
           ? item.conditions
           : (asOptionalString(input.conditions, 'conditions', { max: 4000 }) ?? ''),
       tags: input.tags === undefined ? item.tags : this.parseTags(input.tags),
-      kind: input.kind === undefined ? item.kind : asEnum(input.kind, 'kind', AICD_KINDS),
+      kind: input.kind === undefined ? item.kind : asEnum(input.kind, 'kind', DOCUMENT_KINDS),
       sourceTaskId: item.sourceTaskId,
       workspace: item.workspace,
     };
@@ -479,7 +479,7 @@ export class KnowledgeService {
           id: item.id,
         },
       );
-      await this.record(tx, actor, item, 'aicd_updated', { title: next.title }, 'aicd_updated');
+      await this.record(tx, actor, item, 'document_updated', { title: next.title }, 'document_updated');
       return this.loadTx(tx, item.workspace, item.id);
     });
     if (!updated) throw notFound('文档不存在');
@@ -498,7 +498,7 @@ export class KnowledgeService {
         at: this.ctx.now(),
         id: item.id,
       });
-      await this.record(tx, actor, item, 'aicd_submitted', { version: item.version }, 'aicd_submitted');
+      await this.record(tx, actor, item, 'document_submitted', { version: item.version }, 'document_submitted');
       return this.loadTx(tx, item.workspace, item.id);
     });
     if (!updated) throw notFound('文档不存在');
@@ -517,7 +517,7 @@ export class KnowledgeService {
         at: now,
         id: item.id,
       });
-      await this.record(tx, actor, item, 'aicd_archived', { reason }, 'aicd_archived');
+      await this.record(tx, actor, item, 'document_archived', { reason }, 'document_archived');
       return this.loadTx(tx, item.workspace, item.id);
     });
     if (!updated) throw notFound('文档不存在');
@@ -572,7 +572,7 @@ export class KnowledgeService {
   }
 
   /** 文档列表：本人稿、团队已发布稿与（审核人）全部候选。 */
-  async listAicds(
+  async listDocuments(
     actor: Principal,
     options: { state?: string; kind?: string; query?: string; limit?: number } = {},
   ): Promise<Knowledge[]> {
@@ -582,7 +582,7 @@ export class KnowledgeService {
       throw invalid('state 不合法');
     }
     const kind = options.kind ?? '';
-    if (kind) asEnum(kind, 'kind', AICD_KINDS);
+    if (kind) asEnum(kind, 'kind', DOCUMENT_KINDS);
     const query = (options.query ?? '').trim();
     if (query.length > 200) throw invalid('查询过长');
     const limit = asInteger(options.limit ?? 100, 'limit', { min: 1, max: 200 });
@@ -646,7 +646,7 @@ export class KnowledgeService {
          VALUES(:id, :knowledge, :file, :role, :at)`,
         { id: this.ctx.newId(), knowledge: item.id, file: fileId, role, at: this.ctx.now() },
       );
-      await this.record(tx, actor, item, 'aicd_asset_attached', { fileId, role });
+      await this.record(tx, actor, item, 'document_asset_attached', { fileId, role });
     });
     return { id: item.id, fileId, role };
   }
@@ -695,14 +695,14 @@ export class KnowledgeService {
       if (!submitted) throw forbidden('只有已提交结果的受派智能体可以沉淀文档');
     }
     const input = asObject(body);
-    const kind = input.kind === undefined ? 'document' : asEnum(input.kind, 'kind', AICD_KINDS);
+    const kind = input.kind === undefined ? 'document' : asEnum(input.kind, 'kind', DOCUMENT_KINDS);
     const content = asString(input.content, 'content', { max: 8000 });
     const conditions = asOptionalString(input.conditions, 'conditions', { max: 4000 }) ?? '';
     const title =
       input.title === undefined ? content.slice(0, 60) : asString(input.title, 'title', { max: 200 });
     const summary = asOptionalString(input.summary, 'summary', { max: 500 }) ?? '';
     const tags = this.parseTags(input.tags);
-    const source: AicdSource = actor.kind === 'human' ? 'task' : 'agent';
+    const source: DocumentSource = actor.kind === 'human' ? 'task' : 'agent';
 
     const id = this.ctx.newId();
     const now = this.ctx.now();
@@ -733,7 +733,7 @@ export class KnowledgeService {
         tx,
         actor,
         { id, workspace: actor.workspace, sourceTaskId: taskId },
-        'aicd_created',
+        'document_created',
         { kind, title, version: 1 },
         'knowledge_candidate',
       );
@@ -788,7 +788,7 @@ export class KnowledgeService {
         ? item.conditions
         : (asOptionalString(input.conditions, 'conditions', { max: 4000 }) ?? '');
     const tags = input.tags === undefined ? item.tags : this.parseTags(input.tags);
-    const kind = input.kind === undefined ? item.kind : asEnum(input.kind, 'kind', AICD_KINDS);
+    const kind = input.kind === undefined ? item.kind : asEnum(input.kind, 'kind', DOCUMENT_KINDS);
     if (!title.trim()) throw invalid('发布前必须填写标题');
     if (!item.content.trim()) throw invalid('发布前必须填写正文');
 
@@ -846,7 +846,7 @@ export class KnowledgeService {
         tx,
         actor,
         item,
-        'aicd_published',
+        'document_published',
         { version: item.version, expiresAt },
         'knowledge_published',
       );
@@ -865,7 +865,7 @@ export class KnowledgeService {
         at: this.ctx.now(),
         id: item.id,
       });
-      await this.record(tx, actor, item, 'aicd_revoked', { version: item.version, reason }, 'knowledge_revoked');
+      await this.record(tx, actor, item, 'document_revoked', { version: item.version, reason }, 'knowledge_revoked');
     });
     return { id: item.id, state: 'revoked', version: item.version };
   }
@@ -889,7 +889,7 @@ export class KnowledgeService {
         ? item.summary
         : (asOptionalString(input.summary, 'summary', { max: 500 }) ?? '');
     const tags = input.tags === undefined ? item.tags : this.parseTags(input.tags);
-    const kind = input.kind === undefined ? item.kind : asEnum(input.kind, 'kind', AICD_KINDS);
+    const kind = input.kind === undefined ? item.kind : asEnum(input.kind, 'kind', DOCUMENT_KINDS);
     const version = item.version + 1;
 
     await this.ctx.db.transaction(async tx => {
@@ -912,7 +912,7 @@ export class KnowledgeService {
           id: item.id,
         },
       );
-      await this.record(tx, actor, item, 'aicd_revised', { version, reason }, 'knowledge_revised');
+      await this.record(tx, actor, item, 'document_revised', { version, reason }, 'knowledge_revised');
     });
     return { id: item.id, state: 'candidate', version };
   }
@@ -927,7 +927,7 @@ export class KnowledgeService {
     const audience = this.parseAudience(input.audience);
     await this.ctx.db.transaction(async tx => {
       await this.applyAudience(tx, actor, item.id, audience);
-      await this.record(tx, actor, item, 'aicd_access_changed', { audience }, 'knowledge_access_changed');
+      await this.record(tx, actor, item, 'document_access_changed', { audience }, 'knowledge_access_changed');
     });
     return { id: item.id, audience };
   }
@@ -1057,7 +1057,7 @@ export class KnowledgeService {
           { id: item.id, team: teamId, actor: actor.id, at: now },
         );
       }
-      await this.record(tx, actor, item, 'aicd_shared', { teamIds }, 'knowledge_shared');
+      await this.record(tx, actor, item, 'document_shared', { teamIds }, 'knowledge_shared');
     });
     return { id: item.id, teamIds };
   }
@@ -1436,16 +1436,16 @@ export class KnowledgeService {
         tx,
         actor,
         { id: childId, workspace: target.workspace, sourceTaskId: null },
-        'aicd_copied',
+        'document_copied',
         { parentId: source.id, version: source.version },
       );
       await this.record(
         tx,
         actor,
         source,
-        'aicd_copied',
+        'document_copied',
         { childId, targetWorkspace: target.workspace },
-        'aicd_copied',
+        'document_copied',
       );
       const child = await this.loadTx(tx, target.workspace, childId);
       if (!child) return null;
@@ -1505,7 +1505,7 @@ export class KnowledgeService {
   }
 
   /** 来源空间可见的副本去向。 */
-  async copies(actor: Principal, id: string): Promise<AicdCopyTarget[]> {
+  async copies(actor: Principal, id: string): Promise<DocumentCopyTarget[]> {
     const item = await this.requireItem(actor, id);
     await this.assertManage(actor, item);
     const rows = await this.ctx.db.read.all(
@@ -1632,7 +1632,7 @@ export class KnowledgeService {
           expires: expiresAt,
         },
       );
-      await this.record(tx, actor, item, 'aicd_copy_invited', { inviteId, targetPrincipal });
+      await this.record(tx, actor, item, 'document_copy_invited', { inviteId, targetPrincipal });
       const row = await tx.one(
         `SELECT i.*, p.display_name AS from_name
          FROM knowledge_copy_invites i LEFT JOIN principals p ON p.id = i.from_principal
@@ -1708,7 +1708,7 @@ export class KnowledgeService {
         tx,
         actor,
         { id: child.id, workspace: child.workspace, sourceTaskId: null },
-        'aicd_copy_accepted',
+        'document_copy_accepted',
         { inviteId, parentId: source.id },
       );
     });
@@ -1738,7 +1738,7 @@ export class KnowledgeService {
           workspace: source ? String(source.workspace) : actor.workspace,
           sourceTaskId: null,
         },
-        'aicd_copy_declined',
+        'document_copy_declined',
         { inviteId },
       );
     });

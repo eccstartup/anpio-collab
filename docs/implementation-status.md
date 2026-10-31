@@ -55,7 +55,7 @@
 | 可选 S3：按环境变量动态加载，未配置时完全走本地；上传令牌可换成预签名 PUT | `storage.ts` | 本地驱动全测；S3 路径未在真实桶上跑过 |
 | 三步上传：`POST /v1/space/files/upload-url` → `PUT /v1/space/uploads/:token` → `POST /v1/space/uploads/:id/complete`；令牌一次有效、过期清理、哈希与大小校验 | `services/storage.ts`、`routes.ts` | `tests/storage.test.ts`（重放、哈希不符、令牌复用） |
 | 文件可脱离任务：`space_files.task_id` 可空（schema v9 重建表），文档附件先独立上传再挂到文档 | `db/schema.ts`、`storage.ts` | `tests/storage.test.ts`「独立附件不绑任务也能上传」 |
-| 二进制流式读取：`GET /v1/space/files/:id/content`、`GET /v1/tasks/:id/files/:fileId/content`，支持 `Range`；网页下载不再走 base64 JSON | `routes.ts`、`src/web/app.js` | 同上 + `tests/aicd.test.ts` 房间下载；网页改动仅结构测试，未在浏览器手点 |
+| 二进制流式读取：`GET /v1/space/files/:id/content`、`GET /v1/tasks/:id/files/:fileId/content`，支持 `Range`；网页下载不再走 base64 JSON | `routes.ts`、`src/web/app.js` | 同上 + `tests/documents.test.ts` 房间下载；网页改动仅结构测试，未在浏览器手点 |
 | 房间未读：`task_reads` 每人每任务游标（schema v10），`GET /room` 返回 `unread.messages/questions/mentions`；`POST /v1/tasks/:id/read` 只移动游标，不推进任务版本 | `db/schema.ts`、`collab.ts#unreadFor/markRead` | `tests/room.test.ts`（版本不变、自己的消息不算未读） |
 | 点名提问：消息 `payload.to` 接受字符串或数组，校验收件人后与正文 `@` 合并；`GET /v1/agent/questions` 返回点名问我且未回答的问题 | `collab.ts#addComment/questionsFor`、`routes.ts` | 同上（回答后不再追问、不存在的收件人 400） |
 | 交接包：`GET /v1/tasks/:id/context-pack` 同时返回 markdown 与 manifest，含阶段摘要、未决线程、最近对话、文件下载地址与相关文档 | `collab.ts#contextPack` | 同上（markdown/manifest/下载地址/无权访问） |
@@ -69,18 +69,18 @@
 
 | 能力 | 实现位置 | 验证方式 |
 | --- | --- | --- |
-| schema v7：`knowledge` 增 `kind/title/summary/tags/source/evidence_level/archived_at`，`task_id` 可空；新增 `knowledge_lineage`、`knowledge_copy_invites`、`knowledge_assets`、`task_threads`、`space_files`；`task_comments` 增 `kind/thread_id/reply_to/payload`；旧 `task_materials` 回填进 `space_files` | `db/schema.ts` | `tests/aicd.test.ts` + 迁移用例；SQLite 与 PostgreSQL 各跑一遍 |
+| schema v7：`knowledge` 增 `kind/title/summary/tags/source/evidence_level/archived_at`，`task_id` 可空；新增 `knowledge_lineage`、`knowledge_copy_invites`、`knowledge_assets`、`task_threads`、`space_files`；`task_comments` 增 `kind/thread_id/reply_to/payload`；旧 `task_materials` 回填进 `space_files` | `db/schema.ts` | `tests/documents.test.ts` + 迁移用例；SQLite 与 PostgreSQL 各跑一遍 |
 | 手动经验：草稿、编辑、提交审核、发布（有效期）、修订、归档、撤销、删除、详情/列表、附件绑定（证据/参考）；默认类型为经验 | `knowledge.ts`、`routes.ts` | 同上（草稿可编辑、缺有效期 400、归档后列表隐藏、删除后 404） |
 | 删除边界：只有无副本、未被任务引用的草稿/待审核稿可删；已发布稿返回 409，需先归档或撤销 | `knowledge.ts#delete` | 同上 |
 | 发布权留在人手里：智能体只能提交候选，创建、发布、撤销一律 403 | `knowledge.ts`、`access.ts` | 同上 |
 | 复制到团队：用户在条目上选择自己加入的团队（或取消），直接生成独立 `draft`，保留来源链；复制到他人个人空间需对方接受邀请 | `knowledge.ts#copy` | 同上（`copiedFrom` 带空间名与版本、未选目标团队 400、非成员团队 403） |
 | 复制给他人：7 天邀请—接受，对方接受后才落库；拒绝与过期由邀请状态体现 | `knowledge.ts#invite/accept/decline` | 同上（直接塞副本 403、接受后生成草稿） |
 | 来源治理：`lineage` / `copies` / `copiedFrom`、来源撤销后副本保留但提示复核 | `knowledge.ts`、`app.js` | 同上（撤销后 `sourceRevoked=true`） |
-| 任务房间：概览、线程（可解决）、带类型消息（question/answer/decision/handoff/status）、文件上传/下载/软删除/挂到经验、进展/消息/文件/经验合并时间线并按类型过滤 | `collab.ts`、`routes.ts`、`app.js` | `tests/aicd.test.ts` 房间用例 + 手工 |
+| 任务房间：概览、线程（可解决）、带类型消息（question/answer/decision/handoff/status）、文件上传/下载/软删除/挂到经验、进展/消息/文件/经验合并时间线并按类型过滤 | `collab.ts`、`routes.ts`、`app.js` | `tests/documents.test.ts` 房间用例 + 手工 |
 | 权限：团队任务对真人成员可见、访客 403；智能体仍按子任务与 grant 范围；房间按任务工作空间隔离 | `access.ts`、`collab.ts` | 同上 |
 | 控制台：经验分区（列表、详情、复制、来源链、邀请接受/拒绝）、任务「房间」页 | `src/web/app.js`、`app.css` | `tests/web.test.ts` 结构断言 + 手工 |
 
-测试合计 117 项（本轮新增 `tests/aicd.test.ts` 5 项：生命周期与权限、团队复制矩阵、邀请复制与来源撤销、房间合并时间线、团队任务可见性）。SQLite 与 PostgreSQL 跑同一套用例。
+测试合计 117 项（本轮新增 `tests/documents.test.ts` 5 项：生命周期与权限、团队复制矩阵、邀请复制与来源撤销、房间合并时间线、团队任务可见性）。SQLite 与 PostgreSQL 跑同一套用例。
 
 第一阶段边界：手动经验的附件只能从任务产出文件里挑（`space_files.task_id` 非空），经验侧独立上传与对象存储留到第二阶段；时间线过滤在前端完成，房间仍靠轮询刷新。（第二阶段已补齐独立附件、对象存储与未读；房间仍是轮询。）
 
