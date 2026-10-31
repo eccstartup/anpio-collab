@@ -61,7 +61,7 @@ export type TaskListItem = {
   subtaskDone: number;
 };
 
-/** 任务引用的 AICD：正文取自被钉住的那一版，修订后仍能看到当时的依据。 */
+/** 任务引用的经验：正文取自被钉住的那一版，修订后仍能看到当时的依据。 */
 export type KnowledgeRef = {
   knowledgeId: string;
   version: number;

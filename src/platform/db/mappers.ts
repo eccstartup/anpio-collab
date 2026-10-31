@@ -112,7 +112,7 @@ export function toEvent(row: Row): TaskEvent {
 }
 
 export function toKnowledge(row: Row, accessMode: 'workspace' | 'restricted' = 'restricted'): Knowledge {
-  const kinds = ['document', 'experience', 'playbook', 'checklist', 'decision', 'report', 'handoff'];
+  const kinds = ['experience', 'playbook', 'checklist', 'decision', 'report', 'handoff'];
   const sources = ['task', 'manual', 'agent'];
   const levels = ['task_verified', 'manual', 'imported'];
   const policies = ['none', 'team', 'tenant'];
@@ -130,7 +130,7 @@ export function toKnowledge(row: Row, accessMode: 'workspace' | 'restricted' = '
     accessMode,
     createdAt: text(row.created_at),
     updatedAt: text(row.updated_at),
-    kind: (kinds.includes(text(row.kind)) ? text(row.kind) : 'document') as Knowledge['kind'],
+    kind: (kinds.includes(text(row.kind)) ? text(row.kind) : 'experience') as Knowledge['kind'],
     title: text(row.title),
     summary: text(row.summary),
     tags: parseJson<string[]>(row.tags, []),

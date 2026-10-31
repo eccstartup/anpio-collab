@@ -365,7 +365,7 @@ export class TaskService {
       );
 
       // 引用是钉在版本上的，所以正文取自 knowledge_versions 而不是当前行：
-      // AICD 被修订之后，仍要能看清当时依据的是哪一版。
+      // 经验被修订之后，仍要能看清当时依据的是哪一版。
       const refRows = await this.ctx.db.read.all(
         `SELECT r.knowledge_id, r.version, v.content, v.conditions
          FROM knowledge_refs r

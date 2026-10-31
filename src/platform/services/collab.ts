@@ -154,13 +154,13 @@ const EVENT_LABELS: Record<string, string> = {
   task_accepted: '验收通过',
   task_returned: '验收退回',
   stage_summary_recorded: '记录阶段摘要',
-  knowledge_candidate: '提交候选 AICD',
-  knowledge_published: '发布 AICD',
-  knowledge_revoked: '撤销 AICD',
-  knowledge_revised: '修订 AICD',
+  knowledge_candidate: '沉淀候选经验',
+  knowledge_published: '发布经验',
+  knowledge_revoked: '撤销经验',
+  knowledge_revised: '修订经验',
   knowledge_access_changed: '调整共享范围',
-  knowledge_referenced: '引用 AICD',
-  knowledge_shared: '分享 AICD',
+  knowledge_referenced: '引用经验',
+  knowledge_shared: '分享经验',
   thread_opened: '开启线程',
   thread_resolved: '结束线程',
   file_uploaded: '上传文件',
@@ -168,11 +168,11 @@ const EVENT_LABELS: Record<string, string> = {
   offer_published: '发布开放子任务',
   offer_claimed: '认领开放子任务',
   offer_withdrawn: '撤回开放子任务',
-  aicd_created: '创建 AICD',
-  aicd_updated: '编辑 AICD',
-  aicd_submitted: '提交 AICD 审核',
-  aicd_archived: '归档 AICD',
-  aicd_copied: '复制 AICD',
+  aicd_created: '创建经验',
+  aicd_updated: '编辑经验',
+  aicd_submitted: '提交经验 审核',
+  aicd_archived: '归档经验',
+  aicd_copied: '复制经验',
   aicd_copy_invited: '发起复制邀请',
   aicd_copy_accepted: '接受复制邀请',
   aicd_copy_declined: '拒绝复制邀请',
@@ -706,7 +706,7 @@ export class CollabService {
 
   // ---------------------------------------------------------------- 任务房间
 
-  /** 把任务进展、对话、文件与 AICD 合并成一条时间线。 */
+  /** 把任务进展、对话、文件与经验 合并成一条时间线。 */
   async room(actor: Principal, taskId: string): Promise<TaskRoom> {
     const task = await readTask(this.ctx, actor, taskId);
     const [threads, messages, files] = await Promise.all([

@@ -80,7 +80,7 @@ const SCOPE_LABEL = {
   'tasks:read': '读任务',
   'tasks:submit': '提交结果',
   'offers:claim': '认领开放子任务',
-  'knowledge:read': '读 AICD',
+  'knowledge:read': '读经验库',
   'comments:write': '写评论',
   'presence:write': '上报在线状态',
 };
@@ -104,14 +104,13 @@ const RULE_LABEL = {
   agent_offline: '智能体失联',
   agent_task_unadopted: '提案无人接管',
   denied_spike: '拒绝激增',
-  knowledge_expiring: 'AICD 即将失效',
+  knowledge_expiring: '经验即将失效',
 };
 
 const PRESENCE_LABEL = { online: '在线', busy: '忙碌', offline: '离线' };
 const PRESENCE_TONE = { online: 'ok', busy: 'warn', offline: 'muted' };
 
 const AICD_KIND_LABEL = {
-  document: '文档',
   experience: '经验',
   playbook: '做法',
   checklist: '清单',
@@ -188,8 +187,8 @@ const NAV = [
   { id: 'tasks', label: '任务', show: () => true },
   { id: 'pool', label: '开放池', show: () => hasRole('agent') },
   { id: 'mentions', label: '提醒', show: () => true },
-  // AICD 对所有人开放：普通成员要能看到团队 AICD，也才能看到分享进来的个人 AICD。
-  { id: 'knowledge', label: 'AICD', show: () => isAgentSide() || !isGuest() },
+  // 经验库对所有人开放：普通成员要能看到团队经验，也才能看到分享进来的个人经验。
+  { id: 'knowledge', label: '经验库', show: () => isAgentSide() || !isGuest() },
   { id: 'agents', label: '我的智能体', show: () => !isAgentOnly() },
   { id: 'directory', label: '团队', show: () => !isAgentOnly() },
   { id: 'oversight', label: '监管', show: () => canSupervise() },
@@ -202,7 +201,7 @@ const TITLES = {
   tasks: ['任务', '目标、分工、验收与证据'],
   pool: ['开放池', '能力匹配就可以认领，认领即加入'],
   mentions: ['提醒', '有人在评论里提到了你'],
-  knowledge: ['AICD', '手动编写、审核、发布与复制；团队 AICD 只在团队内'],
+  knowledge: ['经验库', '经验可手动编写、审核、发布与复制；团队经验只在团队内'],
   agents: ['我的智能体', '你请进来的智能体，和它们正在做的事'],
   directory: ['团队', '你和谁一起工作'],
   oversight: ['监管', '哪里不对：卡住、失联、积压与被反复拒绝'],
@@ -920,13 +919,13 @@ function renderHome() {
     : el('div', { class: 'card' },
       el('h3', {}, '从这里开始'),
       el('p', { class: 'muted', style: 'margin-top:8px' },
-        '创建任务并写明验收条件，把工作挂到开放池或直接分派；智能体用 DID 登录后认领、执行、提交，结果由人验收。只有验收通过的任务，结论才能生成 AICD。'),
+        '创建任务并写明验收条件，把工作挂到开放池或直接分派；智能体用 DID 登录后认领、执行、提交，结果由人验收。只有验收通过的任务，结论才能沉淀为经验。'),
       el('div', { class: 'row', style: 'margin-top:14px' },
         hasRole('owner', 'admin')
           ? el('button', { class: 'primary', type: 'button', onclick: () => { state.view = 'tasks'; renderNav(); refresh(); } }, '去创建第一个任务')
           : null,
         hasRole('reviewer', 'admin')
-          ? el('button', { type: 'button', onclick: () => { state.view = 'knowledge'; state.tab = 'candidates'; renderNav(); refresh(); } }, '查看待审核 AICD')
+          ? el('button', { type: 'button', onclick: () => { state.view = 'knowledge'; state.tab = 'candidates'; renderNav(); refresh(); } }, '查看待审核经验')
           : null));
 
   const feedRow = (entry) =>
@@ -1234,7 +1233,7 @@ function openCreateTask() {
   openDialog({
     title: hasRole('owner', 'admin') ? '新建任务' : '发起任务提案',
     description: hasRole('owner', 'admin')
-      ? '验收条件必须可核对；它决定任务能否被接受。个人任务只在你的个人空间，团队看不到，之后可以把 AICD 分享给团队。'
+      ? '验收条件必须可核对；它决定任务能否被接受。个人任务只在你的个人空间，团队看不到，之后可以把经验分享给团队。'
       : '智能体发起的任务先记为提案，负责人接管后才进入正式流程。',
     submitLabel: '创建',
     fields: [
@@ -1367,7 +1366,7 @@ function renderTaskDetail() {
     task.origin === 'agent' && !task.adopted
       ? el('div', { class: 'note warn' },
         el('strong', {}, '这是智能体发起的提案。'),
-        ' 接管后它才进入正式流程：可以分派、验收、生成 AICD；不接管就只是一个提议。',
+        ' 接管后它才进入正式流程：可以分派、验收、沉淀经验；不接管就只是一个提议。',
         canSupervise() || owner
           ? el('button', {
             class: 'accent',
@@ -1389,7 +1388,7 @@ function renderTaskDetail() {
     detail.knowledgeRefs.length
       ? el('div', { class: 'card' },
         el('div', { class: 'card-head' },
-          el('h3', {}, '引用的 AICD'),
+          el('h3', {}, '引用的经验'),
           el('span', { class: 'muted' }, '正文固定在被引用的版本上')),
         el('div', { class: 'list' }, detail.knowledgeRefs.map((ref) =>
           el('div', { class: 'list-item static' },
@@ -1397,7 +1396,7 @@ function renderTaskDetail() {
             el('div', { class: 'meta' },
               el('span', {}, `v${ref.version}`),
               ref.conditions ? el('span', {}, `适用：${ref.conditions}`) : null,
-              el('span', { class: 'mono muted', title: `AICD 编号 ${ref.knowledgeId}` },
+              el('span', { class: 'mono muted', title: `经验编号 ${ref.knowledgeId}` },
                 ref.knowledgeId.slice(0, 8)))))))
       : null,
     renderTimeline(detail.events, detail.subtasks),
@@ -1418,7 +1417,7 @@ function taskTabButton(id, label) {
 
 // ---------------------------------------------------------------- 任务房间
 
-const ROOM_STREAM_LABEL = { event: '进展', message: '消息', file: '文件', knowledge: 'AICD' };
+const ROOM_STREAM_LABEL = { event: '进展', message: '消息', file: '文件', knowledge: '经验' };
 const ROOM_ROLE_LABEL = {
   owner: '负责人',
   coordinator: '协调者',
@@ -1435,7 +1434,7 @@ function renderTaskRoom() {
       statCard('消息', counts.messages, '人与智能体共用一条线'),
       statCard('开放线程', counts.threadsOpen, `共 ${room.threads.length} 个线程`),
       statCard('文件', counts.files, '输入、中间产物与成果'),
-      statCard('AICD', counts.knowledge, '与这件事相关的 AICD')),
+      statCard('经验', counts.knowledge, '与这件事相关的经验')),
     renderRoomParticipants(room),
     renderRoomThreads(room),
     renderRoomMessages(room),
@@ -1661,7 +1660,7 @@ function renderRoomFiles(room) {
           class: 'link',
           type: 'button',
           onclick: () => openPromoteFile(room.task, file),
-        }, '挂到 AICD')
+        }, '挂到经验')
         : null,
       el('button', {
         class: 'link danger',
@@ -1684,7 +1683,7 @@ const MAX_SPACE_FILE_BYTES = 256 * 1024;
 function openUploadFile(task) {
   openDialog({
     title: '上传文件',
-    description: '单文件上限 256 KiB；成果文件可以挂到 AICD 下当证据。',
+    description: '单文件上限 256 KiB；成果文件可以挂到经验 下当证据。',
     submitLabel: '上传',
     fields: [
       { name: 'file', label: '文件', type: 'files', required: true },
@@ -1716,15 +1715,15 @@ function openPromoteFile(task, file) {
         label: `${item.title}（${AICD_STATE_LABEL[item.state] ?? item.state}）`,
       }));
     if (!options.length) {
-      toast('先建一条 AICD，再把成果挂成证据', 'error');
+      toast('先建一条经验，再把成果挂成证据', 'error');
       return;
     }
     openDialog({
-      title: '挂到 AICD',
+      title: '挂到经验',
       description: '只有成果文件能挂成证据；同团队内复制时附件会一起带走。',
       submitLabel: '挂接',
       fields: [
-        { name: 'knowledgeId', label: 'AICD', type: 'select', options },
+        { name: 'knowledgeId', label: '经验', type: 'select', options },
         {
           name: 'role',
           label: '角色',
@@ -1745,7 +1744,7 @@ function openPromoteFile(task, file) {
 }
 
 function renderRoomActivity(room) {
-  const streams = [['', '全部'], ['event', '进展'], ['message', '消息'], ['file', '文件'], ['knowledge', 'AICD']];
+  const streams = [['', '全部'], ['event', '进展'], ['message', '消息'], ['file', '文件'], ['knowledge', '经验']];
   const entries = state.roomStream
     ? room.activity.filter((entry) => entry.stream === state.roomStream)
     : room.activity;
@@ -1756,7 +1755,7 @@ function renderRoomActivity(room) {
   return el('div', { class: 'card' },
     el('div', { class: 'card-head' },
       el('h3', {}, '合并时间线'),
-      el('span', { class: 'muted' }, '进展、对话、文件与 AICD 按时间排在一起')),
+      el('span', { class: 'muted' }, '进展、对话、文件与经验 按时间排在一起')),
     el('div', { class: 'row actions-row' }, streams.map(([value, label]) =>
       el('button', {
         class: 'link',
@@ -1771,7 +1770,7 @@ function renderRoomKnowledge(room) {
   if (!room.knowledge.length) return null;
   return el('div', { class: 'card' },
     el('div', { class: 'card-head' },
-      el('h3', {}, '这件事沉淀的 AICD'),
+      el('h3', {}, '这件事沉淀的经验'),
       el('span', { class: 'muted' }, '发布后团队智能体能读到')),
     el('div', { class: 'list' }, room.knowledge.map((item) =>
       el('div', { class: 'list-item static' },
@@ -1869,13 +1868,13 @@ function renderTaskActions(detail, owner) {
     buttons.push(el('button', { type: 'button', onclick: () => openReview(task, 'return') }, '退回'));
   }
   if (owner && task.status === 'completed') {
-    buttons.push(el('button', { type: 'button', class: 'accent', onclick: () => openCandidate(task) }, '生成 AICD'));
+    buttons.push(el('button', { type: 'button', class: 'accent', onclick: () => openCandidate(task) }, '沉淀经验'));
   }
   const agentSubmitted = detail.subtasks.some(
     (item) => item.agentId === state.me.id && ['submitted', 'verified'].includes(item.status),
   );
   if (!owner && agentSubmitted && task.status !== 'cancelled') {
-    buttons.push(el('button', { type: 'button', class: 'accent', onclick: () => openCandidate(task) }, '生成 AICD'));
+    buttons.push(el('button', { type: 'button', class: 'accent', onclick: () => openCandidate(task) }, '总结成经验'));
   }
   if (owner && !['completed', 'cancelled'].includes(task.status)) {
     buttons.push(el('button', { type: 'button', class: 'ghost', onclick: () => openCancel(task) }, '取消任务'));
@@ -1992,13 +1991,13 @@ const EVENT_TEXT = {
   task_accepted: '验收通过',
   task_returned: '验收退回',
   stage_summary_recorded: '记录阶段摘要',
-  knowledge_candidate: '提交候选 AICD',
-  knowledge_published: '发布 AICD',
-  knowledge_revoked: '撤销 AICD',
-  knowledge_revised: '修订 AICD',
+  knowledge_candidate: '沉淀候选经验',
+  knowledge_published: '发布经验',
+  knowledge_revoked: '撤销经验',
+  knowledge_revised: '修订经验',
   knowledge_access_changed: '调整共享范围',
-  knowledge_referenced: '引用 AICD',
-  knowledge_shared: '分享 AICD',
+  knowledge_referenced: '引用经验',
+  knowledge_shared: '分享经验',
   comment_added: '发表评论',
   offer_published: '挂出开放子任务',
   offer_claimed: '认领开放子任务',
@@ -2192,7 +2191,7 @@ function openReview(task, decision) {
   openDialog({
     title: decision === 'accept' ? '验收通过' : '退回任务',
     description: decision === 'accept'
-      ? '验收后任务完成，子任务标记为已核验，并可生成 AICD。'
+      ? '验收后任务完成，子任务标记为已核验，并可沉淀经验。'
       : '任务回到执行中，子任务需要重新处理。',
     submitLabel: decision === 'accept' ? '通过' : '退回',
     fields: [{ name: 'note', label: '意见', type: 'textarea', required: true }],
@@ -2217,11 +2216,11 @@ function openCancel(task) {
 
 function openCandidate(task) {
   openDialog({
-    title: '生成候选 AICD',
-    description: '遇到并解决的问题可以整理成 AICD。候选 AICD 需要审核人批准、写明适用范围与有效期后才能被引用。',
+    title: '沉淀候选经验',
+    description: '遇到并解决的问题可以总结成经验。候选经验需要审核人批准、写明适用范围与有效期后才能被引用。',
     submitLabel: '生成候选',
     fields: [
-      { name: 'content', label: 'AICD 内容', type: 'textarea', required: true },
+      { name: 'content', label: '经验内容', type: 'textarea', required: true },
       { name: 'conditions', label: '适用条件', type: 'textarea', required: true },
     ],
     onSubmit: (values) =>
@@ -2230,7 +2229,7 @@ function openCandidate(task) {
         state.view = 'knowledge';
         state.tab = hasRole('reviewer', 'admin') ? 'candidates' : 'published';
         renderNav();
-      }, '已生成候选 AICD'),
+      }, '已生成候选经验'),
   });
 }
 
@@ -2256,12 +2255,12 @@ function openReturn(subtask) {
   });
 }
 
-// ---------------------------------------------------------------- AICD
+// ---------------------------------------------------------------- 经验库
 
 function renderKnowledge() {
   const pendingInvites = state.aicdInvites.filter((invite) => invite.status === 'pending').length;
   const tabs = el('div', { class: 'tabs' },
-    tabButton('aicds', 'AICD'),
+    tabButton('aicds', '经验'),
     tabButton('published', '已发布'),
     hasRole('reviewer', 'admin') ? tabButton('candidates', `待审核 ${state.candidates.length ? `(${state.candidates.length})` : ''}`) : null,
     tabButton('invites', pendingInvites ? `复制邀请 (${pendingInvites})` : '复制邀请'));
@@ -2310,12 +2309,12 @@ function renderAicds() {
   const toolbar = el('div', { class: 'toolbar' },
     filter,
     !isAgentSide() && !isGuest()
-      ? el('button', { class: 'primary', type: 'button', onclick: openCreateAicd }, '新建 AICD')
+      ? el('button', { class: 'primary', type: 'button', onclick: openCreateAicd }, '新建经验')
       : null);
 
   if (!state.aicds.length) {
     return frag(toolbar, el('div', { class: 'empty' },
-      '还没有 AICD。新建一条草稿，写清适用条件与有效期，再提交审核。'));
+      '还没有经验。新建一条草稿，写清适用条件与有效期，再提交审核。'));
   }
 
   return frag(toolbar, el('div', { class: 'list' }, state.aicds.map((item) => {
@@ -2355,6 +2354,11 @@ function aicdActionButtons(item, manage, personal) {
   ];
   if (manage && (item.state === 'draft' || item.state === 'candidate')) {
     buttons.push(el('button', { class: 'link', type: 'button', onclick: () => openEditAicd(item) }, '编辑'));
+    buttons.push(el('button', {
+      class: 'link danger',
+      type: 'button',
+      onclick: () => openDeleteAicd(item),
+    }, '删除'));
     if (item.state === 'draft') {
       buttons.push(el('button', {
         class: 'link',
@@ -2399,13 +2403,6 @@ function aicdActionButtons(item, manage, personal) {
       onclick: () => openArchiveAicd(item),
     }, '归档'));
   }
-  if (manage && (item.state === 'draft' || item.state === 'candidate')) {
-    buttons.push(el('button', {
-      class: 'link danger',
-      type: 'button',
-      onclick: () => openDeleteAicd(item),
-    }, '删除'));
-  }
   return buttons;
 }
 
@@ -2421,7 +2418,7 @@ function copyPolicyOptions(current) {
 
 function aicdFields(item = {}) {
   return [
-    { name: 'kind', label: '类型', type: 'select', value: item.kind ?? 'document', options: AICD_KIND_OPTIONS },
+    { name: 'kind', label: '类型', type: 'select', value: item.kind ?? 'experience', options: AICD_KIND_OPTIONS },
     { name: 'title', label: '标题', value: item.title ?? '', required: true, placeholder: '一句话说明它解决什么问题' },
     { name: 'summary', label: '摘要', value: item.summary ?? '', placeholder: '列表里展示的一句话' },
     { name: 'content', label: '正文', type: 'textarea', value: item.content ?? '', required: true },
@@ -2430,7 +2427,8 @@ function aicdFields(item = {}) {
       label: '适用条件',
       type: 'textarea',
       value: item.conditions ?? '',
-      placeholder: '什么时候适用、什么时候不要用；经验类必填',
+      required: true,
+      placeholder: '什么时候适用、什么时候不要用',
     },
     { name: 'tags', label: '标签（逗号分隔）', value: (item.tags ?? []).join('，') },
     {
@@ -2457,7 +2455,7 @@ function aicdBody(values) {
 
 function openCreateAicd() {
   openDialog({
-    title: '新建 AICD',
+    title: '新建经验',
     description: state.tenant?.personal
       ? '先存成草稿；发布后在个人空间生效，再复制给团队。'
       : '先存成草稿；提交审核后由你、审核人或管理员发布。',
@@ -2472,7 +2470,7 @@ function openCreateAicd() {
 
 function openEditAicd(item) {
   openDialog({
-    title: '编辑 AICD',
+    title: '编辑经验',
     description: '草稿与待审核稿可以直接改；复制策略只能收紧。',
     submitLabel: '保存',
     fields: aicdFields(item),
@@ -2499,10 +2497,10 @@ function openSubmitAicd(item) {
 function openPublishAicd(item) {
   const expires = new Date(Date.now() + 365 * 86_400_000).toISOString().slice(0, 10);
   openDialog({
-    title: '发布 AICD',
+    title: '发布经验',
     description: state.tenant?.personal
       ? '发布后先在个人空间生效，可以再复制给团队。'
-      : '发布后，本团队的智能体能读到这条 AICD。',
+      : '发布后，本团队的智能体能读到这条经验。',
     submitLabel: '发布',
     fields: [
       { name: 'expiresAt', label: '有效期至', type: 'date', value: expires, required: true },
@@ -2528,7 +2526,7 @@ function openPublishAicd(item) {
 
 function openArchiveAicd(item) {
   openDialog({
-    title: '归档 AICD',
+    title: '归档经验',
     description: '归档后不再出现在常规列表，但版本、来源链与副本都保留。',
     submitLabel: '归档',
     fields: [{ name: 'reason', label: '原因', type: 'textarea', placeholder: '可选' }],
@@ -2544,7 +2542,7 @@ function openArchiveAicd(item) {
 
 function openDeleteAicd(item) {
   openDialog({
-    title: '删除 AICD',
+    title: '删除经验',
     description: '删除后不可恢复；已有副本或被任务引用的条目不能删除。',
     submitLabel: '删除',
     fields: [],
@@ -2565,14 +2563,14 @@ function openCopyAicd(item) {
       ? [{ value: state.tenant.id, label: `${state.tenant.name}（当前团队）` }]
       : [];
   if (!options.length) {
-    toast(personal ? '先加入一个团队，再把个人 AICD 复制过去' : '当前团队不可用', 'error');
+    toast(personal ? '先加入一个团队，再把个人经验复制过去' : '当前团队不可用', 'error');
     return;
   }
   openDialog({
-    title: '复制 AICD',
+    title: '复制经验',
     description: personal
       ? '复制会在目标团队生成一份独立草稿，来源链保留在原条目上。'
-      : '团队内复制会生成一份独立草稿；团队 AICD 不能带进个人空间。',
+      : '团队内复制会生成一份独立草稿；团队经验 不能带进个人空间。',
     submitLabel: '复制',
     fields: [
       { name: 'targetWorkspace', label: '目标空间', type: 'select', options },
@@ -2622,7 +2620,7 @@ function openAicdDetail(id) {
       api(`aicds/${encodeURIComponent(id)}/lineage`).catch(() => []),
     ]);
     showPanel(
-      item.title || 'AICD',
+      item.title || '经验',
       `${AICD_KIND_LABEL[item.kind] ?? item.kind} · v${item.version} · ${EVIDENCE_LABEL[item.evidenceLevel] ?? item.evidenceLevel}`,
       el('div', { class: 'stack' },
         el('div', { class: 'row' },
@@ -2700,7 +2698,7 @@ function openAicdDetail(id) {
 
 function renderAicdInvites() {
   if (!state.aicdInvites.length) {
-    return el('div', { class: 'empty' }, '没有复制邀请。别人把 AICD 复制给你时，会先在这里等你接受。');
+    return el('div', { class: 'empty' }, '没有复制邀请。别人把经验 复制给你时，会先在这里等你接受。');
   }
   const personal = Boolean(state.tenant?.personal);
   return el('div', { class: 'list' }, state.aicdInvites.map((invite) => {
@@ -2759,15 +2757,15 @@ function renderPublished() {
       'div',
       { class: 'empty' },
       state.tenant?.personal
-        ? '个人空间还没有发布 AICD。完成任务后可以生成，再分享给团队。'
-        : '团队还没有发布 AICD。',
+        ? '个人空间还没有发布经验。完成任务后可以沉淀，再分享给团队。'
+        : '团队还没有发布经验。',
     );
   }
   return el('div', { class: 'list' }, state.knowledge.map((item) => {
     const sharedIn = item.workspace !== state.me.workspace;
     const source = item.sourcePersonal
-      ? `${item.authorName ?? '成员'} 的个人 AICD`
-      : `${item.sourceName ?? '其他团队'} 的 AICD`;
+      ? `${item.authorName ?? '成员'} 的个人经验`
+      : `${item.sourceName ?? '其他团队'} 的经验`;
     const manageable = !sharedIn && hasRole('reviewer', 'admin');
     const personal = Boolean(state.tenant?.personal) && !sharedIn;
     return el('div', { class: 'list-item static' },
@@ -2782,7 +2780,7 @@ function renderPublished() {
         personal && item.sharedTeams?.length
           ? el('span', {}, `已分享给 ${item.sharedTeams.length} 个团队`)
           : null,
-        el('span', { class: 'mono muted', title: `AICD 编号 ${item.id}` }, item.id.slice(0, 8))),
+        el('span', { class: 'mono muted', title: `经验编号 ${item.id}` }, item.id.slice(0, 8))),
       manageable
         ? el('div', { class: 'row actions-row' },
           el('button', { class: 'link', type: 'button', onclick: () => openRevise(item) }, '修订'),
@@ -2797,7 +2795,7 @@ function renderPublished() {
 }
 
 function renderCandidates() {
-  if (!state.candidates.length) return el('div', { class: 'empty' }, '没有待审核的候选 AICD。');
+  if (!state.candidates.length) return el('div', { class: 'empty' }, '没有待审核的候选经验。');
   return el('div', { class: 'list' }, state.candidates.map((item) =>
     el('div', { class: 'list-item static' },
       el('div', { class: 'row spread top' },
@@ -2807,7 +2805,7 @@ function renderCandidates() {
         el('span', {}, `v${item.version}`),
         el('span', {}, `来自 ${item.authorName || item.authorId}`),
         el('span', {}, `适用：${item.conditions}`),
-        el('span', { class: 'mono muted', title: `AICD 编号 ${item.id}` }, item.id.slice(0, 8))),
+        el('span', { class: 'mono muted', title: `经验编号 ${item.id}` }, item.id.slice(0, 8))),
       el('div', { class: 'row actions-row' },
         el('button', { class: 'primary', type: 'button', onclick: () => openPublish(item) }, '审核发布')),
     )));
@@ -2816,10 +2814,10 @@ function renderCandidates() {
 function openPublish(item) {
   const expires = new Date(Date.now() + 365 * 86_400_000).toISOString().slice(0, 10);
   openDialog({
-    title: '发布 AICD',
+    title: '发布经验',
     description: state.tenant?.personal
       ? '发布后先在个人空间生效，可再分享给团队。'
-      : '发布后，本团队的智能体能读到这条 AICD。',
+      : '发布后，本团队的智能体能读到这条经验。',
     submitLabel: '发布',
     fields: [
       { name: 'expiresAt', label: '有效期至', type: 'date', value: expires, required: true },
@@ -2837,7 +2835,7 @@ function openPublish(item) {
 
 function openRevoke(item) {
   openDialog({
-    title: '撤销 AICD',
+    title: '撤销经验',
     description: '撤销后不再作为有效建议返回，但历史引用仍可被授权审计。',
     submitLabel: '撤销',
     fields: [{ name: 'reason', label: '原因', type: 'textarea', required: true }],
@@ -2848,7 +2846,7 @@ function openRevoke(item) {
 
 function openRevise(item) {
   openDialog({
-    title: '修订 AICD',
+    title: '修订经验',
     description: '修订会生成新版本候选，重新审核通过前不对外返回。',
     submitLabel: '生成新版本',
     fields: [
@@ -2912,12 +2910,12 @@ function openShareKnowledge(item) {
       }
     }
     if (!options.length) {
-      toast('先创建或加入一个团队，再分享 AICD', 'error');
+      toast('先创建或加入一个团队，再分享经验', 'error');
       return;
     }
     openDialog({
-      title: '分享 AICD 给团队',
-      description: '目标团队的成员能看到这条 AICD；团队 AICD 不能反向带出。取消勾选即可撤回。',
+      title: '分享经验给团队',
+      description: '目标团队的成员能看到这条经验；团队经验不能反向带出。取消勾选即可撤回。',
       fields: [{
         name: 'teamIds',
         label: '目标团队',
@@ -3071,7 +3069,7 @@ function renderDirectory() {
           TENANT_ROLE_LABEL[tenant?.role ?? state.me.tenantRole] ?? '成员')),
       el('p', { class: 'hint tight' },
         tenant?.personal
-          ? '这是你的个人空间，只属于你。个人任务的 AICD 可以分享给团队。'
+          ? '这是你的个人空间，只属于你。个人任务的经验可以分享给团队。'
           : summary),
       el('div', { class: 'row', style: 'flex-wrap:wrap' },
         canManage ? el('button', { class: 'primary', type: 'button', onclick: inviteMember }, '邀请成员') : null,
@@ -3097,7 +3095,7 @@ function renameTeam(name) {
 function createTeam() {
   openDialog({
     title: '新建团队',
-    description: '新团队是独立的：任务、成员与 AICD 都不与当前团队共享。',
+    description: '新团队是独立的：任务、成员与经验都不与当前团队共享。',
     fields: [{ name: 'name', label: '团队名称', required: true, placeholder: '例如：供应链小组' }],
     submitLabel: '创建',
     onSubmit: (values) =>

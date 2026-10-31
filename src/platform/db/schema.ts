@@ -24,7 +24,7 @@ const MIGRATION_LOCK = 190106;
 /**
  * knowledge 的完整结构。
  *
- * v7 把 `task_id` 放宽为可空（手动 AICD 不绑任务），SQLite 只能靠重建表
+ * v7 把 `task_id` 放宽为可空（手动经验 不绑任务），SQLite 只能靠重建表
  * 才能去掉 NOT NULL，所以这份 DDL 同时服务新库与重建路径，避免两处漂移。
  */
 const KNOWLEDGE_TABLE = `CREATE TABLE IF NOT EXISTS knowledge (
@@ -41,7 +41,7 @@ const KNOWLEDGE_TABLE = `CREATE TABLE IF NOT EXISTS knowledge (
       access_mode TEXT NOT NULL DEFAULT 'restricted',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      kind TEXT NOT NULL DEFAULT 'document',
+      kind TEXT NOT NULL DEFAULT 'experience',
       title TEXT NOT NULL DEFAULT '',
       summary TEXT NOT NULL DEFAULT '',
       tags TEXT NOT NULL DEFAULT '[]',
@@ -212,7 +212,7 @@ function statements(dialect: 'sqlite' | 'postgres'): string[] {
     )`,
     `CREATE INDEX IF NOT EXISTS operations_created ON operations(created_at)`,
 
-    // ---- 知识 / AICD ----
+    // ---- 知识 /经验 ----
     KNOWLEDGE_TABLE,
     ...KNOWLEDGE_INDEXES,
 
@@ -433,7 +433,7 @@ function statements(dialect: 'sqlite' | 'postgres'): string[] {
     `CREATE UNIQUE INDEX IF NOT EXISTS tenants_one_personal
        ON tenants(created_by) WHERE personal = 1 AND created_by IS NOT NULL`,
 
-    // 个人 AICD 分享给团队：只给目标团队读权限，管理权仍在来源空间。
+    // 个人经验分享给团队：只给目标团队读权限，管理权仍在来源空间。
     `CREATE TABLE IF NOT EXISTS knowledge_shares (
       knowledge_id TEXT NOT NULL REFERENCES knowledge(id),
       team_workspace TEXT NOT NULL REFERENCES tenants(id),
@@ -621,7 +621,7 @@ function statements(dialect: 'sqlite' | 'postgres'): string[] {
     `CREATE INDEX IF NOT EXISTS knowledge_copy_invites_target
        ON knowledge_copy_invites(target_principal, status, created_at)`,
 
-    // AICD 审计：手动 AICD 没有任务事件流，动作单独记在这里。
+    //经验 审计：手动经验 没有任务事件流，动作单独记在这里。
     `CREATE TABLE IF NOT EXISTS knowledge_events (
       seq ${seq},
       id TEXT NOT NULL UNIQUE,
@@ -652,7 +652,7 @@ const ADDED_COLUMNS: { table: string; column: string; definition: string }[] = [
   { table: 'accounts', column: 'avatar', definition: "TEXT NOT NULL DEFAULT ''" },
   { table: 'accounts', column: 'title', definition: "TEXT NOT NULL DEFAULT ''" },
   { table: 'accounts', column: 'bio', definition: "TEXT NOT NULL DEFAULT ''" },
-  // v7 AICD：旧知识条目一律视为来自任务验收的 AICD。
+  // v7经验：旧知识条目一律视为来自任务验收的经验。
   { table: 'knowledge', column: 'kind', definition: "TEXT NOT NULL DEFAULT 'experience'" },
   { table: 'knowledge', column: 'title', definition: "TEXT NOT NULL DEFAULT ''" },
   { table: 'knowledge', column: 'summary', definition: "TEXT NOT NULL DEFAULT ''" },

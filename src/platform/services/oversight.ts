@@ -33,7 +33,7 @@ export type OversightThresholds = {
   unadoptedHours: number;
   /** 一小时内被拒请求多少次算异常。 */
   deniedThreshold: number;
-  /** AICD 到期前多少天提醒。 */
+  /** 经验到期前多少天提醒。 */
   knowledgeExpiryDays: number;
 };
 
@@ -265,7 +265,7 @@ export class OversightService {
       });
     }
 
-    // 9. AICD 即将过期。
+    // 9. 经验即将过期。
     const expiring = await this.ctx.db.read.all(
       `SELECT k.* FROM knowledge k
        WHERE k.workspace = :workspace AND k.state = 'published'
@@ -279,7 +279,7 @@ export class OversightService {
         subjectType: 'knowledge',
         subjectId: String(row.id),
         taskId: String(row.task_id),
-        title: `AICD 即将过期：${String(row.content).slice(0, 40)}`,
+        title: `经验即将过期：${String(row.content).slice(0, 40)}`,
         detail: `有效期至 ${String(row.expires_at)}。过期后不再出现在检索结果里，需要复审或修订。`,
       });
     }

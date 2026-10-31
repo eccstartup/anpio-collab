@@ -399,7 +399,7 @@ test('用钱包插件登录：领取挑战、签名、换令牌、按角色生�
     assert.deepEqual(me.roles, ['owner'], '人类钱包首次登录应按 owner 自动登记');
 
     // 纯负责人没有监管与审计，导航必须如实反映权限。
-    assert.deepEqual(navLabels(mounted.document), ['工作台', '任务', '提醒', 'AICD', '我的智能体', '团队', '设置']);
+    assert.deepEqual(navLabels(mounted.document), ['工作台', '任务', '提醒', '经验库', '我的智能体', '团队', '设置']);
 
     // 侧栏只留姓名与角色：主体 ID 与 DID 的细节在设置页，不在左下角堆五行。
     const who = text(element(mounted.document, 'identity'));
@@ -407,7 +407,7 @@ test('用钱包插件登录：领取挑战、签名、换令牌、按角色生�
     assert.ok(!who.includes('did:wba'), `侧栏不该显示 DID：${who}`);
     assert.ok(!/p_[0-9a-f]{8}/.test(who), `侧栏不该显示主体 ID：${who}`);
 
-    for (const label of ['工作台', '任务', '提醒', 'AICD', '我的智能体', '团队', '设置']) {
+    for (const label of ['工作台', '任务', '提醒', '经验库', '我的智能体', '团队', '设置']) {
       await visit(mounted.document, label);
       assert.ok(text(element(mounted.document, 'view')).trim().length > 0, `「${label}」渲染为空`);
     }
@@ -535,7 +535,7 @@ test('智能体用访问令牌登录：只看到自己的事，没有全局看�
       `工作台没有渲染：${text(element(mounted.document, 'toast'))}`,
     );
 
-    assert.deepEqual(navLabels(mounted.document), ['工作台', '任务', '开放池', '提醒', 'AICD', '设置']);
+    assert.deepEqual(navLabels(mounted.document), ['工作台', '任务', '开放池', '提醒', '经验库', '设置']);
 
     const home = text(element(mounted.document, 'view'));
     assert.ok(home.includes('待办子任务'), `智能体工作台缺少待办计数：${home.slice(0, 300)}`);
@@ -585,7 +585,7 @@ test('监管者看板：列异常、看在线表、能触发扫描', async () =>
       `管理员登录后没有进入工作台：${text(element(mounted.document, 'login-error'))}`,
     );
 
-    assert.deepEqual(navLabels(mounted.document), ['工作台', '任务', '提醒', 'AICD', '我的智能体', '团队', '监管', '审计', '设置']);
+    assert.deepEqual(navLabels(mounted.document), ['工作台', '任务', '提醒', '经验库', '我的智能体', '团队', '监管', '审计', '设置']);
 
     await visit(mounted.document, '监管');
     const view = text(element(mounted.document, 'view'));

@@ -1,9 +1,9 @@
 /**
- * 第一阶段验收：手动 AICD、复制与来源链、任务房间。
+ * 第一阶段验收：手动经验、复制与来源链、任务房间。
  *
  * 钉住几条容易松掉的语义：
- *  - 智能体不能创建或发布 AICD；
- *  - 个人 AICD 只能由作者带进自己所在的团队，团队 AICD 不能带出；
+ *  - 智能体不能创建或发布经验；
+ *  - 个人经验 只能由作者带进自己所在的团队，团队经验 不能带出；
  *  - 跨个人空间必须由对方接受邀请，来源撤销后副本仍有明确提示；
  *  - 任务房间把进展、对话与文件合并成一条时间线，团队真人成员可读。
  */
@@ -96,7 +96,7 @@ const publishDraft = async (
   );
 };
 
-test('AICD 手动生命周期：草稿可编辑、提交后发布，智能体不能创建或发布', async () => {
+test('经验手动生命周期：草稿可编辑、提交后发布，智能体不能创建或发布', async () => {
   const harness = await startHarness({ workspace: 'acme' });
   try {
     const alice = await emailLogin(harness, 'alice@example.com');
@@ -107,13 +107,16 @@ test('AICD 手动生命周期：草稿可编辑、提交后发布，智能体不
     assert.equal(created.copyPolicy, 'tenant');
     assert.equal(created.authorName, 'alice');
 
-    const plain = await createDraft(harness, alice.token, { kind: undefined, title: '补货流程' });
-    assert.equal(plain.kind, 'document', '默认类型是通用文档，不再默认成经验');
+    const removable = await createDraft(harness, alice.token, { title: '只用于删除的草稿' });
     const removed = await json<{ id: string; deleted: boolean }>(
-      await call(harness, 'POST', `/v1/aicds/${plain.id}/delete`, alice.token, {}, plain.version),
+      await call(harness, 'POST', `/v1/aicds/${removable.id}/delete`, alice.token, {}, removable.version),
     );
     assert.equal(removed.deleted, true);
-    assert.equal((await call(harness, 'GET', `/v1/aicds/${plain.id}`, alice.token)).status, 404);
+    assert.equal(
+      (await call(harness, 'GET', `/v1/aicds/${removable.id}`, alice.token)).status,
+      404,
+      '删除后不能再读到',
+    );
 
     const edited = await json<Item>(
       await call(harness, 'POST', `/v1/aicds/${created.id}/edit`, alice.token, {
@@ -150,7 +153,7 @@ test('AICD 手动生命周期：草稿可编辑、提交后发布，智能体不
     );
     assert.equal(missingExpiry.status, 400, '经验必须给出有效期');
 
-    const published = await json<{ state: string }>(
+    const published = await json<Item>(
       await call(harness, 'POST', `/v1/aicds/${created.id}/publish`, alice.token, {
         expiresAt: FUTURE,
         copyPolicy: 'team',
@@ -158,8 +161,15 @@ test('AICD 手动生命周期：草稿可编辑、提交后发布，智能体不
     );
     assert.equal(published.state, 'published');
 
-    const deletePublished = await call(harness, 'POST', `/v1/aicds/${created.id}/delete`, alice.token, {});
-    assert.equal(deletePublished.status, 409, '已发布的 AICD 只能归档或撤销，不能直接删除');
+    const deletePublished = await call(
+      harness,
+      'POST',
+      `/v1/aicds/${created.id}/delete`,
+      alice.token,
+      {},
+      published.version,
+    );
+    assert.equal(deletePublished.status, 409, '已发布的经验只能归档或撤销，不能直接删除');
 
     await expectStatus(
       agent.request(`knowledge/${created.id}/revoke`, {
@@ -256,7 +266,7 @@ test('复制到自己的团队：生成独立草稿、保留来源链，团队�
     const out = await call(harness, 'POST', `/v1/aicds/${child.id}/copy`, teamSession.token, {
       targetWorkspace: 'personal',
     });
-    assert.equal(out.status, 403, '团队 AICD 不能带进个人空间');
+    assert.equal(out.status, 403, '团队经验 不能带进个人空间');
 
     const forked = await json<Item>(
       await call(harness, 'POST', `/v1/aicds/${child.id}/copy`, teamSession.token, {
@@ -445,7 +455,7 @@ test('任务房间：线程、消息、文件与进展合并成一条时间线',
       roomWithKnowledge.activity.some(
         entry => entry.stream === 'knowledge' && entry.type === 'aicd_published',
       ),
-      '挂到任务文件上的 AICD 出现在任务时间线里',
+      '挂到任务文件上的经验 出现在任务时间线里',
     );
 
     const resolved = await json<{ status: string }>(
