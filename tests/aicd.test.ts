@@ -107,6 +107,14 @@ test('AICD 手动生命周期：草稿可编辑、提交后发布，智能体不
     assert.equal(created.copyPolicy, 'tenant');
     assert.equal(created.authorName, 'alice');
 
+    const plain = await createDraft(harness, alice.token, { kind: undefined, title: '补货流程' });
+    assert.equal(plain.kind, 'document', '默认类型是通用文档，不再默认成经验');
+    const removed = await json<{ id: string; deleted: boolean }>(
+      await call(harness, 'POST', `/v1/aicds/${plain.id}/delete`, alice.token, {}, plain.version),
+    );
+    assert.equal(removed.deleted, true);
+    assert.equal((await call(harness, 'GET', `/v1/aicds/${plain.id}`, alice.token)).status, 404);
+
     const edited = await json<Item>(
       await call(harness, 'POST', `/v1/aicds/${created.id}/edit`, alice.token, {
         title: '缺料时先查库存快照',
@@ -149,6 +157,9 @@ test('AICD 手动生命周期：草稿可编辑、提交后发布，智能体不
       }),
     );
     assert.equal(published.state, 'published');
+
+    const deletePublished = await call(harness, 'POST', `/v1/aicds/${created.id}/delete`, alice.token, {});
+    assert.equal(deletePublished.status, 409, '已发布的 AICD 只能归档或撤销，不能直接删除');
 
     await expectStatus(
       agent.request(`knowledge/${created.id}/revoke`, {

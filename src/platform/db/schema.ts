@@ -41,7 +41,7 @@ const KNOWLEDGE_TABLE = `CREATE TABLE IF NOT EXISTS knowledge (
       access_mode TEXT NOT NULL DEFAULT 'restricted',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      kind TEXT NOT NULL DEFAULT 'experience',
+      kind TEXT NOT NULL DEFAULT 'document',
       title TEXT NOT NULL DEFAULT '',
       summary TEXT NOT NULL DEFAULT '',
       tags TEXT NOT NULL DEFAULT '[]',
@@ -433,7 +433,7 @@ function statements(dialect: 'sqlite' | 'postgres'): string[] {
     `CREATE UNIQUE INDEX IF NOT EXISTS tenants_one_personal
        ON tenants(created_by) WHERE personal = 1 AND created_by IS NOT NULL`,
 
-    // 个人经验分享给团队：只给目标团队读权限，管理权仍在来源空间。
+    // 个人 AICD 分享给团队：只给目标团队读权限，管理权仍在来源空间。
     `CREATE TABLE IF NOT EXISTS knowledge_shares (
       knowledge_id TEXT NOT NULL REFERENCES knowledge(id),
       team_workspace TEXT NOT NULL REFERENCES tenants(id),
@@ -652,7 +652,7 @@ const ADDED_COLUMNS: { table: string; column: string; definition: string }[] = [
   { table: 'accounts', column: 'avatar', definition: "TEXT NOT NULL DEFAULT ''" },
   { table: 'accounts', column: 'title', definition: "TEXT NOT NULL DEFAULT ''" },
   { table: 'accounts', column: 'bio', definition: "TEXT NOT NULL DEFAULT ''" },
-  // v7 AICD：旧知识条目一律视为来自任务验收的经验。
+  // v7 AICD：旧知识条目一律视为来自任务验收的 AICD。
   { table: 'knowledge', column: 'kind', definition: "TEXT NOT NULL DEFAULT 'experience'" },
   { table: 'knowledge', column: 'title', definition: "TEXT NOT NULL DEFAULT ''" },
   { table: 'knowledge', column: 'summary', definition: "TEXT NOT NULL DEFAULT ''" },

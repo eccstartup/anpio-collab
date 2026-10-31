@@ -154,7 +154,7 @@ const EVENT_LABELS: Record<string, string> = {
   task_accepted: '验收通过',
   task_returned: '验收退回',
   stage_summary_recorded: '记录阶段摘要',
-  knowledge_candidate: '沉淀候选经验',
+  knowledge_candidate: '提交候选 AICD',
   knowledge_published: '发布 AICD',
   knowledge_revoked: '撤销 AICD',
   knowledge_revised: '修订 AICD',

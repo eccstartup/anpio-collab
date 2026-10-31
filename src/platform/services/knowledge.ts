@@ -1,7 +1,7 @@
 /**
  * 知识服务：候选 → 审核 → 发布 → 引用 → 修订 / 撤销。
  *
- * 平台区分事实、任务成果、经验和业务规则。这里只处理"经验"：
+ * 平台区分事实、任务成果、AICD 和业务规则。这里只处理 AICD：
  * 它必须来自一个已验收的任务，必须有人审核，必须有适用条件和有效期，
  * 不能被智能体自动升级成强制规则，也不会自动进入模型训练。
  */
@@ -381,7 +381,7 @@ export class KnowledgeService {
     if (actor.kind !== 'human') throw forbidden('只有人可以创建 AICD');
     if (actor.tenantRole === 'guest') throw forbidden('访客不能创建 AICD');
     const input = asObject(body);
-    const kind = input.kind === undefined ? 'experience' : asEnum(input.kind, 'kind', AICD_KINDS);
+    const kind = input.kind === undefined ? 'document' : asEnum(input.kind, 'kind', AICD_KINDS);
     const title = asString(input.title, 'title', { max: 200 });
     const content = asString(input.content, 'content', { max: 8000 });
     const summary = asOptionalString(input.summary, 'summary', { max: 500 }) ?? '';
@@ -513,7 +513,7 @@ export class KnowledgeService {
     if (item.state !== 'draft') throw conflict('只有草稿可以提交审核');
     if (!item.title.trim()) throw invalid('提交前必须填写标题');
     if (!item.content.trim()) throw invalid('提交前必须填写正文');
-    if (item.kind === 'experience' && !item.conditions.trim()) throw invalid('经验必须写明适用条件');
+    if (item.kind === 'experience' && !item.conditions.trim()) throw invalid('这类 AICD 必须写明适用条件');
     const updated = await this.ctx.db.transaction(async tx => {
       await tx.run("UPDATE knowledge SET state = 'candidate', updated_at = :at WHERE id = :id", {
         at: this.ctx.now(),
@@ -543,6 +543,44 @@ export class KnowledgeService {
     });
     if (!updated) throw notFound('AICD 不存在');
     return updated;
+  }
+
+  /** 删除：只允许没有副本、也没有被任务引用的草稿或待审核稿；已发布的请先归档或撤销。 */
+  async delete(actor: Principal, id: string): Promise<{ id: string; deleted: true }> {
+    if (actor.kind !== 'human') throw forbidden('只有人可以删除 AICD');
+    if (actor.tenantRole === 'guest') throw forbidden('访客不能删除 AICD');
+    const item = await this.requireItem(actor, id);
+    await this.assertManage(actor, item);
+    if (item.state !== 'draft' && item.state !== 'candidate') {
+      throw conflict('只有草稿或待审核的 AICD 可以删除；已发布的请先归档或撤销');
+    }
+    const copy = await this.ctx.db.read.one(
+      'SELECT 1 AS present FROM knowledge_lineage WHERE parent_id = :id',
+      { id: item.id },
+    );
+    if (copy) throw conflict('已有副本的 AICD 不能删除');
+    const referenced = await this.ctx.db.read.one(
+      'SELECT 1 AS present FROM knowledge_refs WHERE knowledge_id = :id',
+      { id: item.id },
+    );
+    if (referenced) throw conflict('已被任务引用的 AICD 不能删除');
+    await this.ctx.db.transaction(async tx => {
+      await tx.run('DELETE FROM knowledge_assets WHERE knowledge_id = :id', { id: item.id });
+      await tx.run('DELETE FROM knowledge_versions WHERE knowledge_id = :id', { id: item.id });
+      await tx.run('DELETE FROM knowledge_grants WHERE knowledge_id = :id', { id: item.id });
+      await tx.run('DELETE FROM knowledge_shares WHERE knowledge_id = :id', { id: item.id });
+      await tx.run('DELETE FROM knowledge_events WHERE knowledge_id = :id', { id: item.id });
+      await tx.run(
+        'DELETE FROM knowledge_copy_invites WHERE knowledge_id = :id OR accepted_knowledge_id = :id',
+        { id: item.id },
+      );
+      await tx.run('DELETE FROM knowledge_lineage WHERE child_id = :id', { id: item.id });
+      await tx.run('DELETE FROM knowledge WHERE id = :id AND workspace = :workspace', {
+        id: item.id,
+        workspace: item.workspace,
+      });
+    });
+    return { id: item.id, deleted: true };
   }
 
   /** 详情：来源、作者、来源链与副本去向。 */
@@ -654,25 +692,26 @@ export class KnowledgeService {
     }));
   }
 
-  /** 从任务提取候选经验：负责人要求已验收；受派智能体提交结果后即可沉淀。 */
-  async createCandidate(actor: Principal, taskId: string, body: unknown): Promise<Knowledge> {    const task = await readTask(this.ctx, actor, taskId);
+  /** 从任务提取候选 AICD：负责人要求已验收；受派智能体提交结果后即可生成。 */
+  async createCandidate(actor: Principal, taskId: string, body: unknown): Promise<Knowledge> {
+    const task = await readTask(this.ctx, actor, taskId);
     const owner = task.ownerId === actor.id || hasAnyRole(actor, 'admin');
     if (owner) {
-      if (task.status !== 'completed') throw conflict('只有已验收的任务可以沉淀经验');
+      if (task.status !== 'completed') throw conflict('只有已验收的任务可以生成 AICD');
     } else {
       if (actor.kind !== 'agent' && actor.kind !== 'service') {
-        throw forbidden('只有任务负责人或已提交结果的智能体可以沉淀经验');
+        throw forbidden('只有任务负责人或已提交结果的智能体可以生成 AICD');
       }
-      if (task.status === 'cancelled') throw conflict('任务已取消，无法沉淀经验');
+      if (task.status === 'cancelled') throw conflict('任务已取消，无法生成 AICD');
       const submitted = await this.ctx.db.read.one(
         `SELECT 1 AS present FROM subtasks
          WHERE task_id = :taskId AND agent_id = :agent AND status IN ('submitted','verified') LIMIT 1`,
         { taskId, agent: actor.id },
       );
-      if (!submitted) throw forbidden('只有已提交结果的受派智能体可以沉淀经验');
+      if (!submitted) throw forbidden('只有已提交结果的受派智能体可以生成 AICD');
     }
     const input = asObject(body);
-    const kind = input.kind === undefined ? 'experience' : asEnum(input.kind, 'kind', AICD_KINDS);
+    const kind = input.kind === undefined ? 'document' : asEnum(input.kind, 'kind', AICD_KINDS);
     const content = asString(input.content, 'content', { max: 8000 });
     const conditions = asString(input.conditions, 'conditions', { max: 4000 });
     const title =
@@ -745,7 +784,7 @@ export class KnowledgeService {
 
   private async requireItem(actor: Principal, id: string): Promise<Knowledge> {
     const item = await this.load(actor.workspace, id);
-    if (!item) throw notFound('知识不存在');
+    if (!item) throw notFound('AICD 不存在');
     return item;
   }
 
@@ -772,14 +811,14 @@ export class KnowledgeService {
     const kind = input.kind === undefined ? item.kind : asEnum(input.kind, 'kind', AICD_KINDS);
     if (!title.trim()) throw invalid('发布前必须填写标题');
     if (!item.content.trim()) throw invalid('发布前必须填写正文');
-    if (kind === 'experience' && !conditions.trim()) throw invalid('经验必须写明适用条件');
+    if (kind === 'experience' && !conditions.trim()) throw invalid('这类 AICD 必须写明适用条件');
 
     let expiresAt: string | null = null;
     if (input.expiresAt !== undefined && input.expiresAt !== null) {
       expiresAt = asTimestamp(input.expiresAt, 'expiresAt');
       if (Date.parse(expiresAt) <= Date.parse(this.ctx.now())) throw invalid('expiresAt 必须晚于当前时间');
     }
-    if (kind === 'experience' && !expiresAt) throw invalid('经验必须给出有效期');
+    if (kind === 'experience' && !expiresAt) throw invalid('这类 AICD 必须给出有效期');
     const audience = this.parseAudience(input.audience);
     const evidenceLevel =
       input.evidenceLevel === undefined
@@ -858,12 +897,12 @@ export class KnowledgeService {
     return { id: item.id, state: 'revoked', version: item.version };
   }
 
-  /** 修订：生成新版本候选，重新审核前不再作为有效经验返回。 */
+  /** 修订：生成新版本候选，重新审核前不再作为有效 AICD 返回。 */
   async revise(actor: Principal, id: string, body: unknown): Promise<{ id: string; state: string; version: number }> {
     if (actor.kind !== 'human') throw forbidden('智能体不能修订 AICD');
     const item = await this.requireItem(actor, id);
     await this.assertManage(actor, item);
-    if (!['published', 'revoked'].includes(item.state)) throw conflict('只有已发布或已撤销的知识可以修订');
+    if (!['published', 'revoked'].includes(item.state)) throw conflict('只有已发布或已撤销的 AICD 可以修订');
     const input = asObject(body);
     const content = asString(input.content, 'content', { max: 8000 });
     const conditions = asString(input.conditions, 'conditions', { max: 4000 });
@@ -972,7 +1011,7 @@ export class KnowledgeService {
     };
   }
 
-  /** 个人经验分享给团队：整单替换，只有来源空间里本人能改。 */
+  /** 个人 AICD 分享给团队：整单替换，只有来源空间里本人能改。 */
   async setShares(
     actor: Principal,
     id: string,
@@ -980,7 +1019,7 @@ export class KnowledgeService {
   ): Promise<{ id: string; teamIds: string[] }> {
     const item = await this.requireItem(actor, id);
     const accountId = actor.accountId;
-    if (actor.kind !== 'human' || !accountId) throw forbidden('只有人可以分享经验');
+    if (actor.kind !== 'human' || !accountId) throw forbidden('只有人可以分享 AICD');
 
     const source = await this.ctx.db.read.one(
       `SELECT t.personal, t.status, p.account_id
@@ -994,7 +1033,7 @@ export class KnowledgeService {
       String(source.status) !== 'active' ||
       String(source.account_id ?? '') !== accountId
     ) {
-      throw forbidden('团队经验不能分享到团队之外');
+      throw forbidden('团队 AICD 不能分享到团队之外');
     }
 
     const teamIds = asStringArray(asObject(body).teamIds, 'teamIds', { max: 50, maxLength: 128 });
@@ -1005,9 +1044,9 @@ export class KnowledgeService {
     const current = new Set(currentRows.map(row => String(row.id)));
     const requested = new Set(teamIds);
 
-    // 非发布状态只能撤回已有分享；新增分享必须先把经验发布出去。
+    // 非发布状态只能撤回已有分享；新增分享必须先把 AICD 发布出去。
     if (item.state !== 'published' && teamIds.some(teamId => !current.has(teamId))) {
-      throw conflict('只有已发布的经验可以分享');
+      throw conflict('只有已发布的 AICD 可以分享');
     }
 
     // 只校验新增目标：人退出团队后仍要能撤回已有分享。
@@ -1047,7 +1086,7 @@ export class KnowledgeService {
     return { id: item.id, teamIds };
   }
 
-  /** 已发布、未过期、且对调用方可见的经验（含分享给当前团队的个人经验）。 */
+  /** 已发布、未过期、且对调用方可见的 AICD（含分享给当前团队的个人 AICD）。 */
   async list(actor: Principal, query = '', limit = 100): Promise<Knowledge[]> {
     if (query.length > 200) throw invalid('查询过长');
     await requireAgentScope(this.ctx, actor, 'knowledge:read');
@@ -1249,7 +1288,7 @@ export class KnowledgeService {
     };
   }
 
-  /** 任务引用一条当前有效的经验，固定到具体版本。 */
+  /** 任务引用一条当前有效的 AICD，固定到具体版本。 */
   async reference(actor: Principal, taskId: string, body: unknown): Promise<{ id: string; version: number }> {
     await requireAgentScope(this.ctx, actor, 'knowledge:read');
     const task = await readTask(this.ctx, actor, taskId);

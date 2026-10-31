@@ -212,8 +212,8 @@ export type TaskEvent = {
 export const KNOWLEDGE_STATES = ['draft', 'candidate', 'published', 'archived', 'revoked'] as const;
 export type KnowledgeState = (typeof KNOWLEDGE_STATES)[number];
 
-/** AICD = AI 协作文档；经验只是第一种 kind。 */
-export const AICD_KINDS = ['experience', 'playbook', 'checklist', 'decision', 'report', 'handoff'] as const;
+/** AICD = AI 协作文档；默认 kind 为通用文档，其余 kind 表示更具体的类型。 */
+export const AICD_KINDS = ['document', 'experience', 'playbook', 'checklist', 'decision', 'report', 'handoff'] as const;
 export type AicdKind = (typeof AICD_KINDS)[number];
 
 /** 来路：任务验收沉淀、人手动编写、智能体候选。 */
