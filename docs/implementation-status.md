@@ -54,7 +54,7 @@
 | 本地对象存储：内容寻址 `<sha256前两位>/<sha256>`，临时文件 + `fsync` + 原子改名；同一团队同一内容只落一个对象 | `src/platform/storage.ts`、`app.ts` | `tests/storage.test.ts`（落盘、去重、软删除后字节保留） |
 | 可选 S3：按环境变量动态加载，未配置时完全走本地；上传令牌可换成预签名 PUT | `storage.ts` | 本地驱动全测；S3 路径未在真实桶上跑过 |
 | 三步上传：`POST /v1/space/files/upload-url` → `PUT /v1/space/uploads/:token` → `POST /v1/space/uploads/:id/complete`；令牌一次有效、过期清理、哈希与大小校验 | `services/storage.ts`、`routes.ts` | `tests/storage.test.ts`（重放、哈希不符、令牌复用） |
-| 文件可脱离任务：`space_files.task_id` 可空（schema v9 重建表），AICD 附件先独立上传再挂到文档 | `db/schema.ts`、`storage.ts` | `tests/storage.test.ts`「独立附件不绑任务也能上传」 |
+| 文件可脱离任务：`space_files.task_id` 可空（schema v9 重建表），文档附件先独立上传再挂到文档 | `db/schema.ts`、`storage.ts` | `tests/storage.test.ts`「独立附件不绑任务也能上传」 |
 | 二进制流式读取：`GET /v1/space/files/:id/content`、`GET /v1/tasks/:id/files/:fileId/content`，支持 `Range`；网页下载不再走 base64 JSON | `routes.ts`、`src/web/app.js` | 同上 + `tests/aicd.test.ts` 房间下载；网页改动仅结构测试，未在浏览器手点 |
 | 房间未读：`task_reads` 每人每任务游标（schema v10），`GET /room` 返回 `unread.messages/questions/mentions`；`POST /v1/tasks/:id/read` 只移动游标，不推进任务版本 | `db/schema.ts`、`collab.ts#unreadFor/markRead` | `tests/room.test.ts`（版本不变、自己的消息不算未读） |
 | 点名提问：消息 `payload.to` 接受字符串或数组，校验收件人后与正文 `@` 合并；`GET /v1/agent/questions` 返回点名问我且未回答的问题 | `collab.ts#addComment/questionsFor`、`routes.ts` | 同上（回答后不再追问、不存在的收件人 400） |
