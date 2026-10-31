@@ -6,6 +6,7 @@
 
 ```sh
 export COLLAB_BOOTSTRAP_TOKEN="$(openssl rand -hex 32)"
+mkdir -p data
 export COLLAB_DB="$PWD/data/collab.sqlite3"     # 可选，默认 ./collab.sqlite3
 npm start
 ```
@@ -21,7 +22,6 @@ npm start
   `COLLAB_DEV_MAIL=0`（关掉 devLink 与本地发件箱读取接口）。
 - 登录页的《登录与授权说明》挂在 `/help/login`，不需要登录；它和
   [login-and-authorization.md](login-and-authorization.md) 讲的是同一件事。
-- `COLLAB_MAIL=console` 时只打印不发信；默认 `outbox` 会同时写库，便于本机排查。
 
 > `COLLAB_BOOTSTRAP_TOKEN` 只在**数据库为空**时生效。数据库里已有主体时修改环境变量不会改变任何令牌，需要用 `POST /v1/principals/:id/rotate-token` 轮换。令牌不要进 Git、命令历史或任务内容。
 
@@ -109,7 +109,7 @@ npm run test:postgres     # 需要本机已安装 initdb / pg_ctl / createdb
 平台不自带定时任务：超时与告警都是显式的管理操作，调一次留一次审计。调度器一轮做两件事，**顺序固定**：
 
 1. `POST /v1/maintenance/expire` —— 把"已过截止时间且仍未提交"的子任务标记为 `timed_out`
-2. `POST /v1/oversight/scan` —— 按 9 条规则开/并/关告警
+2. `POST /v1/oversight/scan` —— 按 11 条规则开/并/关告警
 
 先超时后扫描，是为了让同一轮里新产生的逾期当轮就被看见，而不是等下一轮。每轮输出一行 JSON：
 
