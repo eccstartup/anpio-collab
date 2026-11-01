@@ -500,7 +500,7 @@ accepted ──outcome-unknown──> outcome_unknown
 
 ### 内置智能体
 
-定义与运行记录只对 `admin`/`owner`；`ensure` 只对 `admin`；运行日志、心跳与收尾只对该轮主体或管理员。
+这些接口属于控制面：定义、身份、运行记录与日志由本平台管理；执行由独立仓库 anpio-agents 的 supervisor 通过同一组接口完成（它用管理员令牌拉定义与起运行，用派生令牌写日志、心跳与收尾）。定义与运行记录只对 `admin`/`owner`；`ensure` 只对 `admin`；运行日志、心跳与收尾只对该轮主体或管理员。
 
 | 方法 | 路径 | 作用 |
 | --- | --- | --- |

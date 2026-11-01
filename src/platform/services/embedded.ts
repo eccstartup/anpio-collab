@@ -26,9 +26,9 @@ import {
   normalizeDefinition,
   type EmbeddedAgentDefinition,
   type NormalizedDefinition,
-} from '../../runtime/definition.ts';
-import { PROVIDERS } from '../../runtime/providers.ts';
-import { deriveEmbeddedToken } from '../../runtime/token.ts';
+} from '../embedded/definition.ts';
+import { PROVIDERS } from '../embedded/providers.ts';
+import { deriveEmbeddedToken } from '../embedded/token.ts';
 
 const RUN_STATUSES = ['running', 'succeeded', 'failed', 'timeout', 'outcome_unknown'] as const;
 type RunStatus = (typeof RUN_STATUSES)[number];

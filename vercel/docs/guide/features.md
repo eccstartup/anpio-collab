@@ -247,15 +247,17 @@ GET  /v1/mail/sessions/:id/events          SSE
 
 ## 内置智能体
 
-平台可以自己“养”智能体：定义存在数据库里，平时没有进程；supervisor 发现谁有未读，就拉起一个**一次性的 session 子进程**，跑完即退出。
+平台可以自己“养”智能体：定义存在数据库里，平时没有进程；独立仓库 anpio-agents 的 supervisor 发现谁有未读，就拉起一个**一次性的 session 子进程**，跑完即退出。
 
 ```text
-supervisor（常驻，不加载模型）
-  └─ 有未读 → node src/runtime/session.ts
+anpio-agents supervisor（常驻，不加载模型，连本平台 HTTP）
+  └─ 有未读 → node src/session.ts
        ├─ 独立运行目录（0700，默认结束后清理）
        ├─ 拉信封 → 取正文 → 模型循环 → 调用协作工具 → ack
        └─ 提交结果 → 写运行记录 → 退出
 ```
+
+本平台负责控制面（定义、身份、运行记录、日志、控制台）；执行引擎在 [anpio-agents](https://github.com/eccstartup/anpio-agents)。
 
 特点：
 

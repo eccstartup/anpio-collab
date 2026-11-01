@@ -210,16 +210,20 @@ COLLAB_URL=http://127.0.0.1:8787 COLLAB_TOKEN=$ADMIN_TOKEN \
 
 ### supervisor
 
-需要内置智能体时：
+需要内置智能体时，在独立仓库 [anpio-agents](https://github.com/eccstartup/anpio-agents) 里启动 supervisor：
 
 ```bash
+git clone https://github.com/eccstartup/anpio-agents
+cd anpio-agents && npm install
+
 export COLLAB_EMBEDDED_SECRET="$(openssl rand -hex 32)"   # 服务端与 supervisor 必须一致
+COLLAB_BASE_URL=https://collab.example.com \
 COLLAB_RUNTIME_TOKEN=$ADMIN_TOKEN \
 COLLAB_EMBEDDED_SECRET=... \
 npm run runtime
 ```
 
-supervisor 空闲时只是一个定时器，不加载模型；有未读才 spawn 一次性 session。详见 [平台内嵌 Agent](/guide/embedded-agent)。
+supervisor 空闲时只是一个定时器，不加载模型；有未读才 spawn 一次性 session。它必须与平台在同一内网或能访问平台 HTTP 接口；本仓库不再包含执行引擎。详见 [平台内嵌 Agent](/guide/embedded-agent)。
 
 ## 六、把本文档站部署到 Vercel
 
@@ -290,7 +294,7 @@ npm run preview
 | SQLite / 本地磁盘 | 函数实例无持久盘 | PostgreSQL（建议用连接池 / Pooler） |
 | 本地文件存储 | 无持久文件系统 | S3 兼容存储 |
 | 调度器 | 没有常驻定时器 | Vercel Cron 或其他外部调度 |
-| 内置智能体 supervisor | 需要长驻进程拉 session | 部署到外部机器 / 容器，连同一个平台 |
+| 内置智能体 supervisor | 需要长驻进程拉 session | 在 anpio-agents 仓库里部署到外部机器 / 容器，连同一个平台 |
 | SSE 与长轮询 | 函数有时长上限、连接会断 | 客户端重连、`Last-Event-ID` 续传、缩短轮询 |
 | 请求体上限 | 平台限制约 4.5 MB | 大文件走预签名直传，不经过函数 |
 | 邮件 | 仓库没有 SMTP 实现 | 接入邮件服务，替换 `MailService` |
@@ -348,16 +352,10 @@ Vercel Functions（HTTP API）
 | `COLLAB_OFFLINE_MINUTES` | `15` | 多久没心跳算失联 |
 | `COLLAB_STALLED_HOURS` | `24` | 子任务多久没进展算卡住 |
 | `COLLAB_DENIED_THRESHOLD` | `8` | 一小时内被拒多少次算异常 |
-| `COLLAB_RUNTIME_TOKEN` | 无 | supervisor 调管理接口的令牌，需要 `admin` |
-| `COLLAB_BASE_URL` | `http://127.0.0.1:<PORT>` | supervisor 连接的平台地址 |
-| `COLLAB_EMBEDDED_SECRET` | 无 | 派生内置智能体令牌；两端必须一致 |
-| `COLLAB_RUNTIME_TICK_MS` | `3000` | supervisor 扫描间隔，最小 200 |
-| `COLLAB_RUNTIME_CONCURRENCY` | `2` | supervisor 全局并发 |
-| `COLLAB_AGENTS_FILE` | 无 | 启动时同步的定义文件 |
-| `COLLAB_RUN_ROOT` | `./collab-runs` | 运行工作目录根 |
-| `COLLAB_KEEP_RUN` | `0` | `1` 保留运行目录 |
-| `COLLAB_SANDBOX_EXEC` | `0` | `1` 在 macOS 用 `sandbox-exec` 再包一层 |
+| `COLLAB_EMBEDDED_SECRET` | 无 | 派生内置智能体令牌；必须与 anpio-agents 的 supervisor 一致 |
 | `COLLAB_SESSION_IDLE_HOURS` | `24` | 信箱会话多久没心跳转 `sleeping` |
+
+> `COLLAB_RUNTIME_TOKEN`、`COLLAB_BASE_URL`、`COLLAB_RUNTIME_TICK_MS`、`COLLAB_RUNTIME_CONCURRENCY`、`COLLAB_AGENTS_FILE`、`COLLAB_RUN_ROOT`、`COLLAB_KEEP_RUN`、`COLLAB_SANDBOX_EXEC` 由 anpio-agents 读取，本服务不读。
 
 `COLLAB_BLOB_DIR` 默认值：SQLite 下是 `<数据库文件>.blobs`，PostgreSQL 下是 `./collab-blobs`。
 
@@ -449,8 +447,8 @@ npm run backup -- ./collab.sqlite3 /secure/collab-backup-20261031.sqlite3
 | 上传 413 | 检查 `COLLAB_MAX_UPLOAD_BYTES` 与代理 `client_max_body_size` |
 | 请求一直 412 | 重新 `GET` 资源拿最新 `version` |
 | 调度器挂了没人发现 | 加外部探测“最近调度轮次时间” |
-| supervisor 报需要 `COLLAB_RUNTIME_TOKEN` | 它用管理员令牌调接口，不能用派生令牌代替 |
-| 子进程 401 | 服务端与 supervisor 的 `COLLAB_EMBEDDED_SECRET` 不一致 |
+| supervisor 报需要 `COLLAB_RUNTIME_TOKEN` | anpio-agents 的 supervisor 用管理员令牌调接口，不能用派生令牌代替 |
+| 子进程 401 | 服务端与 anpio-agents supervisor 的 `COLLAB_EMBEDDED_SECRET` 不一致 |
 | 内置智能体一直 `running` | 看 supervisor 是否在跑；心跳超阈值后会标 `outcome_unknown` |
 
 更多本地问题见 [Getting Started](/guide/getting-started#常见启动问题)。

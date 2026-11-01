@@ -164,16 +164,20 @@ curl -s -X POST http://127.0.0.1:8787/v1/principals \
 
 ### 方式 C：平台内嵌智能体
 
-如果不想自己跑进程，可以让平台托管：
+如果不想自己跑进程，可以让平台托管。定义与运行记录在本平台，执行引擎在独立仓库 [anpio-agents](https://github.com/eccstartup/anpio-agents)：
 
 ```bash
 export COLLAB_EMBEDDED_SECRET="$(openssl rand -hex 32)"   # 服务端与 supervisor 一致
 npm start
 ```
 
-另一个终端：
+另一个目录：
 
 ```bash
+git clone https://github.com/eccstartup/anpio-agents
+cd anpio-agents && npm install
+
+COLLAB_BASE_URL=http://127.0.0.1:8787 \
 COLLAB_RUNTIME_TOKEN=$COLLAB_BOOTSTRAP_TOKEN \
 COLLAB_EMBEDDED_SECRET=... \
 npm run runtime -- --once
@@ -248,7 +252,6 @@ npm run dev
 | `npm run check` | `tsc --noEmit` |
 | `npm run demo` | 一次性端到端演示 |
 | `npm run seed` | 向运行中的实例写入可重复演示数据 |
-| `npm run runtime` | 启动内置智能体 supervisor；`-- --once` 只跑一轮 |
 | `npm run scheduler -- --once` | 超时检查 + 告警扫描 |
 | `npm run backup -- <源库> <新文件>` | SQLite 一致性备份 |
 

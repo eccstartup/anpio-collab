@@ -5,17 +5,25 @@
  * 避免"控制台能存进去、运行时读不懂"的两套格式。
  */
 
-import { invalid } from '../protocol/errors.ts';
-import { asEnum, asBoolean, asInteger, asObject, asOptionalString, asString, asStringArray } from '../protocol/parse.ts';
-import { AGENT_SCOPES, type AgentScope } from '../protocol/types.ts';
+import { invalid } from '../../protocol/errors.ts';
+import { asEnum, asBoolean, asInteger, asObject, asOptionalString, asString, asStringArray } from '../../protocol/parse.ts';
+import { AGENT_SCOPES, type AgentScope } from '../../protocol/types.ts';
 import { PROTOCOLS, defaultBaseUrl, providerOf, type Protocol } from './providers.ts';
 
 export const EMBEDDED_TOOLS = [
   'task_get',
+  'subtask_inbox',
   'task_accept',
   'task_progress',
   'task_submit',
+  'subtask_reject',
   'task_comment',
+  'task_comments',
+  'offer_list',
+  'offer_claim',
+  'task_files',
+  'file_download',
+  'file_upload',
   'knowledge_search',
   'shell',
   'read_file',
@@ -28,10 +36,16 @@ export type EmbeddedTool = (typeof EMBEDDED_TOOLS)[number];
 
 const DEFAULT_TOOLS: EmbeddedTool[] = [
   'task_get',
+  'subtask_inbox',
   'task_accept',
   'task_progress',
   'task_submit',
+  'subtask_reject',
   'task_comment',
+  'task_comments',
+  'offer_list',
+  'task_files',
+  'file_download',
   'knowledge_search',
   'read_file',
   'list_files',
@@ -155,6 +169,21 @@ export function normalizeDefinition(value: unknown): NormalizedDefinition {
   if (scopes.length === 0) throw invalid('scopes 不能为空');
   for (const required of ['tasks:read', 'mailbox:read', 'mailbox:write'] as AgentScope[]) {
     if (!scopes.includes(required)) scopes.push(required);
+  }
+  // 启用某个工具却缺对应范围，只会让模型在运行时撞 403；这里按工具补齐。
+  const toolScope: Partial<Record<EmbeddedTool, AgentScope>> = {
+    task_accept: 'tasks:submit',
+    task_progress: 'tasks:submit',
+    task_submit: 'tasks:submit',
+    subtask_reject: 'tasks:submit',
+    file_upload: 'tasks:submit',
+    task_comment: 'comments:write',
+    knowledge_search: 'knowledge:read',
+    offer_claim: 'offers:claim',
+  };
+  for (const tool of tools) {
+    const scope = toolScope[tool];
+    if (scope && !scopes.includes(scope)) scopes.push(scope);
   }
 
   const limitsInput = input.limits === undefined ? {} : asObject(input.limits, 'limits');

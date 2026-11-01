@@ -117,7 +117,7 @@ npm run demo
 | 经验库 | 草稿 → 候选 → 发布 → 修订 / 撤销 / 归档；有效期、范围、标签、来源链、版本对比、复制与分享 |
 | 提醒 | `@` 提及、点名提问、待验收、待接管提案；首页「等你处理」 |
 | 信箱 | 信封与正文分离、按会话游标、at-least-once、ack/nack、租约、长轮询、SSE |
-| 内置智能体 | 在平台里定义智能体，supervisor 按需拉起一次性会话，沙箱执行，运行日志可查 |
+| 内置智能体 | 在平台里定义智能体；执行引擎（supervisor + 一次性会话 + 沙箱）在独立的 [anpio-agents](https://github.com/eccstartup/anpio-agents) 仓库，运行日志与定义仍由本平台管理 |
 | 监管 | 11 条规则自动开 / 并 / 关告警，人工可确认或解决 |
 | 审计 | 写操作、幂等重放、被拒请求、敏感读取；按动作、结果、日期、主体聚合报表 |
 | 运维 | 归档、保留期回收、一致性备份、超时调度、PostgreSQL、S3/MinIO |
@@ -304,15 +304,17 @@ GET  /v1/mail/sessions/:id/events          SSE
 
 ### 12. 内置智能体
 
-平台可以自己“养”智能体：定义存在数据库里，平时没有进程；supervisor 发现谁有未读，就拉起一个**一次性的 session 子进程**，跑完即退出。
+平台可以自己“养”智能体：定义、身份、运行记录与日志都在本平台；真正的执行引擎已经拆到独立仓库 **anpio-agents**。它常驻的 supervisor 发现谁有未读，就拉起一个**一次性的 session 子进程**，跑完即退出。
 
 ```text
-supervisor（常驻，不加载模型）
-  └─ 有未读 → node src/runtime/session.ts
+anpio-agents supervisor（常驻，不加载模型，通过 HTTP 连本平台）
+  └─ 有未读 → node src/session.ts
        ├─ 独立运行目录（0700，默认结束后清理）
        ├─ 拉信封 → 取正文 → 模型循环 → 调用协作工具 → ack
        └─ 提交结果 → 写运行记录 → 退出
 ```
+
+本仓库只保留控制面：定义校验与规范化、`embedded-<agentId>` 主体与派生令牌、`/v1/embedded/*` 接口、运行记录与回收、控制台页面。不启动 supervisor 时，平台照常工作，只是内置智能体不会被执行。
 
 特点：
 
@@ -391,7 +393,6 @@ npm install @aws-sdk/client-s3 @aws-sdk/s3-request-presigner
 | `npm run check` | `tsc --noEmit` |
 | `npm run demo` | 一次性端到端演示 |
 | `npm run seed` | 向运行中的实例写入可重复演示数据 |
-| `npm run runtime` | 启动内置智能体 supervisor；`-- --once` 只跑一轮 |
 | `npm run scheduler -- --once` | 超时检查 + 告警扫描 |
 | `npm run backup -- <源库> <新文件>` | SQLite 一致性备份 |
 
@@ -659,17 +660,23 @@ await client.submit(claimed.subtaskId, {
 
 ### 内置智能体：定义与运行
 
-内置智能体适合“平时不占进程、被消息叫醒”的场景。服务端与 supervisor 必须共享同一个密钥：
+内置智能体适合“平时不占进程、被消息叫醒”的场景。定义与运行记录在本平台，执行引擎在独立仓库 [anpio-agents](https://github.com/eccstartup/anpio-agents)。
+
+服务端只需提供一个共享密钥，用于派生内置智能体令牌：
 
 ```bash
 export COLLAB_EMBEDDED_SECRET="$(openssl rand -hex 32)"   # 只放环境变量
 npm start
 ```
 
-另一个终端：
+执行引擎从另一个目录运行，通过 HTTP 连本平台：
 
 ```bash
+git clone https://github.com/eccstartup/anpio-agents
+cd anpio-agents && npm install
+
 # 跑一轮就退出
+COLLAB_BASE_URL=http://127.0.0.1:8787 \
 COLLAB_RUNTIME_TOKEN=$COLLAB_BOOTSTRAP_TOKEN \
 COLLAB_EMBEDDED_SECRET=... \
 npm run runtime -- --once
@@ -690,7 +697,9 @@ npm run runtime
 - `enabled=false` 的定义不会被叫醒；`concurrency` 控制同一定义并发，`COLLAB_RUNTIME_CONCURRENCY` 控制全局并发；
 - 模型密钥只写环境变量名（如 `ANTHROPIC_API_KEY`），值由运行 supervisor 的机器提供，数据库只存名字。
 
-示例定义见 `examples/agents.json`：一个默认启用的 `script` 演示智能体，以及两个默认停用、需要密钥的定义。控制台「内置智能体 → 编辑」可以按分类选择供应商，或导入 JSON；自定义供应商必须填 `baseUrl` 与 `protocol`。
+示例定义见 anpio-agents 的 `examples/agents.json`：一个默认启用的 `script` 演示智能体，以及两个默认停用、需要密钥的定义。控制台「内置智能体 → 编辑」可以按分类选择供应商，或导入 JSON；自定义供应商必须填 `baseUrl` 与 `protocol`。
+
+内嵌 Agent 的工具与外部 Agent 的接口一一对应：待办、接受/拒绝/提交、评论读写、开放池认领、任务文件上传下载、知识检索都在同一套授权下；差别只在执行侧多出运行目录读写、shell 与 `finish`。清单见 anpio-agents 的 README。
 
 **注意**：沙箱是路径校验 + 环境清洗 + 超时 + 工具白名单，不是容器级隔离。需要强隔离时，把 supervisor 放进容器或独立用户下运行，并限制网络出口。
 
@@ -809,15 +818,9 @@ npm run backup -- ./collab.sqlite3 /secure/collab-backup-20261031.sqlite3
 | `COLLAB_OFFLINE_MINUTES` | `15` | 多久没心跳算失联 |
 | `COLLAB_STALLED_HOURS` | `24` | 子任务多久没进展算卡住 |
 | `COLLAB_DENIED_THRESHOLD` | `8` | 一小时内被拒多少次算异常 |
-| `COLLAB_RUNTIME_TOKEN` | 无 | supervisor 调管理接口的令牌，需要 `admin` |
-| `COLLAB_BASE_URL` | `http://127.0.0.1:<PORT>` | supervisor 连接的平台地址 |
-| `COLLAB_EMBEDDED_SECRET` | 无 | 派生内置智能体令牌；两端必须一致 |
-| `COLLAB_RUNTIME_TICK_MS` | `3000` | supervisor 扫描间隔，最小 200 |
-| `COLLAB_RUNTIME_CONCURRENCY` | `2` | supervisor 全局并发 |
-| `COLLAB_AGENTS_FILE` | 无 | 启动时同步的定义文件 |
-| `COLLAB_RUN_ROOT` | `./collab-runs` | 运行工作目录根 |
-| `COLLAB_KEEP_RUN` | `0` | `1` 保留运行目录 |
-| `COLLAB_SANDBOX_EXEC` | `0` | `1` 在 macOS 用 `sandbox-exec` 再包一层 |
+| `COLLAB_EMBEDDED_SECRET` | 无 | 派生内置智能体令牌；必须与 anpio-agents 的 supervisor 一致 |
+
+> supervisor 侧的 `COLLAB_RUNTIME_TOKEN`、`COLLAB_BASE_URL`、`COLLAB_RUNTIME_TICK_MS`、`COLLAB_AGENTS_FILE`、`COLLAB_RUN_ROOT`、`COLLAB_KEEP_RUN`、`COLLAB_SANDBOX_EXEC` 由 [anpio-agents](https://github.com/eccstartup/anpio-agents) 读取，本服务不读。
 | `COLLAB_SESSION_IDLE_HOURS` | `24` | 信箱会话多久没心跳转 `sleeping` |
 
 `COLLAB_BLOB_DIR` 默认值：SQLite 下是 `<数据库文件>.blobs`，PostgreSQL 下是 `./collab-blobs`。
@@ -863,10 +866,10 @@ src/
     db/                SQLite / PostgreSQL 驱动、schema 与迁移、行映射
     services/          账号、空间、身份、邮箱登录、Agent 授权、任务、子任务、参与、
                        协作、知识、通知、信箱、内置智能体、监管、审计、邮件
+    embedded/          内置智能体的定义规范化、供应商目录与派生令牌（控制面契约）
     http/              路由表、写执行器、HTTP 服务器（Bearer / ANP、SSE、CSP）
     tools/             备份、超时调度（含告警扫描）
     app.ts/context.ts  依赖装配、now 与 newId 注入
-  runtime/             内置智能体运行时：supervisor、session、沙箱、模型协议、供应商目录
   sdk/                 智能体与外部程序使用的客户端，含写前日志
   agents/              示例智能体：worker、coordinator、CLI、ANP 会话
   web/                 控制台：index.html / login-help.html / app.css / app.js

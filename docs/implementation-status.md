@@ -2,7 +2,7 @@
 
 对照 [plan.md](../plan.md)、[第二轮计划](plan-v2.md)、[第三轮计划](plan-v3.md)、[第四轮计划](plan-v4.md) 与 [第五轮计划](plan-v5.md)，说明本仓库现在做到了什么、哪些只是本机验证、哪些还没开始。
 
-> 结论先行：**阶段 1（本地协作闭环）、阶段 3（知识闭环）已实现；第二轮的身份、协作、监管三块已实现；第三轮的租户、两种登录与 Agent 授权已实现；第四轮补上"登录后补绑 DID"；第五轮把 DID 准入改成"必须已注册"，并补上反向绑邮箱；之后依次完成个人资料、任务材料与智能体经验自提交、经验生命周期与任务房间、对象存储/未读/交接包、团队首页/归档/保留期/审计报表；本轮补上信箱与 SSE 推送、内置智能体运行时、模型供应商目录与控制台。语义检索仍未开始。** 通过本机测试不等于企业环境验收。
+> 结论先行：**阶段 1（本地协作闭环）、阶段 3（知识闭环）已实现；第二轮的身份、协作、监管三块已实现；第三轮的租户、两种登录与 Agent 授权已实现；第四轮补上"登录后补绑 DID"；第五轮把 DID 准入改成"必须已注册"，并补上反向绑邮箱；之后依次完成个人资料、任务材料与智能体经验自提交、经验生命周期与任务房间、对象存储/未读/交接包、团队首页/归档/保留期/审计报表；本轮补上信箱与 SSE 推送、内置智能体控制面、模型供应商目录与控制台；执行引擎（supervisor / session / 沙箱 / 模型适配器）已拆到独立仓库 anpio-agents。语义检索仍未开始。** 通过本机测试不等于企业环境验收。
 
 ## 本轮：信箱、内置智能体与模型接入
 
@@ -13,15 +13,13 @@
 | SSE 推送：`GET /v1/mail/sessions/:id/events`，`Last-Event-ID` 续传、关闭会话结束、shutdown 不被长连接拖住 | `http/server.ts`、`mailbox.ts#closeStreams` | `tests/stream.test.ts`（4 项） |
 | 订阅：主体/任务/能力主题，只允许订自己、可读任务或已声明能力；scope 新增 `mailbox:read|write` | `mailbox.ts#subscribe`、`access.ts`、`protocol/types.ts` | `tests/mailbox.test.ts` + `tests/authorization.test.ts` |
 | 保留期：过期消息、会话、已结算投递与结束超过 N 天的运行/日志；默认预览 | `mailbox.ts#retention`、`routes.ts` | `tests/mailbox.test.ts` |
-| 内嵌定义与身份：定义校验/规范化、`ensure` 幂等创建 `embedded-<id>` 主体、HMAC 派生令牌 | `runtime/definition.ts`、`services/embedded.ts` | `tests/runtime.test.ts`、`tests/providers.test.ts` |
-| supervisor：常驻不加载模型，有未读才 spawn 一次性 session；并发上限、停用不叫醒、接管控制台手动运行、多轮运行日志独立 | `runtime/supervisor.ts`、`services/embedded.ts` | `tests/runtime.test.ts`（5 项，含跨进程 E2E） |
-| 一次运行：拉信封 → 取正文 → 模型循环 → 工具调用 → ack/nack → finish；令牌只走 stdin | `runtime/session.ts`、`runtime/tools.ts` | 同上 |
-| 沙箱：工作目录 0700、路径与符号链接逃逸拒绝、shell 超时杀进程组、环境清洗、输出截断 | `runtime/sandbox.ts` | `tests/sandbox.test.ts`（4 项） |
-| 模型协议：OpenAI Chat/Responses、Anthropic Messages、Gemini Generate、Workers AI、Jev 决策、确定性 script；供应商目录按厂商/订阅/分发/自定义分组 | `runtime/providers.ts`、`runtime/brains/*` | `tests/providers.test.ts`（7 项，mock HTTP，不发真实网络） |
+| 内嵌定义与身份（控制面）：定义校验/规范化、`ensure` 幂等创建 `embedded-<id>` 主体、HMAC 派生令牌 | `platform/embedded/definition.ts`、`services/embedded.ts` | `tests/embedded.test.ts`、`tests/providers.test.ts` |
+| 执行引擎：supervisor 常驻不加载模型、有未读才 spawn 一次性 session、并发上限、停用不叫醒、接管手动运行；一次运行拉信封 → 模型循环 → 工具调用 → ack/nack → finish；工具层与外部智能体共用同一套平台接口（待办、接受/拒绝/提交、评论读写、开放池认领、任务文件读写）；沙箱与模型适配器 | **已拆到 [anpio-agents](https://github.com/eccstartup/anpio-agents)**，本仓库不再包含 `src/runtime/` | anpio-agents 的 `tests/supervisor.test.ts`、`tests/tools.test.ts`、`tests/sandbox.test.ts`、`tests/brains.test.ts` |
+| 供应商目录（控制面）：按厂商/订阅/分发/自定义分组，供控制台与定义规范化使用 | `platform/embedded/providers.ts` | `tests/providers.test.ts`（1 项） |
 | 控制台：内置智能体列表、分组供应商选择、编辑/启停/立即运行、运行列表与日志轮询 | `src/web/app.js`、`app.css`、`index.html` | `tests/web.test.ts`（新增 1 项） |
-| 文档与种子：运行说明、配置、`examples/agents.json`（script 默认启用，需密钥的定义默认停用） | `README.md`、`docs/local-operations.md`、`examples/agents.json` | 手工 |
+| 文档与种子：控制面说明、配置；示例定义（script 默认启用，需密钥的定义默认停用）随执行引擎放到 anpio-agents | `README.md`、`docs/local-operations.md`、anpio-agents `examples/agents.json` | 手工 |
 
-测试合计 168 项（本轮新增信箱 10、SSE 4、运行时 5、沙箱 4、供应商 7、控制台 1，以及既有套件中随新表/新 scope 调整的用例）。`npm run check` 无类型错误；SQLite 与 PostgreSQL 各 168 项全过。
+本仓库测试合计 155 项（拆分后移除运行时 5、沙箱 4、模型适配器 6，新增控制面 2）。`npm run check` 无类型错误；SQLite 与 PostgreSQL 各 155 项全过。执行引擎的 13 项测试在 anpio-agents 仓库运行。
 
 ## 第三阶段：归档、保留期与审计报表（本轮）
 
@@ -203,7 +201,7 @@
 
 - **管理台**用 DOM 桩 + 真实 HTTP 跑通登录与每个视图（`tests/web.test.ts`），包括内置智能体的定义列表、启停与日志渲染；但桩只实现用到的 API：布局、样式与实际浏览器行为仍需人工看一遍。
 - **对象存储**只在本地驱动上验证；S3 分支按接口实现并有预签名路径，但没有连真实桶跑过上传、Range 与生命周期。
-- **模型供应商**只用本地 mock HTTP 验证了 URL、请求头/体与工具调用解析，没有对真实厂商发过请求；供应商 URL 会随厂商调整，定义里均可覆盖。
+- **模型供应商**目录在本仓库；适配器的 URL、请求头/体与工具调用解析在 anpio-agents 里用本地 mock HTTP 验证，没有对真实厂商发过请求；供应商 URL 会随厂商调整，定义里均可覆盖。
 - **钱包插件**在测试里用与插件、CLI 相同的 `signRequest` 代签，等价于验签链路，但不覆盖插件自身的授权弹窗与密钥库。
 - **`anpio-cli` 互通**按 CLI 的语义（401 挑战 + 重签一次 + `Authentication-Info`）验证，没有在 CI 里真的跑 Rust 二进制。
 - **备份恢复**只验证了"备份文件完整"，没有做过真实故障注入（磁盘满、断电、WAL 损坏）。
