@@ -11,7 +11,8 @@ import assert from 'node:assert/strict';
 import { ADMIN_TOKEN, startHarness } from './helpers/harness.ts';
 import { anpLogin, AnpLoginError, nonceFromChallenge } from '../src/anp/client.ts';
 import type { AnpIdentity } from '../src/anp/identity.ts';
-import { signRequest } from '../src/anp/signature.ts';
+import { signRequest } from './helpers/anp-sign.ts';
+import { signDidDocumentProofSync } from '@anpio-cli/core/advanced';
 
 /** 手动构造一次登录请求，用来覆盖客户端会避开的坏路径。 */
 async function rawLogin(
@@ -21,7 +22,7 @@ async function rawLogin(
 ) {
   const url = `${base}/auth/anp/login`;
   const body = JSON.stringify({ nonce: options.nonce, did: identity.did, didDocument: identity.didDocument, client: 'agent' });
-  const signed = signRequest({
+  const signed = await signRequest({
     url,
     body,
     nonce: options.signedNonce ?? options.nonce,
@@ -66,23 +67,25 @@ test('请求体不带 keyid 时按 #key-1 解析：文档里有多把钥匙也�
     const document = identity.didDocument as {
       verificationMethod: unknown[];
       authentication: string[];
+      proof?: unknown;
     };
-    harness.did.register({
-      ...identity,
-      didDocument: {
-        ...identity.didDocument,
-        verificationMethod: [
-          ...document.verificationMethod,
-          {
-            id: `${identity.did}#device-1-sign`,
-            type: 'Multikey',
-            controller: identity.did,
-            publicKeyMultibase: identity.publicKeyMultibase,
-          },
-        ],
-        authentication: [identity.keyid],
-      },
-    });
+    // 改过文档就得重签 proof：proof 覆盖的是文档内容，钱包发布多钥文档时也要这样做。
+    const { proof: _original, ...unsigned } = identity.didDocument as Record<string, unknown>;
+    const didDocument: Record<string, unknown> = {
+      ...unsigned,
+      verificationMethod: [
+        ...document.verificationMethod,
+        {
+          id: `${identity.did}#device-1-sign`,
+          type: 'Multikey',
+          controller: identity.did,
+          publicKeyMultibase: identity.publicKeyMultibase,
+        },
+      ],
+      authentication: [identity.keyid],
+    };
+    didDocument.proof = signDidDocumentProofSync(didDocument, identity.keyid, identity.priv);
+    harness.did.register({ ...identity, didDocument });
 
     const challenge = (await (await fetch(`${harness.url}/auth/anp/challenge`)).json()) as { nonce: string };
     const url = `${harness.url}/auth/anp/login`;
@@ -92,7 +95,7 @@ test('请求体不带 keyid 时按 #key-1 解析：文档里有多把钥匙也�
       didDocument: identity.didDocument,
       client: 'browser',
     });
-    const signed = signRequest({
+    const signed = await signRequest({
       url,
       method: 'POST',
       body,
@@ -139,7 +142,7 @@ test('nonce 只能用一次；重放被拒并换发新挑战', async () => {
 
     const url = `${harness.url}/auth/anp/login`;
     const body = JSON.stringify({ nonce: challenge.nonce, did: identity.did, didDocument: identity.didDocument });
-    const signed = signRequest({
+    const signed = await signRequest({
       url,
       body,
       nonce: challenge.nonce,
@@ -273,7 +276,7 @@ test('无效签名不能换取会话，也不会消耗别人的 nonce', async ()
     const challenge = (await (await fetch(`${harness.url}/auth/anp/challenge`)).json()) as { nonce: string };
     const url = `${harness.url}/auth/anp/login`;
     const body = JSON.stringify({ nonce: challenge.nonce, did: identity.did, didDocument: identity.didDocument });
-    const signed = signRequest({
+    const signed = await signRequest({
       url,
       body,
       nonce: challenge.nonce,

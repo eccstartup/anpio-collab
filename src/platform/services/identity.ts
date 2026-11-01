@@ -12,16 +12,34 @@
  */
 
 import { randomBytes, randomUUID } from 'node:crypto';
-import { conflict, forbidden, invalid, notFound, unauthenticated } from '../../protocol/errors.ts';
+import {
+  anpErrorForResolveFailure,
+  didFingerprint,
+  isSuperseded,
+  resolveVerificationKey,
+  verifyDidDocument,
+  verifyHttpSignatureForServer,
+  type NonceStore,
+  type ResolvedKey,
+} from '@anpio-cli/core';
+import { parseSignatureInput } from '@anpio-cli/core/advanced';
+import {
+  conflict,
+  didSuperseded,
+  forbidden,
+  invalid,
+  notFound,
+  unauthenticated,
+  unavailable,
+} from '../../protocol/errors.ts';
 import { asObject, asString } from '../../protocol/parse.ts';
 import type { Principal, PrincipalKind, Role } from '../../protocol/types.ts';
 import { ROLES } from '../../protocol/types.ts';
 import type { Context } from '../context.ts';
 import { toPrincipal } from '../db/mappers.ts';
 import type { Queryable } from '../db/driver.ts';
-import { didShortId, handleFromDid, isDid, resolveVerificationKey, type ResolvedKey } from '../../anp/did.ts';
-import { describeResolutionFailure, type DidResolver } from '../../anp/resolver.ts';
-import { verifySignature } from '../../anp/signature.ts';
+import { didShortId, handleFromDid, isDid } from '../../anp/did.ts';
+import { DidResolutionError, describeResolutionFailure, type DidResolver } from '../../anp/resolver.ts';
 import { hashToken } from './principals.ts';
 import type { AccountService } from './accounts.ts';
 
@@ -158,44 +176,14 @@ export class IdentityService {
    * 是为了不让未通过签名的请求消耗掉合法客户端的挑战。
    */
   async login(request: LoginRequest): Promise<LoginResult> {
-    const payload = this.parseBody(request.rawBody);
-    const did = payload.did;
-    if (!isDid(did)) throw invalid('did 必须是 did:wba 标识');
-    const resolved = await this.resolveKey(did, payload.keyid);
-
-    let verified;
-    try {
-      verified = verifySignature(
-        { method: request.method, url: request.url, headers: request.headers, body: request.rawBody },
-        resolved.key,
-        resolved.keyid,
-        did,
-      );
-    } catch (error) {
-      throw unauthenticated(`签名校验失败：${messageOf(error)}`);
-    }
-
-    const bodyNonce = typeof payload.nonce === 'string' ? payload.nonce : '';
-    // 请求体里的 nonce 和签名参数里的 nonce 必须一致，否则"签一个、填另一个"能绕过重放控制。
-    if (verified.nonce && bodyNonce && verified.nonce !== bodyNonce) {
-      throw unauthenticated('请求体 nonce 与签名参数不一致');
-    }
-    const nonce = verified.nonce || bodyNonce;
-    if (!nonce) {
-      const issued = await this.issueNonce();
-      throw new ChallengeRequiredError(issued.nonce, issued.expiresAt);
-    }
-    if (!(await this.consumeNonce(nonce, 'login'))) {
-      const issued = await this.issueNonce();
-      throw new ChallengeRequiredError(issued.nonce, issued.expiresAt, 'nonce 无效、已使用或已过期');
-    }
+    const { did, keyid, fingerprint, payload } = await this.authenticate(request, 'login');
 
     const client: 'browser' | 'agent' = payload.client === 'browser' ? 'browser' : 'agent';
     const bindCode = typeof payload.bindCode === 'string' ? payload.bindCode.trim() : '';
     const outcome = await this.resolvePrincipal({
       did,
-      keyid: resolved.keyid,
-      fingerprint: resolved.fingerprint,
+      keyid,
+      fingerprint,
       client,
       bindCode,
     });
@@ -208,7 +196,7 @@ export class IdentityService {
       tokenType: 'Bearer',
       did,
       subject: did,
-      keyid: resolved.keyid,
+      keyid,
       principal: outcome.principal,
       sessionExpiresAt: session.expiresAt,
       enrollment: outcome.enrollment,
@@ -226,28 +214,137 @@ export class IdentityService {
   }
 
   /**
-   * 取回 DID 文档并定位签名用的公钥。
+   * 验一次签名请求，返回被证明的 DID。
    *
-   * 这里**不读请求体里的 `didDocument`**：那份文档由调用方自己提供，编一份带
-   * 自己公钥的文档就能冒充任意 DID。只有从 DID 所属服务器取回的 did.json 才算数，
-   * 取不到就按"未注册"拒绝（fail closed）。
+   * 绑定顺序是固定的：`keyid`（来自 `Signature-Input`）→ DID → `body.did` →
+   * DID 文档 → 公钥 → 签名 → nonce。公钥**不采信请求体**：只有从 DID 所属
+   * 服务器取回的 did.json 才算数，取不到就拒绝（fail closed）。
+   *
+   * nonce 的消费由 core 的 `NonceStore` 在验签通过之后完成，因此坏签名不会
+   * 烧掉合法客户端的挑战。
    */
-  private async resolveKey(did: string, keyid: unknown): Promise<ResolvedKey> {
+  private async authenticate(
+    request: LoginRequest,
+    purpose: 'login' | 'bind',
+  ): Promise<{ did: string; keyid: string; fingerprint: string; payload: Record<string, unknown> & { did?: string } }> {
+    const payload = this.parseBody(request.rawBody);
+    const did = payload.did;
+    if (!isDid(did)) throw invalid('did 必须是 did:wba 标识');
+
+    const { keyid, signatureNonce } = this.signatureBinding(request, did);
+    const bodyKeyid = typeof payload.keyid === 'string' ? payload.keyid : '';
+    if (bodyKeyid && bodyKeyid !== keyid) {
+      throw unauthenticated('请求体 keyid 与 Signature-Input 不一致');
+    }
+
+    const document = await this.resolveDocument(did);
+    if (isSuperseded(document)) {
+      const successor = typeof document.successorDid === 'string' ? document.successorDid : null;
+      throw didSuperseded(
+        successor ? `该 DID 已被替换为 ${successor}` : '该 DID 已停用',
+        successor ? { requestedDid: did, currentDid: successor } : undefined,
+      );
+    }
+
+    let key: ResolvedKey;
+    try {
+      // 文档 id、e1_ proof 与 authentication 授权都由 core 判定；这里只决定
+      // 失败对调用方意味着"证明坏"还是"我们查不了"。
+      verifyDidDocument(document, did);
+      key = await resolveVerificationKey(keyid, document);
+    } catch (error) {
+      if (anpErrorForResolveFailure(error) === 'unverifiable') {
+        throw unavailable('暂时无法校验 DID 文档，请稍后重试');
+      }
+      throw unauthenticated(`DID 文档不可用：${messageOf(error)}`);
+    }
+
+    const bodyNonce = typeof payload.nonce === 'string' ? payload.nonce : '';
+    // 请求体与签名参数必须携带同一个 nonce，否则"签一个、填另一个"能绕过重放控制。
+    if (signatureNonce && bodyNonce && signatureNonce !== bodyNonce) {
+      throw unauthenticated('请求体 nonce 与签名参数不一致');
+    }
+    const nonce = signatureNonce || bodyNonce;
+    if (!nonce) {
+      if (purpose === 'bind') throw invalid('补绑 DID 必须带上服务端签发的挑战');
+      const issued = await this.issueNonce(purpose);
+      throw new ChallengeRequiredError(issued.nonce, issued.expiresAt);
+    }
+    if (!signatureNonce || !bodyNonce) {
+      if (purpose === 'bind') throw invalid('补绑 DID 的 nonce 必须同时出现在请求体与签名参数中');
+      const issued = await this.issueNonce(purpose);
+      throw new ChallengeRequiredError(issued.nonce, issued.expiresAt, 'nonce 必须同时出现在请求体与签名参数中');
+    }
+
+    const url = new URL(request.url);
+    const verified = await verifyHttpSignatureForServer({
+      method: request.method,
+      authority: url.host,
+      path: url.pathname,
+      search: url.search,
+      targetUri: request.url,
+      headers: request.headers,
+      body: request.rawBody,
+      key,
+      expectedNonce: nonce,
+      nonceStore: this.nonceStore(purpose),
+    });
+    if (!verified.ok) {
+      if (verified.error === 'unverifiable') {
+        throw unavailable('暂时无法校验签名，请稍后重试');
+      }
+      if (verified.error === 'invalid_nonce') {
+        if (purpose === 'bind') throw unauthenticated('挑战无效、已使用、已过期或用途不符，请重新获取');
+        const issued = await this.issueNonce(purpose);
+        throw new ChallengeRequiredError(issued.nonce, issued.expiresAt, 'nonce 无效、已使用或已过期');
+      }
+      throw unauthenticated(`签名校验失败：${describeVerificationFailure(verified.error)}`);
+    }
+
+    return { did, keyid, fingerprint: didFingerprint(key.curve, key.bytes), payload };
+  }
+
+  /** 从 `Signature-Input` 取 keyid 与 nonce，并把 keyid 的 DID 段绑回 `body.did`。 */
+  private signatureBinding(request: LoginRequest, did: string): { keyid: string; signatureNonce: string } {
+    const header = request.headers['signature-input'];
+    if (!header) throw invalid('缺少 Signature-Input 头');
+    let parsed: ReturnType<typeof parseSignatureInput>;
+    try {
+      parsed = parseSignatureInput(header);
+    } catch {
+      throw invalid('Signature-Input 格式不合法');
+    }
+    const keyid = typeof parsed.params.keyid === 'string' ? parsed.params.keyid : '';
+    if (!keyid) throw invalid('Signature-Input 缺少 keyid');
+    const hash = keyid.indexOf('#');
+    const keyidDid = hash === -1 ? keyid : keyid.slice(0, hash);
+    if (keyidDid !== did) throw unauthenticated('签名声明的 DID 与请求体不一致');
+    const nonce = typeof parsed.params.nonce === 'string' ? parsed.params.nonce : '';
+    return { keyid, signatureNonce: nonce };
+  }
+
+  /**
+   * 取回 DID 文档。网络故障是"我们查不了"（503，可重试），其余是这条 DID
+   * 不能用来登录（401）——把两者混成 401 会让对端一直重签一份没问题的证明。
+   */
+  private async resolveDocument(did: string): Promise<Record<string, unknown>> {
     if (!this.options.didResolver) {
       throw unauthenticated('本部署没有配置 DID 解析器，无法校验 DID 归属');
     }
-    let document: Record<string, unknown>;
     try {
-      const resolved = await this.options.didResolver.resolve(did);
-      document = resolved.document;
+      return (await this.options.didResolver.resolve(did)).document;
     } catch (error) {
+      if (error instanceof DidResolutionError && error.code === 'unreachable') {
+        throw unavailable(`暂时无法取回 DID 文档：${describeResolutionFailure(error)}`);
+      }
       throw unauthenticated(`DID 校验未通过：${describeResolutionFailure(error)}`);
     }
-    try {
-      return resolveVerificationKey(did, String(keyid ?? '#key-1'), document);
-    } catch (error) {
-      throw unauthenticated(`DID 文档不可用：${messageOf(error)}`);
-    }
+  }
+
+  private nonceStore(purpose: 'login' | 'bind'): NonceStore {
+    // collab 的 nonce 是 192 位随机值且全局唯一，所以 keyid 不参与键；
+    // 单次使用仍由 consumeNonce 的事务保证。
+    return { consume: (_keyid, nonce) => this.consumeNonce(nonce, purpose) };
   }
 
   /**
@@ -708,33 +805,7 @@ export class IdentityService {
     actor: Principal,
     request: { method: string; url: string; headers: Record<string, string>; rawBody: string },
   ): Promise<BindResult> {
-    const payload = this.parseBody(request.rawBody);
-    const did = payload.did;
-    if (!isDid(did)) throw invalid('did 必须是 did:wba 标识');
-    const resolved = await this.resolveKey(did, payload.keyid);
-
-    let verified;
-    try {
-      verified = verifySignature(
-        { method: request.method, url: request.url, headers: request.headers, body: request.rawBody },
-        resolved.key,
-        resolved.keyid,
-        did,
-      );
-    } catch (error) {
-      throw unauthenticated(`签名校验失败：${messageOf(error)}`);
-    }
-
-    const bodyNonce = typeof payload.nonce === 'string' ? payload.nonce : '';
-    if (verified.nonce && bodyNonce && verified.nonce !== bodyNonce) {
-      throw unauthenticated('请求体 nonce 与签名参数不一致');
-    }
-    const nonce = verified.nonce || bodyNonce;
-    if (!nonce) throw invalid('补绑 DID 必须带上服务端签发的挑战');
-    if (!(await this.consumeNonce(nonce, 'bind'))) {
-      throw unauthenticated('挑战无效、已使用、已过期或用途不符，请重新获取');
-    }
-
+    const { did, fingerprint, payload } = await this.authenticate(request, 'bind');
     const client = payload.client === 'agent' ? 'agent' : 'browser';
 
     // 账号级凭证是全局唯一的：这条 DID 若已属于别的账号，绑进来也会在下次
@@ -770,7 +841,7 @@ export class IdentityService {
         return { identity: toIdentityView(row!), existing: true, primary: false };
       }
 
-      await this.insertIdentity(tx, { did, fingerprint: resolved.fingerprint, client }, actor.id, false);
+      await this.insertIdentity(tx, { did, fingerprint, client }, actor.id, false);
 
       // 主体还没有主 DID 时，把这条设为主身份：侧栏、/v1/me 与目录里都认得出来。
       let becamePrimary = false;
@@ -813,6 +884,28 @@ export class IdentityService {
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** core 的错误词汇 → 对客户端有用的中文说明（错误码本身另见 `code`）。 */
+function describeVerificationFailure(error: string): string {
+  switch (error) {
+    case 'invalid_signature':
+      return '签名与请求不匹配';
+    case 'invalid_content_digest':
+      return 'content-digest 与请求体不一致';
+    case 'invalid_timestamp':
+      return '签名时间戳缺失或已过期';
+    case 'invalid_request':
+      return '签名覆盖的组件不完整（需要 @method、@target-uri 与 content-digest）';
+    case 'invalid_did':
+      return '签名声明的 DID 与请求不一致';
+    case 'invalid_verification_method':
+      return 'keyid 不属于该 DID 文档';
+    case 'did_deactivated':
+      return '该 DID 已停用';
+    default:
+      return error;
+  }
 }
 
 function toIdentityView(row: Record<string, unknown>): IdentityView {

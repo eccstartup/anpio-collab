@@ -13,7 +13,7 @@ import {
   DidResolutionError,
   didDocumentUrl,
 } from '../src/anp/resolver.ts';
-import { signRequest } from '../src/anp/signature.ts';
+import { signRequest } from './helpers/anp-sign.ts';
 import { anpLogin } from '../src/anp/client.ts';
 import { ADMIN_TOKEN, startHarness } from './helpers/harness.ts';
 
@@ -108,7 +108,7 @@ test('请求体自带 didDocument 不算数：拿别人的 DID + 自己的公钥
       keyid: victim.keyid,
       didDocument: attacker.didDocument,
     });
-    const signed = signRequest({
+    const signed = await signRequest({
       url,
       method: 'POST',
       body,
@@ -139,7 +139,7 @@ test('未注册的 DID 也不能补绑到已登录账号上', async () => {
     const { nonce } = (await challengeResponse.json()) as { nonce: string };
     const url = `${harness.url}/v1/me/identities/bind`;
     const body = JSON.stringify({ nonce, did: identity.did, didDocument: identity.didDocument });
-    const signed = signRequest({
+    const signed = await signRequest({
       url,
       method: 'POST',
       body,

@@ -65,7 +65,14 @@ function sendJson(
 }
 
 function sendError(res: http.ServerResponse, error: AppError, extraHeaders: Record<string, string> = {}): void {
-  sendJson(res, error.status, { error: { code: error.code, message: error.message } }, extraHeaders);
+  // `data` 是对协议有意义的顶层字段（例如 did_superseded 的 currentDid），
+  // 不能塞进 error 对象里——ANP 客户端从顶层读它们。
+  sendJson(
+    res,
+    error.status,
+    { error: { code: error.code, message: error.message }, ...(error.data ?? {}) },
+    extraHeaders,
+  );
 }
 
 /** 文件下载：写完头部后错误只能切断连接，不能再改状态码。 */

@@ -19,6 +19,7 @@
     "scheduler": "node src/platform/tools/scheduler.ts"
   },
   "dependencies": {
+    "@anpio-cli/core": "file:../anpio-cli/packages/core",
     "pg": "^8.23.1"
   },
   "devDependencies": {

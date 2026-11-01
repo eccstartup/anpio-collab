@@ -12,7 +12,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { AnpIdentity } from '../src/anp/identity.ts';
-import { signRequest } from '../src/anp/signature.ts';
+import { signRequest } from './helpers/anp-sign.ts';
 import { anpLogin } from '../src/anp/client.ts';
 import { ADMIN_TOKEN, startHarness, type Harness } from './helpers/harness.ts';
 
@@ -49,7 +49,7 @@ async function signBind(
     didDocument: identity.didDocument,
     client: 'browser',
   });
-  const signed = signRequest({
+  const signed = await signRequest({
     url,
     method: 'POST',
     body,

@@ -14,7 +14,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import type { AnpIdentity } from '../src/anp/identity.ts';
-import { signRequest } from '../src/anp/signature.ts';
+import { signRequest } from './helpers/anp-sign.ts';
 import { ADMIN_TOKEN, emailLogin, startHarness, type Harness } from './helpers/harness.ts';
 import { DomElement, DomNode, DomDocument } from './helpers/dom.ts';
 
@@ -109,7 +109,7 @@ function fakeWallet(identity: AnpIdentity) {
       };
     },
     async signAnpLogin(request: { url: string; method?: string; body: string; nonce: string }) {
-      const signed = signRequest({
+      const signed = await signRequest({
         url: request.url,
         method: request.method ?? 'POST',
         body: request.body,

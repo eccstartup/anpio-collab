@@ -11,8 +11,8 @@
  * 因此测试与示例智能体用的是同一份代码。
  */
 
+import { signAnpLoginRequest } from '@anpio-cli/core/advanced';
 import type { AnpIdentity } from './identity.ts';
-import { signRequest } from './signature.ts';
 
 export type AnpLoginOptions = {
   /** 平台根地址，例如 http://127.0.0.1:8787 */
@@ -93,20 +93,17 @@ export async function anpLogin(options: AnpLoginOptions): Promise<AnpLoginResult
   const url = `${base}/auth/anp/login`;
 
   const attempt = async (nonce: string): Promise<Response> => {
-    const body = JSON.stringify({
+    // 请求体与覆盖集由 core 统一：`{nonce, did, didDocument, ...extraBody}`，
+    // 自定义字段只影响 content-digest，不改变验签方式。
+    const signed = await signAnpLoginRequest({
+      identity: options.identity,
       nonce,
-      did: options.identity.did,
-      didDocument: options.identity.didDocument,
-      ...(options.bindCode ? { bindCode: options.bindCode } : {}),
-      client: options.client ?? 'agent',
-    });
-    const signed = signRequest({
-      url,
       method: 'POST',
-      body,
-      nonce,
-      keyid: options.identity.keyid,
-      privateKey: options.identity.privateKey,
+      url,
+      extraBody: {
+        ...(options.bindCode ? { bindCode: options.bindCode } : {}),
+        client: options.client ?? 'agent',
+      },
     });
     return fetchImpl(url, {
       method: 'POST',
