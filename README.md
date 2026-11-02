@@ -47,6 +47,8 @@ export COLLAB_BOOTSTRAP_TOKEN="$(openssl rand -hex 32)"
 npm start
 ```
 
+> `@anpio-cli/core` 目前通过 `file:../anpio-cli/packages/core` 引入：克隆本仓库后，同级目录还需要一个 `anpio-cli` checkout；core 发布后改用版本依赖。
+
 打开 <http://127.0.0.1:8787/>：
 
 1. 填一个邮箱，点「发登录链接」；
@@ -570,6 +572,7 @@ node src/agents/cli.ts whoami
 - 会话缓存在 `.anpio-collab/session-<host>-<handle>.json`（`0600`），未过期就复用，401 时自动重签一次；
 - 想让智能体与人共用账号，由人先在「设置」签发绑定码，再 `login <绑定码>`；绑定码一次性、有期限；
 - `anpio-cli` 也能直接登录：`anpio-cli anp login --target https://你的域名/auth/anp/login`。
+- 本轮起平台按 `@anpio-cli/core` 验签：自产 DID 文档必须带 proof、签名覆盖集必须完整、keyid 以 `Signature-Input` 为准；外部客户端请先按 [兼容性变更](docs/protocol-v1.md#兼容性变更anp-收敛之后) 升级。
 
 ### 方式四：静态访问令牌
 
@@ -861,7 +864,7 @@ npm run backup -- ./collab.sqlite3 /secure/collab-backup-20261031.sqlite3
 ```text
 src/
   protocol/            协议层：类型、错误码、入参解析（不依赖数据库与 HTTP）
-  anp/                 ANP-02 身份：base58、did:wba、RFC 9421 验签/签名、登录客户端
+  anp/                 ANP-02 身份：did:wba 展示 helper、自产身份与 DID 文档（core 构造 + proof）、登录客户端
   platform/
     db/                SQLite / PostgreSQL 驱动、schema 与迁移、行映射
     services/          账号、空间、身份、邮箱登录、Agent 授权、任务、子任务、参与、

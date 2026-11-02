@@ -2,9 +2,21 @@
 
 对照 [plan.md](../plan.md)、[第二轮计划](plan-v2.md)、[第三轮计划](plan-v3.md)、[第四轮计划](plan-v4.md) 与 [第五轮计划](plan-v5.md)，说明本仓库现在做到了什么、哪些只是本机验证、哪些还没开始。
 
-> 结论先行：**阶段 1（本地协作闭环）、阶段 3（知识闭环）已实现；第二轮的身份、协作、监管三块已实现；第三轮的租户、两种登录与 Agent 授权已实现；第四轮补上"登录后补绑 DID"；第五轮把 DID 准入改成"必须已注册"，并补上反向绑邮箱；之后依次完成个人资料、任务材料与智能体经验自提交、经验生命周期与任务房间、对象存储/未读/交接包、团队首页/归档/保留期/审计报表；本轮补上信箱与 SSE 推送、内置智能体控制面、模型供应商目录与控制台；执行引擎（supervisor / session / 沙箱 / 模型适配器）已拆到独立仓库 anpio-agents。语义检索仍未开始。** 通过本机测试不等于企业环境验收。
+> 结论先行：**阶段 1（本地协作闭环）、阶段 3（知识闭环）已实现；第二轮的身份、协作、监管三块已实现；第三轮的租户、两种登录与 Agent 授权已实现；第四轮补上"登录后补绑 DID"；第五轮把 DID 准入改成"必须已注册"，并补上反向绑邮箱；之后依次完成个人资料、任务材料与智能体经验自提交、经验生命周期与任务房间、对象存储/未读/交接包、团队首页/归档/保留期/审计报表；上一轮补上信箱与 SSE 推送、内置智能体控制面、模型供应商目录与控制台；执行引擎（supervisor / session / 沙箱 / 模型适配器）已拆到独立仓库 anpio-agents。本轮把 ANP 验签与身份构造收敛到 `@anpio-cli/core`。语义检索仍未开始。** 通过本机测试不等于企业环境验收。
 
-## 本轮：信箱、内置智能体与模型接入
+## 本轮：ANP 验签收敛（C1–C4）
+
+| 能力 | 实现位置 | 验证方式 |
+| --- | --- | --- |
+| 服务端 login/bind 统一走 core：keyid 取自 `Signature-Input` → 远程 `did.json` → `verifyDidDocument` → `resolveVerificationKey` → `verifyHttpSignatureForServer` | `platform/services/identity.ts#authenticate` | `tests/anp.test.ts`、`tests/anp-verification.test.ts` |
+| 自产身份与 DID 文档用 core 构造，文档带 `eddsa-jcs-2022` proof | `src/anp/identity.ts` | `tests/anp.test.ts`、`tests/agent-session.test.ts` |
+| 错误语义分层：证明坏 401、查不了 503 `unavailable`、DID 停用/替换 409 `did_superseded`（带 `requestedDid` / `currentDid`） | `identity.ts`、`protocol/errors.ts`、`http/server.ts` | `tests/anp-verification.test.ts`（8 项） |
+| 删除本地 `src/anp/base58.ts`、`src/anp/signature.ts`；测试签名改用 core 覆盖集 | `@anpio-cli/core`、`@anpio-cli/core/advanced`、`tests/helpers/anp-sign.ts` | 全套 163 项 |
+| nonce 只在验签通过后消费；登录重放换发新挑战、补绑重放直接 401 | `identity.ts#nonceStore` | `tests/anp.test.ts`、`tests/identity-bind.test.ts` |
+
+测试合计 163 项（本轮新增 8 项验签负例）。`npm run check` 无类型错误；SQLite 全套通过，PostgreSQL 未在本轮重跑。共享 golden vectors（C0）与 core 的 `verify` 子入口（C5）未做，见 [收敛计划 §11](anp-convergence-plan.md#11-实施记录)。
+
+## 上一轮：信箱、内置智能体与模型接入
 
 | 能力 | 实现位置 | 验证方式 |
 | --- | --- | --- |
@@ -114,7 +126,7 @@
 | 能力 | 实现位置 | 验证方式 |
 | --- | --- | --- |
 | DID 文档解析器：`did:wba` → `did.json`，https/超时/大小/不跟重定向/缓存 | `src/anp/resolver.ts` | `tests/did-resolution.test.ts` |
-| 登录与补绑都以解析到的文档验签，未注册的 DID 一律拒绝 | `identity.ts#resolveKey` | 同上 |
+| 登录与补绑都以解析到的文档验签，未注册的 DID 一律拒绝 | `identity.ts#authenticate` | 同上 |
 | 请求体自带的 `didDocument` 不再被采信（防冒充） | `identity.ts` | 同上（受害者 DID + 攻击者公钥 → 401） |
 | Agent 获批前预检 DID 是否已登记，避免写入永远登不进来的身份 | `agentAuth.ts#approve` | `tests/tenant-auth.test.ts` |
 | 反向绑定：DID 登录后补邮箱（发信验证、一次性、不换会话） | `emailAuth.ts#startBind`、`/auth/email/verify` | `tests/email-bind.test.ts` |
@@ -163,8 +175,8 @@
 | 能力 | 实现位置 | 验证方式 |
 | --- | --- | --- |
 | ANP-02 登录：`GET /auth/anp/challenge` + 签名 `POST /auth/anp/login` | `src/platform/services/identity.ts`、`src/platform/http/server.ts` | `tests/anp.test.ts` |
-| RFC 9421 验签（`@method @target-uri @authority content-digest` + `created/expires/nonce/keyid`） | `src/anp/signature.ts` | `tests/anp.test.ts` |
-| `did:wba` 与 e1 profile、multibase 公钥解析、fingerprint 校验 | `src/anp/did.ts`、`src/anp/base58.ts` | `tests/anp.test.ts` |
+| RFC 9421 验签（`@method @target-uri @authority content-digest` + `created/expires/nonce/keyid`） | `@anpio-cli/core` 的 `verifyHttpSignatureForServer`、`src/platform/services/identity.ts` | `tests/anp.test.ts` |
+| `did:wba` 与 e1 profile、multibase 公钥解析、fingerprint 校验 | `src/anp/did.ts`、`@anpio-cli/core/advanced`（multibase 编解码）、core `didFingerprint` | `tests/anp.test.ts` |
 | nonce 一次性、验签失败不消耗、重放换发新挑战 | `identity.ts` | `tests/anp.test.ts` |
 | 401 挑战语义与 `anpio-cli anp login` 互通；`Authentication-Info` 投递令牌 | `server.ts`、`src/anp/client.ts` | `tests/anp.test.ts`「不带 nonce 时返回 401 挑战…」 |
 | 会话令牌（只存 SHA-256）、退出登录只撤销当前会话 | `identity.ts` | `tests/anp.test.ts` |
@@ -214,7 +226,7 @@
 | --- | --- |
 | ANP 消息通道（`anpio-cli` 的收发、A2A 消息） | 未接。平台只用 ANP 做登录，任务协作仍走自己的 HTTP 接口 |
 | `anpio-key` 远程签名守护（`SIGN_HTTP` / `SIGN_ORIGIN_PROOF`） | 未接。平台只做验签方，尚未消费 key daemon 的 grant |
-| 插件内多钱包 / 多 DID 切换与 DID 轮换（`did_superseded`） | 平台侧返回 409 `did_superseded` 的语义预留但未产生 |
+| 插件内多钱包 / 多 DID 切换与 DID 轮换 | 平台侧已会在登录时返回 409 `did_superseded`（有继任者时带 `currentDid`）；客户端的多钱包切换与轮换未做 |
 | 阶段 4：真实业务系统接入 | 未开始。示例智能体读本地 JSON |
 | 阶段 5：跨组织协作 | 未开始 |
 | 向量检索 / pgvector / 检索评测集 | 未开始。当前是词法匹配 |

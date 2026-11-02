@@ -43,9 +43,11 @@
 | `forbidden` | 403 | 已认证但无权执行该动作 |
 | `not_found` | 404 | 不存在，或存在但对当前主体不可见 |
 | `conflict` | 409 | 状态不允许该流转、唯一性冲突、幂等键被复用于不同请求 |
+| `did_superseded` | 409 | ANP 登录时 DID 已停用或被替换；响应顶层带 `requestedDid` / `currentDid` |
 | `precondition_failed` | 412 | `If-Match` 版本不匹配 |
 | `payload_too_large` | 413 | 请求体超过上限 |
 | `internal` | 500 | 未预期错误；详细信息只写服务端日志 |
+| `unavailable` | 503 | 暂时查不了（如 DID 解析器不可达）；可重试 |
 
 ANP 登录另外有两个业务码，出现在 `/auth/anp/login` 的响应体里：
 
@@ -79,15 +81,16 @@ Content-Digest: sha-256=:<base64>
 {
   "nonce": "…",
   "did": "did:wba:agents.local:user:alice:e1_<fingerprint>",
-  "didDocument": { …内联 DID 文档… },
+  "didDocument": { …仅兼容接收，不参与验签… },
   "bindCode": "可选：把这条 DID 绑到已有账号",
   "client": "browser | agent"
 }
 ```
 
-- 签名基覆盖 `@method`、`@target-uri`、`@authority`、`content-digest`；`@target-uri` 必须与实际请求地址逐字一致（含 scheme 与端口）。
-- 服务器用请求体里的 `didDocument` 解析公钥（`publicKeyMultibase` 或 `publicKeyJwk`），并校验 `doc.id` 与声明一致、`authentication` 引用了该 `keyid`。
-- 时间窗口允许 300 秒对时误差；`expires` 之后一律拒绝。
+- 签名基必须覆盖 `@method`、`@target-uri`、`@authority`、`content-digest`；有请求体却没有 `content-digest` 直接拒绝。`@target-uri` 必须与实际请求地址逐字一致（含 scheme 与端口）。
+- `created` 必填，`expires` 可选；允许 300 秒对时误差，`expires` 之后一律拒绝。
+- keyid 只从 `Signature-Input` 取，其 DID 段必须等于请求体的 `did`；请求体里若也带 `keyid`，必须与 header 一致。缺 keyid 或 `Signature-Input` 格式不合法 → `400 invalid`。
+- 公钥来自**远程** `did.json`，不是请求体：服务器按 `did` 取回文档，校验 `doc.id`、文档 proof（active `e1_` DID 必须带合法的 `eddsa-jcs-2022` proof）、`keyid` 指向的 `verificationMethod` 在 `authentication` 里，再用该公钥验签。请求体里的 `didDocument` 仅作兼容字段接收，**不参与任何判断**。
 
 ### 3. 令牌投递
 
@@ -101,9 +104,9 @@ Authentication-Info: access_token="…", token_type="Bearer"
   "sessionExpiresAt": "…", "principal": { "id": "…", "roles": ["agent"], "kind": "agent", … } }
 ```
 
-### 4. 401 挑战语义（与 `anpio-cli` 互通）
+### 4. 失败语义（与 `anpio-cli` 互通）
 
-请求没带 `nonce`（或 `nonce` 已失效）时返回：
+请求没带 `nonce`（或 `nonce` 已失效、已消费）时返回：
 
 ```
 401 Unauthorized
@@ -113,9 +116,19 @@ WWW-Authenticate: ANP nonce="<新 nonce>"
 
 客户端读这个 `nonce` 重签一次即可登录。**只重签一次**：如果新的 `nonce` 与已用过的一样，就当成拒绝（避免无限重试）。这正是 `anpio-cli anp login` 的实现，因此 CLI 无需改动即可登录本平台。
 
+其余失败要区分“证明坏 / 查不了 / DID 已换”，客户端不要一律重签：
+
+| 情况 | 状态码 | `error.code` | 客户端动作 |
+| --- | --- | --- | --- |
+| 缺 nonce、nonce 过期或已消费 | 401 | `challenge_required` | 用响应里的新 nonce 重签一次 |
+| proof 或签名无效、覆盖集不完整、`created` 缺失、keyid 不属于 `body.did`、body.keyid 与 header 不一致 | 401 | `unauthenticated` | 不要重签同一份请求，修正后重来 |
+| DID 文档 404/410、文档不可信、这条 DID 不能用于登录 | 401 | `unauthenticated` | 换一条已登记的 DID |
+| DID 解析器连不上 / 超时 / core 返回 `unverifiable` | 503 | `unavailable` | 可重试，建议指数退避 |
+| DID 已停用或被替换 | 409 | `did_superseded` | 不要重签；顶层带 `requestedDid` 与 `currentDid`（有继任者时） |
+
 ### 主体落位
 
-先决条件：`did` 必须能解析到 `did.json`（见下节），解析失败一律 `401`，不进入落位判断。
+先决条件：`did` 必须能解析到 `did.json`（见下节）。取不到文档或文档不可信 → `401`；解析器不可达 → `503`；两者都不进入落位判断。
 
 | 情况 | 结果 |
 | --- | --- |
@@ -132,10 +145,10 @@ WWW-Authenticate: ANP nonce="<新 nonce>"
 - 只支持 `did:wba`；`authority` 里的 `%3A` 按端口解码。
 - 只走 https；回环地址默认允许 http，内网其它地址需 `COLLAB_DID_HTTP=1`。
 - 不跟随 3xx、3 秒超时、64KB 上限；成功结果缓存 5 分钟，失败不缓存。
-- 文档 `id` 必须与请求的 DID 一致，`keyid` 指向的 `verificationMethod` 必须在 `authentication` 里。
+- 文档 `id` 必须与请求的 DID 一致；active `e1_` DID 的文档必须带合法的 `eddsa-jcs-2022` proof；`keyid` 指向的 `verificationMethod` 必须在 `authentication` 里。
 - 请求体里的 `didDocument` 仅作兼容字段接收，**不参与验签**。
 
-`404/410` → `401`「这条 DID 没有在注册服务器上登记」；连不上 → `401`「无法连接 DID 注册服务器」；文档不可信 → `401`「DID 文档不可信」。
+`404/410` → `401`「这条 DID 没有在注册服务器上登记」；文档不可信（proof、`id`、`authentication` 任一项不通过）→ `401`「DID 文档不可信」；连不上 / 超时 → `503 unavailable`「暂时无法取回 DID 文档」，可重试；文档已停用或带 `successorDid` → `409 did_superseded`。
 
 ### 会话
 
@@ -152,14 +165,14 @@ GET  /v1/me/identities/challenge          → { nonce, expiresAt, purpose: "bind
 POST /v1/me/identities/bind   (签名请求)   → { id, did, keyid, fingerprint, primary, existing }
 ```
 
-请求体是 `{ nonce, did, didDocument, keyid? }`，签名头与登录完全一样（`Signature-Input` / `Signature` / `Content-Digest`），**同时带上 `Authorization: Bearer <会话令牌>`**：
+请求体是 `{ nonce, did, didDocument, keyid? }`，签名头与登录完全一样（`Signature-Input` / `Signature` / `Content-Digest`），**同时带上 `Authorization: Bearer <会话令牌>`**；`didDocument` 与登录一样仅作兼容字段接收。
 
 | 缺什么 | 后果 |
 | --- | --- |
 | 缺签名 | 谁都能把别人的 DID 挂到自己账号上 |
 | 缺会话 | 谁都能把自己的 DID 塞进别人的账号 |
 
-所以两者都要，服务端先按 `did` + `didDocument` 验签，再核对会话对应的主体。
+所以两者都要。服务端按与登录相同的链路验签——`Signature-Input` 的 keyid → 远程 `did.json` → 文档 proof 与密钥 → RFC 9421 签名——再核对会话对应的主体；`didDocument` 不参与判断。
 
 - 挑战用途单独记为 `bind`：拿登录挑战来补绑会被拒（`401`），补绑挑战也换不到会话。
 - 挑战一次性；重放（哪怕换了 `Idempotency-Key`）返回 `401`。
@@ -167,6 +180,16 @@ POST /v1/me/identities/bind   (签名请求)   → { id, did, keyid, fingerprint
 - 冲突一律显式拒绝，不静默改写：同一租户内已属于另一主体 `409`，已属于另一个账号 `409`。
 - 新登记的身份 `login_count = 0`——绑定不等于登录过一次。
 - 解绑后这条 DID 再来登录会作为新主体重新登记，不会回到原账号。
+
+### 兼容性变更（ANP 收敛之后）
+
+平台把 ANP 验签与身份构造交给 `@anpio-cli/core`，有三项对客户端可见的变化：
+
+1. **文档 proof 成为必需**：active `e1_` DID 的 `did.json` 必须带合法的 `eddsa-jcs-2022` proof；只发布公钥、不发 proof 的客户端会登录失败。
+2. **覆盖集变严**：签名必须覆盖 `@method`、`@target-uri`、`@authority`、`content-digest`；有请求体时缺 `content-digest` 直接拒绝，`created` 必填。
+3. **keyid 以 `Signature-Input` 为准**：请求体里的 `keyid` 不再决定用哪把钥匙；它与 header 不一致会被拒。
+
+客户端升级顺序：先让自产 DID 文档带 proof，再升级签名头；服务端没有“暂时放宽”的开关。遇到 `503 unavailable` 可重试；遇到 `409 did_superseded` 应按 `currentDid` 换 DID，而不是重签原请求。
 
 ## 邮箱登录、租户与 Agent 授权
 
