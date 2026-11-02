@@ -864,7 +864,8 @@ npm run backup -- ./collab.sqlite3 /secure/collab-backup-20261031.sqlite3
 ```text
 src/
   protocol/            协议层：类型、错误码、入参解析（不依赖数据库与 HTTP）
-  anp/                 ANP-02 身份：did:wba 展示 helper、自产身份与 DID 文档（core 构造 + proof）、登录客户端
+  anp/                 ANP-02 身份：did:wba 展示 helper、自产身份与 DID 文档（core 构造 + proof）、登录客户端；
+                       验签在 platform/services/identity.ts + core
   platform/
     db/                SQLite / PostgreSQL 驱动、schema 与迁移、行映射
     services/          账号、空间、身份、邮箱登录、Agent 授权、任务、子任务、参与、
